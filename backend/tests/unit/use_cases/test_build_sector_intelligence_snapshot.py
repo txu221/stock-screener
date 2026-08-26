@@ -330,3 +330,16 @@ def test_commit_failure_rolls_back_run_snapshot_and_pointer() -> None:
         "snapshots": 0,
         "pointers": 0,
     }
+
+
+def test_provider_history_older_than_requested_window_is_cropped_not_rejected() -> None:
+    as_of = date(2026, 5, 15)
+    provider_batch = _batch(as_of)
+    exact_window = _sessions(as_of)[-90:]
+
+    result = _runner(provider_batch, exact_window).execute(_command(as_of))
+
+    assert result.ingestion_status is IngestionStatus.SUCCEEDED
+    counts = _table_counts(result.run_id)
+    assert counts["bars"] == 12 * 90
+    assert counts["rejections"] == 0

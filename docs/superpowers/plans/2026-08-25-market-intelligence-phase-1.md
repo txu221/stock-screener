@@ -762,7 +762,7 @@ git commit -m "feat: atomically publish sector intelligence runs"
 - Consumes: `BulkDataFetcher.fetch_batch_prices(symbols, period="6mo")`, `MarketCalendarService.trading_days`, use case.
 - Produces: `YahooMarketIntelligenceProvider.fetch`, `CompletedSessionSource.completed_sessions`, runtime `get_market_intelligence_runner`, Celery task `calculate_sector_intelligence_snapshot` routed to `market_jobs_us` and included only in the US daily chain.
 
-- [ ] **Step 1: Write RED adapter tests**
+- [x] **Step 1: Write RED adapter tests**
 
 ```python
 def test_yahoo_adapter_requests_exact_universe_without_auto_normalizer(fetcher):
@@ -784,13 +784,13 @@ def test_total_batch_exception_is_one_request_failure_not_twelve_rows(fetcher):
 
 Also test yfinance DataFrame -> raw field mapping, provider symbol, source/as-of timestamp, per-symbol missing response, malformed frame, and that no call imports or invokes `price_row_normalization`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\market_intelligence\test_yahoo_adapter.py -q
 ```
 
-- [ ] **Step 3: Implement adapter and completed-session source**
+- [x] **Step 3: Implement adapter and completed-session source**
 
 Convert DataFrame indices to dates, retain raw `Open/High/Low/Close/Adj Close/Volume` values untouched in `RawBar`, and let the strict validator decide validity. Map only total request conditions to `RequestFailure`; retain per-symbol `has_error` entries as symbol failures.
 
@@ -809,7 +809,7 @@ class CompletedSessionSource:
         return tuple(sessions[-minimum:])
 ```
 
-- [ ] **Step 4: Write and run RED task/wiring tests**
+- [x] **Step 4: Write and run RED task/wiring tests**
 
 ```python
 def test_task_is_registered_on_us_market_queue():
@@ -830,11 +830,11 @@ Run:
 .\venv\Scripts\python.exe -m pytest tests\unit\test_market_intelligence_tasks.py tests\unit\test_celery_config.py tests\unit\test_daily_market_pipeline_tasks.py -q
 ```
 
-- [ ] **Step 5: Implement minimal runtime and Celery wiring**
+- [x] **Step 5: Implement minimal runtime and Celery wiring**
 
 The task accepts only optional ISO `calculation_date`, resolves last completed US session when omitted, calls the runtime runner, returns run ID/status/published fields, and closes resources through existing runtime/session factories. Add one guard to the US chain that treats `SUCCEEDED`, `PARTIAL`, and `FAILED` as completed audit outcomes; it raises only on task execution exceptions, because a PARTIAL run is a valid non-publication outcome.
 
-- [ ] **Step 6: Run GREEN and commit**
+- [x] **Step 6: Run GREEN and commit**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\market_intelligence\test_yahoo_adapter.py tests\unit\test_market_intelligence_tasks.py tests\unit\test_celery_config.py tests\unit\test_daily_market_pipeline_tasks.py -q

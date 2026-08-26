@@ -179,6 +179,37 @@ def guard_market_rs_result(
 
 
 @celery_app.task(
+    name=(
+        "app.tasks.daily_market_pipeline_tasks."
+        "guard_market_intelligence_result"
+    ),
+    queue="celery",
+)
+def guard_market_intelligence_result(
+    result: dict | None = None,
+    *,
+    calculation_date: str,
+) -> dict:
+    accepted = {"SUCCEEDED", "PARTIAL", "FAILED"}
+    if (
+        not isinstance(result, dict)
+        or result.get("status") not in accepted
+        or result.get("run_id") is None
+        or result.get("as_of") != calculation_date
+    ):
+        raise RuntimeError(f"Sector intelligence task failed: {result}")
+    return {
+        "status": "ok",
+        "market": "US",
+        "stage": "market_intelligence",
+        "run_id": result["run_id"],
+        "ingestion_status": result["status"],
+        "published": bool(result.get("published")),
+        "as_of": calculation_date,
+    }
+
+
+@celery_app.task(
     name="app.tasks.daily_market_pipeline_tasks.guard_breadth_result",
     queue="celery",
 )
@@ -238,13 +269,30 @@ def _build_daily_market_pipeline_signatures(market: str, trading_date: date) -> 
 
     market_code = _normalize_pipeline_market(market)
     as_of_date = trading_date.isoformat()
-    return [
+    signatures = [
         smart_refresh_cache.si(mode="delta", market=market_code).set(
             queue=data_fetch_queue_for_market(market_code)
         ),
         guard_price_refresh.s(market=market_code).set(
             queue=market_jobs_queue_for_market(market_code)
         ),
+    ]
+    if market_code == "US":
+        from app.tasks.market_intelligence_tasks import (
+            calculate_sector_intelligence_snapshot,
+        )
+
+        signatures.extend(
+            [
+                calculate_sector_intelligence_snapshot.si(
+                    calculation_date=as_of_date,
+                ).set(queue=market_jobs_queue_for_market(market_code)),
+                guard_market_intelligence_result.s(
+                    calculation_date=as_of_date,
+                ).set(queue=market_jobs_queue_for_market(market_code)),
+            ]
+        )
+    signatures.extend([
         calculate_market_rs_snapshot.si(
             market=market_code,
             calculation_date=as_of_date,
@@ -292,7 +340,8 @@ def _build_daily_market_pipeline_signatures(market: str, trading_date: date) -> 
         guard_snapshot_result.s(market=market_code).set(
             queue=market_jobs_queue_for_market(market_code)
         ),
-    ]
+    ])
+    return signatures
 
 
 def _market_pipeline_active(market: str) -> dict | None:

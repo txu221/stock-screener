@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from datetime import datetime
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -96,6 +97,127 @@ def test_daily_market_pipeline_orders_refresh_compute_and_scan(monkeypatch):
         "publish_pointer_key": "latest_published_market:HK",
         "static_daily_mode": True,
     }
+
+
+def test_sector_intelligence_appears_once_in_us_pipeline_and_never_in_hk(
+    monkeypatch,
+):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    task_name = (
+        "app.tasks.market_intelligence_tasks.calculate_sector_intelligence_snapshot"
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.tasks.cache_tasks",
+        SimpleNamespace(
+            smart_refresh_cache=_FakeTask("app.tasks.cache_tasks.smart_refresh_cache")
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.tasks.market_rs_tasks",
+        SimpleNamespace(
+            calculate_market_rs_snapshot=_FakeTask(
+                "app.tasks.market_rs_tasks.calculate_market_rs_snapshot"
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.tasks.breadth_tasks",
+        SimpleNamespace(
+            calculate_daily_breadth_with_gapfill=_FakeTask(
+                "app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill"
+            ),
+            calculate_market_exposure=_FakeTask(
+                "app.tasks.breadth_tasks.calculate_market_exposure"
+            ),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.tasks.group_rank_tasks",
+        SimpleNamespace(
+            calculate_daily_group_rankings_with_gapfill=_FakeTask(
+                "app.tasks.group_rank_tasks."
+                "calculate_daily_group_rankings_with_gapfill"
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.interfaces.tasks.feature_store_tasks",
+        SimpleNamespace(
+            build_daily_snapshot=_FakeTask(
+                "app.interfaces.tasks.feature_store_tasks.build_daily_snapshot"
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.tasks.market_intelligence_tasks",
+        SimpleNamespace(
+            calculate_sector_intelligence_snapshot=_FakeTask(task_name)
+        ),
+    )
+
+    us_tasks = [
+        signature.task
+        for signature in module._build_daily_market_pipeline_signatures(
+            "US", date(2026, 5, 15)
+        )
+    ]
+    hk_tasks = [
+        signature.task
+        for signature in module._build_daily_market_pipeline_signatures(
+            "HK", date(2026, 5, 15)
+        )
+    ]
+
+    assert us_tasks.count(task_name) == 1
+    assert us_tasks.count(
+        "app.tasks.daily_market_pipeline_tasks.guard_market_intelligence_result"
+    ) == 1
+    assert task_name not in hk_tasks
+    assert (
+        "app.tasks.daily_market_pipeline_tasks.guard_market_intelligence_result"
+        not in hk_tasks
+    )
+
+
+@pytest.mark.parametrize("status", ["SUCCEEDED", "PARTIAL", "FAILED"])
+def test_market_intelligence_guard_accepts_all_audited_outcomes(status):
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    result = {
+        "status": status,
+        "run_id": 51,
+        "published": status == "SUCCEEDED",
+        "as_of": "2026-05-15",
+    }
+
+    assert module.guard_market_intelligence_result.run(
+        result, calculation_date="2026-05-15"
+    ) == {
+        "status": "ok",
+        "market": "US",
+        "stage": "market_intelligence",
+        "run_id": 51,
+        "ingestion_status": status,
+        "published": status == "SUCCEEDED",
+        "as_of": "2026-05-15",
+    }
+
+
+def test_market_intelligence_guard_rejects_unpersisted_result():
+    from app.tasks import daily_market_pipeline_tasks as module
+
+    with pytest.raises(RuntimeError, match="Sector intelligence task failed"):
+        module.guard_market_intelligence_result.run(
+            {"status": "FAILED", "run_id": None},
+            calculation_date="2026-05-15",
+        )
 
 
 def test_queue_daily_market_pipeline_skips_disabled_market(monkeypatch):

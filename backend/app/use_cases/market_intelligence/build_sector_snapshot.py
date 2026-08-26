@@ -334,10 +334,19 @@ class BuildSectorSnapshotUseCase:
         as_of: date,
     ) -> _PreparedAttempt:
         timestamp = self._clock()
+        window_start = sessions[0]
+        window_rows = tuple(
+            row
+            for row in batch.rows
+            if not (
+                type(row.trading_date) is date
+                and row.trading_date < window_start
+            )
+        )
         validation = (
             ValidationResult((), (), ())
             if batch.request_failure is not None
-            else validate_provider_rows(batch.rows, sessions, timestamp)
+            else validate_provider_rows(window_rows, sessions, timestamp)
         )
         metrics, history_counts = _calculate_metrics(validation, sessions)
         input_hash = _hash_payload(batch, sessions)
