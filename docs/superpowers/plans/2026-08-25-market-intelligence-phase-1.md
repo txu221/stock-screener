@@ -367,7 +367,7 @@ git commit -m "feat: add strict sector bar validation"
 - Consumes: ordered `CanonicalBar` values and exact reference sessions.
 - Produces: `calculate_symbol_metrics(bars, sessions) -> SectorMetrics` and `with_relative_returns(sector_metrics, spy_metrics) -> SectorMetrics`.
 
-- [ ] **Step 1: Write failing hand-calculated tests**
+- [x] **Step 1: Write failing hand-calculated tests**
 
 ```python
 def test_return_offsets_use_sessions_not_calendar_days(canonical_series, sessions):
@@ -392,7 +392,7 @@ def test_relative_return_is_sector_minus_spy(sector_metrics, spy_metrics):
 
 Add RED tests for insufficient 1/5/20/60 history, missing required session, duplicate date, NaN, RVOL zero denominator, zero-range MFM=0, CMF 5/20/60, CMF zero-volume denominator, and the fact that missing values are `None`, never `0.0`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\market_intelligence\test_metrics.py -q
@@ -400,7 +400,7 @@ Add RED tests for insufficient 1/5/20/60 history, missing required session, dupl
 
 Expected: import failure for `metrics.py`.
 
-- [ ] **Step 3: Implement minimal pure functions**
+- [x] **Step 3: Implement minimal pure functions**
 
 ```python
 def _return_at(close_by_date, sessions, offset):
@@ -429,7 +429,7 @@ def _cmf(window):
 
 Require exact date coverage rather than indexing the Nth available provider row. Do not import SQLAlchemy, FastAPI, Redis, Celery, or provider modules.
 
-- [ ] **Step 4: Run GREEN and the golden path**
+- [x] **Step 4: Run GREEN and the golden path**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\market_intelligence\test_metrics.py -q
@@ -437,7 +437,7 @@ Require exact date coverage rather than indexing the Nth available provider row.
 
 Expected: all metric tests pass with no warning or infinity.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add backend/app/domain/market_intelligence/metrics.py backend/tests/unit/market_intelligence/test_metrics.py
