@@ -2,7 +2,7 @@
 
 Date: 2026-08-26 (America/New_York)
 
-Status: Approved architecture, awaiting written-spec review
+Status: Approved for implementation
 
 ## 1. Goal
 
