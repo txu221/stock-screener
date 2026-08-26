@@ -559,7 +559,7 @@ git commit -m "feat: add sector ranking and snapshot assembly"
 - Consumes: domain audit, bars, rejections, snapshots, and existing `FeatureRun` IDs.
 - Produces: `MarketIntelligenceRepository` methods `find_exact`, `persist_candidate`, `get_previous_published`, `get_latest_attempt`, `get_latest_published`, and `list_published_history`; `SqlUnitOfWork.market_intelligence` shares the feature-run session.
 
-- [ ] **Step 1: Write RED ORM/repository tests**
+- [x] **Step 1: Write RED ORM/repository tests**
 
 ```python
 def test_market_intelligence_repository_shares_uow_transaction(factory):
@@ -584,7 +584,7 @@ def test_persist_candidate_rolls_back_all_rows_and_pointer_on_error(factory):
 
 Also test all raw/adjusted lineage round-trips, stable rejection identity, unique idempotency key, duplicate snapshot PK, latest attempt including failed/quarantined, latest pointer reads, history metric-version filtering, newest successful revision per session, and previous published query excluding same-date/partial/failed runs.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\repositories\test_market_intelligence_repo.py tests\unit\repositories\test_uow.py -q
@@ -592,7 +592,7 @@ Also test all raw/adjusted lineage round-trips, stable rejection identity, uniqu
 
 Expected: imports/tables fail because persistence does not exist.
 
-- [ ] **Step 3: Implement four ORM tables and additive migration**
+- [x] **Step 3: Implement four ORM tables and additive migration**
 
 Use `Numeric(24, 10)` for price/factor/volume evidence, timezone-aware `DateTime`, JSON for raw evidence/counter maps/rank maps, enum check constraints, FK cascades, and indexes for `(trading_date, metric_version)`, `(symbol, trading_date)`, and latest-attempt lookup.
 
@@ -620,7 +620,7 @@ class MarketIntelligenceRunAudit(Base):
 
 `MarketIntelligenceCanonicalBar` has `run_id`, normalized symbol/date identity, raw provider trading date, provider/provider symbol, raw Open/High/Low/Close, provider adjusted Close, adjustment factor, adjusted Open/High/Low/Close, provider volume, source timestamp, ingestion timestamp, price basis, and normalization version. `MarketIntelligenceRejection` has generated ID, run/provider/provider-symbol identity, nullable normalized symbol/date, rejection code/reason, JSON raw evidence, and ingestion timestamp. `MarketIntelligenceSectorSnapshot` has run/symbol identity, trading date, asset type, sector name, the 13 metric columns, four rank JSON maps, provider, freshness JSON, price basis, metric version, calculation timestamp, and data-quality status. None of these fields are stored in `StockFeatureDaily`.
 
-- [ ] **Step 4: Implement repository mapping and UoW registration**
+- [x] **Step 4: Implement repository mapping and UoW registration**
 
 ```python
 self.market_intelligence = SqlMarketIntelligenceRepository(self.session)
@@ -630,7 +630,7 @@ Insert that assignment after the existing repository assignments in `SqlUnitOfWo
 
 Repository write methods flush but never commit. Repository published reads join `FeatureRun.status == "published"`; predecessor reads require `FeatureRun.as_of_date < target_session` and the same metric version.
 
-- [ ] **Step 5: Run GREEN plus migration upgrade/downgrade test**
+- [x] **Step 5: Run GREEN plus migration upgrade/downgrade test**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\repositories\test_market_intelligence_repo.py tests\unit\repositories\test_uow.py tests\unit\test_market_intelligence_migration.py -q
@@ -638,7 +638,7 @@ Repository write methods flush but never commit. Repository published reads join
 
 Expected: all tests pass on SQLite; migration creates and drops only the four new tables.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add backend/app/infra/db backend/app/domain/market_intelligence/ports.py backend/app/models backend/alembic/versions/20260826_0031_add_market_intelligence_phase1.py backend/tests/unit/repositories backend/tests/unit/test_market_intelligence_migration.py

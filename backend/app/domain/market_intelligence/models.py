@@ -184,3 +184,18 @@ class CandidateSnapshot:
     missing_symbols: tuple[str, ...]
     usable_symbols: tuple[str, ...]
     publishable: bool
+
+
+@dataclass(frozen=True)
+class MarketIntelligenceRunBundle:
+    """One persisted attempt plus its immutable Phase 1 evidence."""
+
+    run_id: int
+    as_of_date: date
+    lifecycle_status: str
+    created_at: datetime
+    published_at: datetime | None
+    audit: RunAudit
+    canonical_bars: tuple[CanonicalBar, ...]
+    rejections: tuple[BarRejection, ...]
+    snapshots: tuple[SectorSnapshot, ...]

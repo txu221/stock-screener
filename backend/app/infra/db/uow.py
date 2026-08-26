@@ -14,6 +14,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.domain.common.uow import UnitOfWork
 from app.infra.db.repositories.feature_run_repo import SqlFeatureRunRepository
 from app.infra.db.repositories.feature_store_repo import SqlFeatureStoreRepository
+from app.infra.db.repositories.market_intelligence_repo import (
+    SqlMarketIntelligenceRepository,
+)
 from app.infra.db.repositories.opportunity_summary_repo import (
     SqlOpportunityStateSummaryRepository,
 )
@@ -36,6 +39,7 @@ class SqlUnitOfWork(UnitOfWork):
         self.universe = SqlUniverseRepository(self.session)
         self.feature_runs = SqlFeatureRunRepository(self.session)
         self.feature_store = SqlFeatureStoreRepository(self.session)
+        self.market_intelligence = SqlMarketIntelligenceRepository(self.session)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
