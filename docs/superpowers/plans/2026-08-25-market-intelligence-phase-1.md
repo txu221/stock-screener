@@ -128,7 +128,7 @@ Every criterion in the approved design and user brief maps to Tasks 1-9 below. T
 - Consumes: approved spec constants.
 - Produces: `MARKET_INTELLIGENCE_UNIVERSE`, `SECTOR_SYMBOLS`, `UNIVERSE_HASH`, enums, `RawBar`, `CanonicalBar`, `BarRejection`, `ProviderBatchResult`, `SectorMetrics`, `RankRecord`, `SectorSnapshot`, `RunAudit`, and fixture builders used by every later task.
 
-- [ ] **Step 1: Write contract tests that fail because the domain package does not exist**
+- [x] **Step 1: Write contract tests that fail because the domain package does not exist**
 
 ```python
 def test_phase1_universe_is_exact_and_spy_is_not_ranked():
@@ -147,7 +147,7 @@ def test_versions_and_pointer_are_frozen():
     assert LATEST_POINTER_KEY == "latest_market_intelligence_sectors_us"
 ```
 
-- [ ] **Step 2: Run the RED test**
+- [x] **Step 2: Run the RED test**
 
 Run:
 
@@ -158,7 +158,7 @@ cd backend
 
 Expected: collection fails with `ModuleNotFoundError: app.domain.market_intelligence`.
 
-- [ ] **Step 3: Implement exact constants and immutable value objects**
+- [x] **Step 3: Implement exact constants and immutable value objects**
 
 ```python
 class IngestionStatus(str, Enum):
@@ -222,7 +222,7 @@ RunAudit(idempotency_key, input_hash, ingestion_status, provider,
          source_freshness, calculation_timestamp, ingestion_timestamp)
 ```
 
-- [ ] **Step 4: Add a compact scenario template and fixture expansion helper**
+- [x] **Step 4: Add a compact scenario template and fixture expansion helper**
 
 The JSON contains fixed session dates, one parameter row per symbol (`start_close`, `daily_return`, `base_volume`), and named overrides for negative volume, invalid OHLC, zero range, zero denominator, duplicate, unexpected symbol, and missing session. `conftest.py` expands it into raw-like `RawBar` sequences; it does not return precomputed metrics.
 
@@ -239,7 +239,7 @@ The JSON contains fixed session dates, one parameter row per symbol (`start_clos
 }
 ```
 
-- [ ] **Step 5: Run contract tests GREEN and commit**
+- [x] **Step 5: Run contract tests GREEN and commit**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\market_intelligence\test_contracts.py -q
