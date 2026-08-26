@@ -658,7 +658,7 @@ git commit -m "feat: persist sector intelligence snapshots"
 - Consumes: provider port, calendar session sequence, `SqlUnitOfWork` factory, validator, metrics, snapshot builder, repository.
 - Produces: `BuildSectorSnapshotCommand`, `BuildSectorSnapshotResult`, and `BuildSectorSnapshotUseCase.execute(command)`.
 
-- [ ] **Step 1: Write seven RED end-to-end use-case tests**
+- [x] **Step 1: Write seven RED end-to-end use-case tests**
 
 Use the golden raw scenario and real SQLite repositories.
 
@@ -690,13 +690,13 @@ def test_case_d_request_failure_has_no_fabricated_rejections(
 
 Add Case C zero usable -> FAILED, Case E `/latest` repository read remains previous after partial, Case F Monday success/Tuesday partial/Wednesday success uses Monday ranks, and Case G identical input rerun returns same run ID and unchanged row counts.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\use_cases\test_build_sector_intelligence_snapshot.py -q
 ```
 
-- [ ] **Step 3: Implement the runner with one final Unit of Work**
+- [x] **Step 3: Implement the runner with one final Unit of Work**
 
 ```python
 def execute(self, command):
@@ -726,7 +726,7 @@ def execute(self, command):
 
 For `PARTIAL`, call `mark_completed` then `mark_quarantined` with one critical `DQResult`; for `SUCCEEDED`, call `mark_completed` then `publish_atomically(run_id, LATEST_POINTER_KEY)`; for `FAILED`, call `mark_failed`. Catch `IntegrityError` from a concurrent idempotency insert, roll back, and read the winner without creating a second logical run.
 
-- [ ] **Step 4: Run GREEN and explicit transaction-failure tests**
+- [x] **Step 4: Run GREEN and explicit transaction-failure tests**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\use_cases\test_build_sector_intelligence_snapshot.py tests\unit\repositories\test_market_intelligence_repo.py -q
@@ -734,7 +734,7 @@ For `PARTIAL`, call `mark_completed` then `mark_quarantined` with one critical `
 
 Expected: all A-G cases pass, including pointer preservation and same-run idempotency.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add backend/app/use_cases/market_intelligence backend/tests/unit/use_cases/test_build_sector_intelligence_snapshot.py
