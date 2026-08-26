@@ -262,7 +262,7 @@ Expected: all Task 1 tests pass.
 - Consumes: `RawBar`, `CanonicalBar`, `BarRejection`, `RejectionCode`, fixed universe, ordered completed sessions.
 - Produces: `ValidationResult(canonical_bars, rejections, received_symbols)` and `validate_provider_rows(rows, expected_sessions, ingested_at)`.
 
-- [ ] **Step 1: Write parameterized failing validation tests**
+- [x] **Step 1: Write parameterized failing validation tests**
 
 ```python
 @pytest.mark.parametrize(
@@ -291,7 +291,7 @@ def test_invalid_row_is_rejected_without_coercion(valid_raw_bar, sessions, chang
 
 Also write separate tests for unexpected symbol, missing field, invalid date, duplicate group rejecting both rows, positive factor calculation, raw/adjusted evidence preservation, `high == low` acceptance, and negative volume never becoming positive/zero.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\market_intelligence\test_validation.py -q
@@ -299,7 +299,7 @@ Also write separate tests for unexpected symbol, missing field, invalid date, du
 
 Expected: import failure for `validation.py`.
 
-- [ ] **Step 3: Implement two-pass strict validation**
+- [x] **Step 3: Implement two-pass strict validation**
 
 ```python
 def validate_provider_rows(rows, expected_sessions, ingested_at):
@@ -340,7 +340,7 @@ def validate_provider_rows(rows, expected_sessions, ingested_at):
 
 Check fields in stable precedence so one raw row has one primary rejection code. Check duplicates before numeric conversion. Serialize non-finite raw evidence as explicit strings so rejection JSON remains standards-compliant.
 
-- [ ] **Step 4: Run GREEN, then run shared price-normalization tests to prove isolation**
+- [x] **Step 4: Run GREEN, then run shared price-normalization tests to prove isolation**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\market_intelligence\test_validation.py tests\unit\test_price_row_normalization.py -q
@@ -348,7 +348,7 @@ Check fields in stable precedence so one raw row has one primary rejection code.
 
 Expected: all selected tests pass; shared normalization behavior remains unchanged.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add backend/app/domain/market_intelligence/validation.py backend/tests/unit/market_intelligence
