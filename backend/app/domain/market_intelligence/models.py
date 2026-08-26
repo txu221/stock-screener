@@ -175,3 +175,12 @@ class RunAudit:
     source_freshness: Mapping[str, Any]
     calculation_timestamp: datetime
     ingestion_timestamp: datetime
+
+
+@dataclass(frozen=True)
+class CandidateSnapshot:
+    ingestion_status: IngestionStatus
+    snapshots: tuple[SectorSnapshot, ...]
+    missing_symbols: tuple[str, ...]
+    usable_symbols: tuple[str, ...]
+    publishable: bool

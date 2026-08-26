@@ -458,7 +458,7 @@ git commit -m "feat: add deterministic sector intelligence metrics"
 - Consumes: complete sector metrics, optional prior published sector snapshots.
 - Produces: `dense_rank_sectors`, `build_rank_records`, `classify_ingestion_status`, and `build_candidate_snapshot`.
 
-- [ ] **Step 1: Write RED ranking tests**
+- [x] **Step 1: Write RED ranking tests**
 
 ```python
 def test_dense_rank_preserves_ties_without_symbol_tiebreak():
@@ -482,7 +482,7 @@ def test_rank_change_direction(previous, current, change, direction):
 
 Assert SPY never appears, all six ranking metrics exist, symbol only orders output, and an unavailable metric prevents a publishable rank set.
 
-- [ ] **Step 2: Write RED status and predecessor tests**
+- [x] **Step 2: Write RED status and predecessor tests**
 
 ```python
 @pytest.mark.parametrize(
@@ -501,13 +501,13 @@ def test_status_partition_is_exhaustive(request_ok, usable, complete, status):
 
 Add a Monday-success/Tuesday-partial/Wednesday-success fixture in which `build_rank_records` is passed Monday rows and ignores Tuesday candidate rows by contract.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\market_intelligence\test_ranking.py tests\unit\market_intelligence\test_snapshot.py -q
 ```
 
-- [ ] **Step 4: Implement deterministic ranking and assembly**
+- [x] **Step 4: Implement deterministic ranking and assembly**
 
 ```python
 def dense_rank_sectors(values):
@@ -530,7 +530,7 @@ def rank_record(*, current, previous):
 
 `build_candidate_snapshot` creates local-metric rows for usable symbols; it adds ranks only when all 11 sectors and all six ranking sources are present. Completeness requires 12 valid 90-session histories, zero row rejections, every required metric, benchmark alignment, and 12 snapshot rows.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\market_intelligence\test_ranking.py tests\unit\market_intelligence\test_snapshot.py -q
