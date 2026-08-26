@@ -116,7 +116,11 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             .limit(1)
             .scalar()
         )
-        return None if run_id is None else self._load_bundle(run_id)
+        return (
+            None
+            if run_id is None
+            else self._load_bundle(run_id, include_evidence=False)
+        )
 
     def get_latest_attempt(self) -> MarketIntelligenceRunBundle | None:
         run_id = (
@@ -129,7 +133,11 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             .limit(1)
             .scalar()
         )
-        return None if run_id is None else self._load_bundle(run_id)
+        return (
+            None
+            if run_id is None
+            else self._load_bundle(run_id, include_evidence=False)
+        )
 
     def get_latest_published(
         self,
@@ -150,7 +158,11 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             )
             .scalar()
         )
-        return None if run_id is None else self._load_bundle(run_id)
+        return (
+            None
+            if run_id is None
+            else self._load_bundle(run_id, include_evidence=False)
+        )
 
     def list_published_history(
         self,
@@ -197,7 +209,13 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             if as_of_date in seen_sessions:
                 continue
             seen_sessions.add(as_of_date)
-            bundles.append(self._load_bundle(run_id, symbol=symbol))
+            bundles.append(
+                self._load_bundle(
+                    run_id,
+                    symbol=symbol,
+                    include_evidence=False,
+                )
+            )
             if len(bundles) == limit:
                 break
         return tuple(bundles)
@@ -207,27 +225,31 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
         run_id: int,
         *,
         symbol: str | None = None,
+        include_evidence: bool = True,
     ) -> MarketIntelligenceRunBundle:
         run = self._session.get(FeatureRun, run_id)
         audit = self._session.get(MarketIntelligenceRunAudit, run_id)
         if run is None or audit is None:
             raise LookupError(f"market-intelligence run {run_id} is incomplete")
 
-        canonical_rows = (
-            self._session.query(MarketIntelligenceCanonicalBar)
-            .filter(MarketIntelligenceCanonicalBar.run_id == run_id)
-            .order_by(
-                MarketIntelligenceCanonicalBar.symbol,
-                MarketIntelligenceCanonicalBar.trading_date,
+        canonical_rows = []
+        rejection_rows = []
+        if include_evidence:
+            canonical_rows = (
+                self._session.query(MarketIntelligenceCanonicalBar)
+                .filter(MarketIntelligenceCanonicalBar.run_id == run_id)
+                .order_by(
+                    MarketIntelligenceCanonicalBar.symbol,
+                    MarketIntelligenceCanonicalBar.trading_date,
+                )
+                .all()
             )
-            .all()
-        )
-        rejection_rows = (
-            self._session.query(MarketIntelligenceRejection)
-            .filter(MarketIntelligenceRejection.run_id == run_id)
-            .order_by(MarketIntelligenceRejection.id)
-            .all()
-        )
+            rejection_rows = (
+                self._session.query(MarketIntelligenceRejection)
+                .filter(MarketIntelligenceRejection.run_id == run_id)
+                .order_by(MarketIntelligenceRejection.id)
+                .all()
+            )
         snapshot_query = self._session.query(
             MarketIntelligenceSectorSnapshot
         ).filter(MarketIntelligenceSectorSnapshot.run_id == run_id)

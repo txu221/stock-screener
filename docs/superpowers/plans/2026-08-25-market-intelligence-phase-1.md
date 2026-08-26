@@ -856,7 +856,7 @@ git commit -m "feat: wire daily sector intelligence ingestion"
 - Consumes: SQL repository read models and named published pointer.
 - Produces: `GET /api/v1/market-intelligence/sectors/latest`, `GET /api/v1/market-intelligence/sectors/history`, and `GET /api/v1/market-intelligence/sectors/health` Pydantic-validated JSON.
 
-- [ ] **Step 1: Write RED API tests against SQLite**
+- [x] **Step 1: Write RED API tests against SQLite**
 
 ```python
 @pytest.mark.asyncio
@@ -880,13 +880,13 @@ async def test_health_reports_latest_attempt_and_latest_published_separately(cli
 
 Add tests for no published snapshot -> latest 404, health with failed request and zero row rejections, exact counters, provenance fields, proxy metadata, rank direction enums, history date/symbol/version filters, no v1/v2 mixing, and stable sector order.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\test_market_intelligence_endpoints.py -q
 ```
 
-- [ ] **Step 3: Implement schemas and thin routes**
+- [x] **Step 3: Implement schemas and thin routes**
 
 ```python
 @router.get("/sectors/latest", response_model=SectorIntelligenceLatestResponse)
@@ -899,7 +899,7 @@ def latest(db: Session = Depends(get_db)):
 
 History accepts `date_from`, `date_to`, optional fixed-universe `symbol`, `metric_version` defaulting to `market_intelligence_v1`, and bounded `limit`. Health returns audit counters directly without recalculation. Register with prefix `/market-intelligence` in the existing protected router.
 
-- [ ] **Step 4: Run GREEN plus OpenAPI/router regression tests**
+- [x] **Step 4: Run GREEN plus OpenAPI/router regression tests**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit\test_market_intelligence_endpoints.py tests\unit\test_router_feature_gating.py -q
@@ -907,7 +907,7 @@ History accepts `date_from`, `date_to`, optional fixed-universe `symbol`, `metri
 
 Expected: all endpoint tests pass and no existing route disappears.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add backend/app/schemas/market_intelligence.py backend/app/api/v1/market_intelligence.py backend/app/api/v1/router.py backend/tests/unit/test_market_intelligence_endpoints.py
