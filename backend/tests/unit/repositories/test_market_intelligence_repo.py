@@ -32,6 +32,9 @@ from app.domain.market_intelligence.models import (
     SectorMetrics,
     SectorSnapshot,
 )
+from app.domain.market_intelligence.ports import (
+    MarketIntelligenceIdempotencyConflict,
+)
 from app.infra.db.models.feature_store import FeatureRunPointer
 from app.infra.db.models.market_intelligence import (
     MarketIntelligenceCanonicalBar,
@@ -243,9 +246,9 @@ def test_rollback_removes_all_market_intelligence_rows(engine) -> None:
     }
 
 
-def test_idempotency_key_is_globally_unique(engine) -> None:
+def test_idempotency_key_conflict_is_translated_for_use_case_retry(engine) -> None:
     factory = sessionmaker(bind=engine)
-    with pytest.raises(IntegrityError):
+    with pytest.raises(MarketIntelligenceIdempotencyConflict):
         with SqlUnitOfWork(factory) as uow:
             first = _start(uow, input_hash="1" * 64)
             second = _start(uow, input_hash="2" * 64)

@@ -12,8 +12,6 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
-from sqlalchemy.exc import IntegrityError
-
 from app.domain.feature_store.models import DQSeverity, RunStats, RunType
 from app.domain.feature_store.quality import DQResult
 from app.domain.market_intelligence.constants import (
@@ -41,6 +39,9 @@ from app.domain.market_intelligence.models import (
     RunAudit,
     SectorMetrics,
     ValidationResult,
+)
+from app.domain.market_intelligence.ports import (
+    MarketIntelligenceIdempotencyConflict,
 )
 from app.domain.market_intelligence.snapshot import build_candidate_snapshot
 from app.domain.market_intelligence.validation import validate_provider_rows
@@ -318,7 +319,7 @@ class BuildSectorSnapshotUseCase:
                     published=candidate.publishable,
                     idempotency_key=prepared.idempotency_key,
                 )
-        except IntegrityError:
+        except MarketIntelligenceIdempotencyConflict:
             with self._uow_factory() as winner_uow:
                 winner = winner_uow.market_intelligence.find_exact(
                     prepared.idempotency_key

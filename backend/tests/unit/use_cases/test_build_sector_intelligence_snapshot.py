@@ -6,6 +6,7 @@ import json
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func
@@ -21,6 +22,9 @@ from app.domain.market_intelligence.models import (
     ProviderBatchResult,
     RawBar,
     RequestFailure,
+)
+from app.domain.market_intelligence.ports import (
+    MarketIntelligenceIdempotencyConflict,
 )
 from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
 from app.infra.db.models.market_intelligence import (
@@ -343,3 +347,62 @@ def test_provider_history_older_than_requested_window_is_cropped_not_rejected() 
     counts = _table_counts(result.run_id)
     assert counts["bars"] == 12 * 90
     assert counts["rejections"] == 0
+
+
+def test_concurrent_idempotency_conflict_reads_committed_winner() -> None:
+    as_of = date(2026, 5, 15)
+    created_uows = []
+
+    class _MarketIntelligenceRepo:
+        def __init__(self, *, winner: bool) -> None:
+            self._winner = winner
+
+        def find_exact(self, idempotency_key):
+            if not self._winner:
+                return None
+            return SimpleNamespace(
+                run_id=77,
+                lifecycle_status="published",
+                audit=SimpleNamespace(
+                    ingestion_status=IngestionStatus.SUCCEEDED,
+                    idempotency_key=idempotency_key,
+                ),
+            )
+
+        def get_previous_published(self, **kwargs):
+            return None
+
+        def persist_candidate(self, *args, **kwargs):
+            raise MarketIntelligenceIdempotencyConflict
+
+    class _RaceUow:
+        def __init__(self, *, winner: bool) -> None:
+            self.market_intelligence = _MarketIntelligenceRepo(winner=winner)
+            self.feature_runs = SimpleNamespace(
+                start_run=lambda **kwargs: SimpleNamespace(id=99)
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return None
+
+        def commit(self):
+            raise AssertionError("conflicting transaction must not commit")
+
+    def uow_factory():
+        uow = _RaceUow(winner=bool(created_uows))
+        created_uows.append(uow)
+        return uow
+
+    result = _runner(
+        _batch(as_of),
+        _sessions(as_of),
+        uow_factory=uow_factory,
+    ).execute(_command(as_of))
+
+    assert len(created_uows) == 2
+    assert result.run_id == 77
+    assert result.ingestion_status is IngestionStatus.SUCCEEDED
+    assert result.published is True

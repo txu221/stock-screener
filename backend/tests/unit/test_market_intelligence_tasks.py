@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date
 from types import SimpleNamespace
 
+import pytest
+
 from app.domain.market_intelligence.models import IngestionStatus
 
 
@@ -85,3 +87,10 @@ def test_runtime_container_returns_one_process_scoped_runner(monkeypatch) -> Non
     assert runtime.market_intelligence_runner() is sentinel
     assert len(calls) == 1
     assert calls[0]["market_calendar"] is runtime.market_calendar_service()
+
+
+def test_task_rejects_non_us_bootstrap_market() -> None:
+    from app.tasks import market_intelligence_tasks as module
+
+    with pytest.raises(ValueError, match="US-only"):
+        module.calculate_sector_intelligence_snapshot.run(market="HK")

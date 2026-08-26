@@ -6,7 +6,7 @@ from datetime import date
 
 from app.celery_app import celery_app
 from app.domain.market_intelligence.constants import METRIC_VERSION
-from app.tasks.market_queues import market_jobs_queue_for_market
+from app.tasks.market_queues import market_jobs_queue_for_market, normalize_market
 from app.use_cases.market_intelligence.build_sector_snapshot import (
     BuildSectorSnapshotCommand,
 )
@@ -25,7 +25,13 @@ from app.wiring.bootstrap import (
 )
 def calculate_sector_intelligence_snapshot(
     calculation_date: str | None = None,
+    *,
+    market: str = "US",
+    activity_lifecycle: str | None = None,
 ) -> dict:
+    del activity_lifecycle
+    if normalize_market(market) != "US":
+        raise ValueError("sector intelligence Phase 1 is US-only")
     as_of = (
         date.fromisoformat(calculation_date)
         if calculation_date is not None

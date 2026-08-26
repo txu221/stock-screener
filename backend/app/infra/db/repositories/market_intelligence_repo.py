@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from datetime import date, datetime, timezone
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domain.feature_store.models import RunStatus
@@ -23,7 +24,10 @@ from app.domain.market_intelligence.models import (
     SectorMetrics,
     SectorSnapshot,
 )
-from app.domain.market_intelligence.ports import MarketIntelligenceRepository
+from app.domain.market_intelligence.ports import (
+    MarketIntelligenceIdempotencyConflict,
+    MarketIntelligenceRepository,
+)
 from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
 from app.infra.db.models.market_intelligence import (
     MarketIntelligenceCanonicalBar,
@@ -55,6 +59,21 @@ def _aware(value: datetime | None) -> datetime | None:
     return value
 
 
+def _is_idempotency_conflict(exc: IntegrityError) -> bool:
+    original = getattr(exc, "orig", None)
+    diagnostics = getattr(original, "diag", None)
+    if (
+        getattr(diagnostics, "constraint_name", None)
+        == "uq_mi_run_audit_idempotency_key"
+    ):
+        return True
+    message = str(original or exc).lower()
+    return (
+        "uq_mi_run_audit_idempotency_key" in message
+        or "market_intelligence_run_audits.idempotency_key" in message
+    )
+
+
 class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
     """Persist evidence in the caller-owned Unit of Work transaction."""
 
@@ -70,6 +89,12 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
         snapshots: Sequence[SectorSnapshot],
     ) -> None:
         self._session.add(self._audit_row(run_id, audit))
+        try:
+            self._session.flush()
+        except IntegrityError as exc:
+            if _is_idempotency_conflict(exc):
+                raise MarketIntelligenceIdempotencyConflict from exc
+            raise
         self._session.add_all(
             self._canonical_row(run_id, bar) for bar in canonical_bars
         )

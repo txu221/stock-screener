@@ -22,6 +22,9 @@ class BootstrapOperation(str, Enum):
     SMART_REFRESH_CACHE = "smart_refresh_cache"
     WAIT_FOR_BOOTSTRAP_PRICE_WARMUP = "wait_for_bootstrap_price_warmup"
     REFRESH_ALL_FUNDAMENTALS = "refresh_all_fundamentals"
+    CALCULATE_SECTOR_INTELLIGENCE_SNAPSHOT = (
+        "calculate_sector_intelligence_snapshot"
+    )
     CALCULATE_MARKET_RS_SNAPSHOT = "calculate_market_rs_snapshot"
     BOOTSTRAP_BALANCED_MARKET_RS = "bootstrap_balanced_market_rs"
     CALCULATE_DAILY_BREADTH_WITH_GAPFILL = "calculate_daily_breadth_with_gapfill"
@@ -135,6 +138,20 @@ def _build_market_plan(
                 operation=BootstrapOperation.REFRESH_ALL_FUNDAMENTALS,
                 queue_kind=BootstrapQueueKind.DATA_FETCH,
                 market=market,
+            ),
+            *(
+                [
+                    _stage(
+                        key="market_intelligence",
+                        operation=(
+                            BootstrapOperation.CALCULATE_SECTOR_INTELLIGENCE_SNAPSHOT
+                        ),
+                        queue_kind=BootstrapQueueKind.MARKET_JOBS,
+                        market=market,
+                    )
+                ]
+                if market == "US"
+                else []
             ),
             _stage(
                 key="market_rs",

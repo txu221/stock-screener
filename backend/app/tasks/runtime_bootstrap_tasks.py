@@ -88,6 +88,9 @@ def _build_market_bootstrap_signatures(market_plan: MarketBootstrapPlan) -> list
         bootstrap_balanced_market_rs,
         calculate_market_rs_snapshot,
     )
+    from app.tasks.market_intelligence_tasks import (
+        calculate_sector_intelligence_snapshot,
+    )
     from app.tasks.universe_tasks import (
         refresh_official_market_universe,
         refresh_stock_universe,
@@ -100,6 +103,9 @@ def _build_market_bootstrap_signatures(market_plan: MarketBootstrapPlan) -> list
         BootstrapOperation.SMART_REFRESH_CACHE: smart_refresh_cache,
         BootstrapOperation.WAIT_FOR_BOOTSTRAP_PRICE_WARMUP: wait_for_bootstrap_price_warmup,
         BootstrapOperation.REFRESH_ALL_FUNDAMENTALS: refresh_all_fundamentals,
+        BootstrapOperation.CALCULATE_SECTOR_INTELLIGENCE_SNAPSHOT: (
+            calculate_sector_intelligence_snapshot
+        ),
         BootstrapOperation.CALCULATE_MARKET_RS_SNAPSHOT: calculate_market_rs_snapshot,
         BootstrapOperation.BOOTSTRAP_BALANCED_MARKET_RS: bootstrap_balanced_market_rs,
         BootstrapOperation.CALCULATE_DAILY_BREADTH_WITH_GAPFILL: (

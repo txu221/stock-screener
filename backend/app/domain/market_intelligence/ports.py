@@ -15,6 +15,10 @@ from .models import (
 )
 
 
+class MarketIntelligenceIdempotencyConflict(RuntimeError):
+    """A concurrent run already persisted the same deterministic input."""
+
+
 class MarketIntelligenceRepository(abc.ABC):
     @abc.abstractmethod
     def persist_candidate(
