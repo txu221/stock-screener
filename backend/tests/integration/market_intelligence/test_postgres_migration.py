@@ -165,13 +165,22 @@ def _assert_phase1_schema(connection) -> None:
         )
     }
     assert "uq_mi_run_audit_idempotency_key" in audit_uniques
-    snapshot_uniques = {
-        constraint["name"]
-        for constraint in inspector.get_unique_constraints(
-            "market_intelligence_sector_snapshots"
+    # PostgreSQL can omit a UNIQUE constraint from SQLAlchemy's reflected
+    # unique list when it duplicates the table's composite primary key. Query
+    # pg_constraint directly so this test still proves that the named migration
+    # contract exists instead of weakening the assertion to PK uniqueness.
+    snapshot_constraints = {
+        row.conname: row.contype
+        for row in connection.execute(
+            sa.text(
+                "SELECT conname, contype "
+                "FROM pg_constraint "
+                "WHERE conrelid = "
+                "'market_intelligence_sector_snapshots'::regclass"
+            )
         )
     }
-    assert "uq_mi_snapshot_run_symbol" in snapshot_uniques
+    assert snapshot_constraints.get("uq_mi_snapshot_run_symbol") == "u"
 
     checks = {
         constraint["name"]
