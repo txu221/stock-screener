@@ -251,6 +251,26 @@ def test_case_d_request_failure_has_no_fabricated_row_rejections() -> None:
         }
 
 
+def test_repeated_request_failures_create_distinct_audited_attempts() -> None:
+    as_of = date(2026, 5, 15)
+    batch = _batch(
+        as_of,
+        request_failure=RequestFailure("PROVIDER_TIMEOUT", "Yahoo timed out"),
+    )
+
+    first = _runner(batch, _sessions(as_of)).execute(_command(as_of))
+    second = _runner(batch, _sessions(as_of)).execute(_command(as_of))
+
+    assert first.run_id != second.run_id
+    assert first.idempotency_key != second.idempotency_key
+    assert _table_counts()["audits"] == 2
+    with SqlUnitOfWork(SessionLocal) as uow:
+        latest_attempt = uow.market_intelligence.get_latest_attempt()
+    assert latest_attempt is not None
+    assert latest_attempt.run_id == second.run_id
+    assert latest_attempt.audit.ingestion_status is IngestionStatus.FAILED
+
+
 def test_case_e_latest_read_remains_previous_complete_after_partial() -> None:
     monday = date(2026, 5, 11)
     tuesday = date(2026, 5, 12)
@@ -336,17 +356,105 @@ def test_commit_failure_rolls_back_run_snapshot_and_pointer() -> None:
     }
 
 
-def test_provider_history_older_than_requested_window_is_cropped_not_rejected() -> None:
+def test_provider_history_outside_session_reference_is_rejected_not_silently_cropped() -> None:
     as_of = date(2026, 5, 15)
     provider_batch = _batch(as_of)
     exact_window = _sessions(as_of)[-90:]
+    oldest = min(row.trading_date for row in provider_batch.rows)
+    rows = tuple(
+        row
+        for row in provider_batch.rows
+        if row.trading_date != oldest or row.symbol == "SPY"
+    )
+    provider_batch = replace(provider_batch, rows=rows)
 
     result = _runner(provider_batch, exact_window).execute(_command(as_of))
 
-    assert result.ingestion_status is IngestionStatus.SUCCEEDED
+    assert result.ingestion_status is IngestionStatus.PARTIAL
     counts = _table_counts(result.run_id)
     assert counts["bars"] == 12 * 90
-    assert counts["rejections"] == 0
+    assert counts["rejections"] == 1
+    with SessionLocal() as session:
+        rejection = (
+            session.query(MarketIntelligenceRejection)
+            .filter(MarketIntelligenceRejection.run_id == result.run_id)
+            .one()
+        )
+    assert rejection.symbol == "SPY"
+    assert rejection.rejection_code == "INVALID_TRADING_DATE"
+
+
+def test_negative_volume_in_extended_completed_session_is_quarantined() -> None:
+    as_of = date(2026, 5, 15)
+    sessions = _sessions(as_of)
+    provider_batch = _batch(as_of)
+    oldest = sessions[0]
+    rows = tuple(
+        replace(row, volume=-1.0)
+        if row.symbol == "SPY" and row.trading_date == oldest
+        else row
+        for row in provider_batch.rows
+    )
+
+    result = _runner(
+        replace(provider_batch, rows=rows), sessions
+    ).execute(_command(as_of))
+
+    assert result.ingestion_status is IngestionStatus.PARTIAL
+    with SessionLocal() as session:
+        audit = session.get(MarketIntelligenceRunAudit, result.run_id)
+        rejection = (
+            session.query(MarketIntelligenceRejection)
+            .filter(MarketIntelligenceRejection.run_id == result.run_id)
+            .one()
+        )
+    assert audit.counters_json["invalid_volume"] == 1
+    assert rejection.rejection_code == "NEGATIVE_VOLUME"
+
+
+def test_trailing_ninety_requires_exact_session_coverage() -> None:
+    as_of = date(2026, 5, 15)
+    sessions = _sessions(as_of)
+    provider_batch = _batch(as_of)
+    missing_non_anchor = sessions[-80]
+    rows = tuple(
+        row
+        for row in provider_batch.rows
+        if not (
+            row.symbol == "SPY"
+            and row.trading_date == missing_non_anchor
+        )
+    )
+
+    result = _runner(
+        replace(provider_batch, rows=rows), sessions
+    ).execute(_command(as_of))
+
+    assert result.ingestion_status is IngestionStatus.PARTIAL
+    assert result.published is False
+    assert _pointer_run_id() is None
+    with SessionLocal() as session:
+        audit = session.get(MarketIntelligenceRunAudit, result.run_id)
+    assert audit.counters_json["usable_symbols"] == 11
+
+
+def test_older_successful_backfill_cannot_move_latest_pointer_backward() -> None:
+    tuesday = date(2026, 5, 12)
+    wednesday = date(2026, 5, 13)
+    newest = _runner(
+        _batch(wednesday), _sessions(wednesday)
+    ).execute(_command(wednesday))
+    older = _runner(
+        _batch(tuesday), _sessions(tuesday)
+    ).execute(_command(tuesday))
+
+    assert newest.ingestion_status is IngestionStatus.SUCCEEDED
+    assert older.ingestion_status is IngestionStatus.SUCCEEDED
+    assert _pointer_run_id() == newest.run_id
+    with SqlUnitOfWork(SessionLocal) as uow:
+        older_bundle = uow.market_intelligence.find_exact(older.idempotency_key)
+    assert older_bundle is not None
+    assert older_bundle.lifecycle_status == "published"
 
 
 def test_concurrent_idempotency_conflict_reads_committed_winner() -> None:

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from hashlib import sha256
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, text
 from sqlalchemy.orm import Session
 
 from app.domain.common.errors import EntityNotFoundError, InvalidTransitionError
@@ -144,6 +145,72 @@ class SqlFeatureRunRepository(FeatureRunRepository):
             pointer = FeatureRunPointer(key=pointer_key, run_id=run_id)
             self._session.add(pointer)
         else:
+            pointer.run_id = run_id
+
+        self._session.flush()
+        return self._to_domain(row)
+
+    def publish_atomically_if_not_older(
+        self,
+        run_id: int,
+        pointer_key: str,
+    ) -> FeatureRunDomain:
+        """Publish a run while keeping a named latest pointer monotonic by date.
+
+        The pointer row is locked before comparing its current run. An older
+        backfill remains a published historical revision but cannot replace a
+        newer session at the same named pointer.
+        """
+        row = self._get_or_raise(run_id)
+        validate_transition(RunStatus(row.status), RunStatus.PUBLISHED)
+
+        bind = self._session.get_bind()
+        if bind.dialect.name == "postgresql":
+            lock_id = int.from_bytes(
+                sha256(pointer_key.encode("utf-8")).digest()[:8],
+                byteorder="big",
+                signed=True,
+            )
+            self._session.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_id)"),
+                {"lock_id": lock_id},
+            )
+
+        pointer = (
+            self._session.query(FeatureRunPointer)
+            .filter(FeatureRunPointer.key == pointer_key)
+            .with_for_update()
+            .one_or_none()
+        )
+        current = (
+            None
+            if pointer is None
+            else self._session.get(FeatureRun, pointer.run_id)
+        )
+
+        published_at = datetime.now(timezone.utc)
+        if (
+            current is not None
+            and current.as_of_date == row.as_of_date
+            and current.published_at is not None
+        ):
+            current_published_at = current.published_at
+            if current_published_at.tzinfo is None:
+                current_published_at = current_published_at.replace(
+                    tzinfo=timezone.utc
+                )
+            else:
+                current_published_at = current_published_at.astimezone(
+                    timezone.utc
+                )
+            if published_at <= current_published_at:
+                published_at = current_published_at + timedelta(microseconds=1)
+
+        row.status = RunStatus.PUBLISHED.value
+        row.published_at = published_at
+        if pointer is None:
+            self._session.add(FeatureRunPointer(key=pointer_key, run_id=run_id))
+        elif current is None or current.as_of_date <= row.as_of_date:
             pointer.run_id = run_id
 
         self._session.flush()

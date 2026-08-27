@@ -207,7 +207,7 @@ def test_adapter_never_imports_shared_price_row_normalization(monkeypatch) -> No
     assert len(result.rows) == 12
 
 
-def test_completed_session_source_returns_exact_trailing_market_sessions() -> None:
+def test_completed_session_source_retains_full_provider_validation_window() -> None:
     calendar = Mock()
     available = tuple(AS_OF - timedelta(days=value) for value in range(119, -1, -1))
     calendar.trading_days.return_value = list(available)
@@ -215,7 +215,7 @@ def test_completed_session_source_returns_exact_trailing_market_sessions() -> No
 
     result = source.completed_sessions("US", AS_OF, minimum=90)
 
-    assert result == available[-90:]
+    assert result == available
     start = AS_OF - timedelta(days=210)
     calendar.trading_days.assert_called_once_with("US", start, AS_OF)
 

@@ -49,4 +49,7 @@ class CompletedSessionSource:
                 required_count=minimum,
                 available_count=len(sessions),
             )
-        return sessions[-minimum:]
+        # Retain the full bounded calendar window so every provider row in the
+        # 6-month fetch can be validated and preserved as evidence. Metrics
+        # still select their exact trailing completed-session anchors.
+        return sessions

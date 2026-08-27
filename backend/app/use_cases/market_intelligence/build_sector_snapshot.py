@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Protocol
+from uuid import uuid4
 
 from app.domain.feature_store.models import DQSeverity, RunStats, RunType
 from app.domain.feature_store.quality import DQResult
@@ -43,7 +44,10 @@ from app.domain.market_intelligence.models import (
 from app.domain.market_intelligence.ports import (
     MarketIntelligenceIdempotencyConflict,
 )
-from app.domain.market_intelligence.snapshot import build_candidate_snapshot
+from app.domain.market_intelligence.snapshot import (
+    MINIMUM_HISTORY_SESSIONS,
+    build_candidate_snapshot,
+)
 from app.domain.market_intelligence.validation import validate_provider_rows
 
 
@@ -177,6 +181,16 @@ def _idempotency_key(as_of: date, input_hash: str) -> str:
     return hashlib.sha256(signature.encode("ascii")).hexdigest()
 
 
+def _request_failure_idempotency_key(
+    as_of: date,
+    input_hash: str,
+    attempt_id: str,
+) -> str:
+    """Give transient request failures an audit identity per attempt."""
+    signature = "|".join((_idempotency_key(as_of, input_hash), attempt_id))
+    return hashlib.sha256(signature.encode("ascii")).hexdigest()
+
+
 def _calculate_metrics(
     validation: ValidationResult,
     sessions: Sequence[date],
@@ -192,8 +206,13 @@ def _calculate_metrics(
     spy_metrics = metrics[BENCHMARK_SYMBOL]
     for symbol in SECTOR_SYMBOLS:
         metrics[symbol] = with_relative_returns(metrics[symbol], spy_metrics)
+    required_sessions = frozenset(sessions[-MINIMUM_HISTORY_SESSIONS:])
     history_counts = {
-        symbol: len({bar.trading_date for bar in bars_by_symbol[symbol]})
+        symbol: len(
+            required_sessions.intersection(
+                bar.trading_date for bar in bars_by_symbol[symbol]
+            )
+        )
         for symbol in MARKET_INTELLIGENCE_UNIVERSE
     }
     return metrics, history_counts
@@ -241,11 +260,13 @@ class BuildSectorSnapshotUseCase:
         session_source: CompletedSessionSource,
         uow_factory: Callable[[], Any],
         clock: Callable[[], datetime],
+        attempt_id_factory: Callable[[], str] | None = None,
     ) -> None:
         self._provider = provider
         self._session_source = session_source
         self._uow_factory = uow_factory
         self._clock = clock
+        self._attempt_id_factory = attempt_id_factory or (lambda: uuid4().hex)
 
     def execute(
         self,
@@ -335,22 +356,20 @@ class BuildSectorSnapshotUseCase:
         as_of: date,
     ) -> _PreparedAttempt:
         timestamp = self._clock()
-        window_start = sessions[0]
-        window_rows = tuple(
-            row
-            for row in batch.rows
-            if not (
-                type(row.trading_date) is date
-                and row.trading_date < window_start
-            )
-        )
         validation = (
             ValidationResult((), (), ())
             if batch.request_failure is not None
-            else validate_provider_rows(window_rows, sessions, timestamp)
+            else validate_provider_rows(batch.rows, sessions, timestamp)
         )
         metrics, history_counts = _calculate_metrics(validation, sessions)
         input_hash = _hash_payload(batch, sessions)
+        idempotency_key = _idempotency_key(as_of, input_hash)
+        if batch.request_failure is not None:
+            idempotency_key = _request_failure_idempotency_key(
+                as_of,
+                input_hash,
+                self._attempt_id_factory(),
+            )
         return _PreparedAttempt(
             batch=batch,
             sessions=sessions,
@@ -358,7 +377,7 @@ class BuildSectorSnapshotUseCase:
             metrics_by_symbol=metrics,
             history_session_counts=history_counts,
             input_hash=input_hash,
-            idempotency_key=_idempotency_key(as_of, input_hash),
+            idempotency_key=idempotency_key,
             source_freshness=_source_freshness(
                 validation,
                 as_of=as_of,
@@ -459,7 +478,10 @@ class BuildSectorSnapshotUseCase:
                 ),
             )
             return
-        uow.feature_runs.publish_atomically(run_id, LATEST_POINTER_KEY)
+        uow.feature_runs.publish_atomically_if_not_older(
+            run_id,
+            LATEST_POINTER_KEY,
+        )
 
     @staticmethod
     def _result_from_existing(

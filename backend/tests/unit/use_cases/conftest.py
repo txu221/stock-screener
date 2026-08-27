@@ -641,6 +641,19 @@ class FakeFeatureRunRepository(FeatureRunRepository):
         self._pointers[pointer_key] = run_id
         return updated
 
+    def publish_atomically_if_not_older(
+        self,
+        run_id: int,
+        pointer_key: str,
+    ) -> FeatureRunDomain:
+        run = self._get_or_raise(run_id)
+        current_id = self._pointers.get(pointer_key)
+        current = self._runs.get(current_id) if current_id is not None else None
+        updated = self.publish_atomically(run_id, pointer_key)
+        if current is not None and current.as_of_date > run.as_of_date:
+            self._pointers[pointer_key] = current.id
+        return updated
+
     def repoint_published(
         self,
         run_id: int,
