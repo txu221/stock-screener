@@ -1,14 +1,14 @@
 # Market Intelligence / Money Flow Architecture Specification
 
-Status: Phase 0 design only
+Status: Phase 1 implemented and verified
 
-Date: 2026-08-25 (America/New_York)
+Date: 2026-08-26 (America/New_York)
 
 Selected base: `xang1234/stock-screener` at `e65d1fc67db4b468471376aa29741fdce3759ffc`
 
 ## 1. Purpose and non-goals
 
-This document defines how to evolve the selected upstream into a US-equity Market Intelligence platform while preserving its working architecture. It is an implementation contract, not a Phase 1 implementation.
+This document defines how the selected upstream evolves into a US-equity Market Intelligence platform while preserving its working architecture. Sections 1–15 retain the Phase 0 architecture contract; sections 16–17 record the implemented Phase 1 vertical slice.
 
 The product should answer four questions from one reproducible daily state:
 
@@ -19,7 +19,7 @@ The product should answer four questions from one reproducible daily state:
 
 The platform must not claim that OHLCV-derived indicators measure institutional purchases, signed trade flow, order-book imbalance, dark-pool activity, or fund creation/redemption flow. Those require different source data. Until such sources are contracted and validated, the product term **Money Flow** means **estimated price/volume pressure proxies** and the UI/API must say so.
 
-Phase 0 explicitly does not include new metrics, new pages, a UI rewrite, provider integration, schema migration, or production deployment.
+Phase 0 explicitly excluded new metrics, new pages, a UI rewrite, provider integration, schema migration, and production deployment. Phase 1 implements only the approved backend sector vertical slice described below.
 
 ## 2. Architectural decision
 
@@ -466,4 +466,75 @@ The Phase 1 design was approved on 2026-08-26 with the following decisions:
 
 The detailed component, data-model, transaction, idempotency, API, test, migration, and rollback contracts are fixed in `docs/superpowers/specs/2026-08-26-market-intelligence-phase-1-design.md`.
 
-No Phase 1 production implementation had been performed when this decision record was written.
+## 17. Phase 1 implemented contract
+
+### 17.1 Universe, provider, and lineage
+
+The universe is immutable for `market_intelligence_v1`: benchmark `SPY`; sector ETFs `XLC`, `XLY`, `XLP`, `XLE`, `XLF`, `XLV`, `XLI`, `XLB`, `XLRE`, `XLK`, and `XLU`. The primary provider is the existing Yahoo `BulkDataFetcher` path with a six-month request. There is no Phase 1 fallback; a request-level outage produces a `FAILED` attempt.
+
+The canonical basis identifier is `yahoo_adjusted_ohlc_provider_volume`. For every accepted row:
+
+```text
+adjustment_factor = provider_adjusted_close / raw_close
+adjusted_open  = raw_open  * adjustment_factor
+adjusted_high  = raw_high  * adjustment_factor
+adjusted_low   = raw_low   * adjustment_factor
+adjusted_close = provider_adjusted_close
+volume         = provider-reported volume (not split-adjusted or coerced)
+```
+
+Canonical evidence retains provider and provider symbol, raw trading date and OHLC, provider adjusted close, adjustment factor, adjusted OHLC, provider volume, source timestamp, ingestion timestamp, price basis, and normalization version. The bounded calendar adapter returns the full provider-validation window (at least 90 completed sessions); metrics use exact trailing session anchors. No OHLCV forward fill is performed.
+
+### 17.2 Validation and quarantine
+
+Every response row presented to the use case is validated before canonical persistence. The validator requires an expected symbol and completed session; all required values; finite numeric OHLCV and adjusted close; strictly positive raw prices and adjusted close; non-negative volume; a finite positive adjustment factor; `high >= low/open/close`; `low <= open/close`; and one row per `(symbol, trading_date)`. Stable rejection codes are `UNEXPECTED_SYMBOL`, `MISSING_REQUIRED_FIELD`, `INVALID_TRADING_DATE`, `NON_FINITE_VALUE`, `NON_POSITIVE_PRICE`, `INVALID_ADJUSTED_CLOSE`, `INVALID_ADJUSTMENT_FACTOR`, `INVALID_OHLC_RELATION`, `NEGATIVE_VOLUME`, and `DUPLICATE_BAR`.
+
+Rows are never repaired with `abs`, clipping, high/low swaps, zero coercion, or silent drops. Rejections retain run, provider, provider symbol, symbol/date when known, code, reason, raw evidence, and ingestion timestamp. A request-level timeout/authentication/network/bad-response failure is stored in the run audit and creates no fabricated row rejections. Repeated request failures receive distinct attempt identities; successful and row-invalid responses remain content-addressed and idempotent.
+
+### 17.3 Metrics
+
+All prices below use adjusted close and exact completed trading-session offsets:
+
+```text
+return_N = adjusted_close_today / adjusted_close_N_sessions_ago - 1
+relative_return_vs_spy_N = sector_return_N - SPY_return_N
+RVOL20 = volume_today / mean(volume over previous 20 completed sessions)
+MFM = (2 * adjusted_close - adjusted_high - adjusted_low)
+      / (adjusted_high - adjusted_low)
+CMF_N_proxy = sum(MFM * provider_volume over N sessions)
+              / sum(provider_volume over N sessions)
+```
+
+Implemented return and relative-return horizons are 1, 5, 20, and 60 sessions. RVOL excludes today; zero historical mean returns unavailable. Zero-range MFM is defined as `0`; zero CMF volume denominator returns unavailable. Insufficient/misaligned/duplicate history and non-finite results return unavailable, never zero. Proxy fields are `flow_pressure_1d_proxy`, `cmf_5d_proxy`, `cmf_20d_proxy`, and `cmf_60d_proxy`, with API metadata `metric_type=derived_proxy` and `metric_semantics=ohlcv_derived_proxy`. Phase 1 has no Net Dollar Flow or measured/institutional-flow claim.
+
+### 17.4 Ranking and rank change
+
+Only the 11 sector ETFs enter ranking; SPY is excluded. Descending dense rank is applied independently to `return_1d`, `relative_return_vs_spy_5d`, `relative_return_vs_spy_20d`, `relative_return_vs_spy_60d`, `rvol20`, and `cmf_20d_proxy`. Equal values share a rank; symbol ordering only stabilizes output and never breaks a financial tie.
+
+Previous ranks come from the prior successfully published trading-session snapshot with the same metric version, excluding calendar gaps and `PARTIAL`/`FAILED` attempts. `rank_change = previous_rank - current_rank`: positive is `IMPROVED`, negative is `DECLINED`, zero is `UNCHANGED`, and missing history is `NOT_AVAILABLE`. No rotation prediction is generated.
+
+### 17.5 Run and publication semantics
+
+Statuses are mutually exclusive and exhaustive:
+
+- `SUCCEEDED`: all 12 symbols have valid canonical history, all required metrics, a complete 12-row snapshot, and all six 11-sector ranks;
+- `PARTIAL`: the request succeeded and at least one symbol is usable, but missing/rejected/provider-failed/insufficient/metric-incomplete data prevents completeness;
+- `FAILED`: request-level failure, zero usable symbols, or no usable candidate snapshot.
+
+Only `SUCCEEDED` transitions to published. `PARTIAL` is audit-only/quarantined and `FAILED` is failed; neither moves the pointer. The implementation reuses `FeatureRun`, `FeatureRunPointer`, `SqlUnitOfWork`, and the existing feature-run lifecycle. Canonical bars, rejections, audit, snapshots, final run status, and eligible pointer change commit in one UoW. PostgreSQL uses a stable transaction advisory lock before the pointer row lock, including when the pointer does not yet exist. The pointer only moves to an equal or newer `as_of` session; same-session revisions use a lock-ordered publication timestamp consistent with history ordering. An older successful backfill remains historical but cannot move `/latest` backward. If commit fails, none of those writes becomes visible.
+
+Idempotency is content-addressed by pipeline, trading date, fixed-universe hash, input hash, normalization version, and metric version. Identical non-request-failure input reuses its logical run; a unique-key race reads the committed winner. Logical snapshot identity is `(run_id, symbol)`, while the audit key prevents duplicate logical runs for the same content.
+
+### 17.6 Persistence, Data Health, and API
+
+Migration `20260826_0031` adds `market_intelligence_run_audits`, `market_intelligence_canonical_bars`, `market_intelligence_rejections`, and `market_intelligence_sector_snapshots`, all tied to existing `feature_runs`. Derived snapshots record trading date, identity, every metric, current/previous/change/direction ranks, provider/freshness, price basis, `market_intelligence_v1`, calculation time, and data-quality status. Normalization is versioned as `market_intelligence_adjusted_ohlcv_v1`.
+
+Data Health reads persisted audit truth, including expected/received/usable symbols, valid/rejected bars, missing symbols, duplicate rows, invalid volume/OHLC, provider status/failures, request failure, latest attempted run, latest published run, publication occurrence, freshness, timestamps, price basis, and metric/normalization versions.
+
+The stable read contract is:
+
+- `GET /api/v1/market-intelligence/sectors/latest`: the pointer-selected last complete published snapshot, even after a newer partial/failed attempt;
+- `GET /api/v1/market-intelligence/sectors/history`: published history filterable by date, symbol, and metric version, using the newest published revision per session;
+- `GET /api/v1/market-intelligence/sectors/health`: latest attempt plus independent latest published state and audit counters.
+
+Phase 1 adds no frontend and no second static JSON publisher. PostgreSQL migration execution, true concurrent pointer/unique-conflict behavior, Redis, and a real Celery worker remain integration checks blocked by the approved native-Windows environment.

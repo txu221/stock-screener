@@ -928,7 +928,7 @@ git commit -m "feat: expose sector intelligence API"
 - Consumes: implementation and command evidence.
 - Produces: final semantics/report, baseline comparison, review findings, and a stopped Phase 1 branch.
 
-- [ ] **Step 1: Run the complete new Phase 1 suite**
+- [x] **Step 1: Run the complete new Phase 1 suite**
 
 ```powershell
 cd backend
@@ -943,7 +943,7 @@ cd backend
 
 Expected: all new tests pass, no skip/xfail.
 
-- [ ] **Step 2: Run focused adjacent regression suites**
+- [x] **Step 2: Run focused adjacent regression suites**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest `
@@ -957,7 +957,7 @@ Expected: all new tests pass, no skip/xfail.
 
 Expected: all selected adjacent tests pass.
 
-- [ ] **Step 3: Run the unmodified baseline command and the documented Windows diagnostic command**
+- [x] **Step 3: Run the unmodified baseline command and the documented Windows diagnostic command**
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\unit -m "not live_service and not load" -q
@@ -974,7 +974,7 @@ cd ..\backend
 
 Expected diagnostic comparison: the passing count increases by the new Phase 1 tests, the same 13 known backend failures remain, and no new failure appears. Expected frontend comparison: the same documented `598 passed, 8 failed` baseline remains, with no new failure.
 
-- [ ] **Step 4: Run lint/compile, dependency, migration, and security checks**
+- [x] **Step 4: Run lint/compile, dependency, migration, and security checks**
 
 ```powershell
 .\venv\Scripts\python.exe -m compileall -q app
@@ -990,7 +990,7 @@ git grep -n -I -E "(api[_-]?key|secret|token|password|device-id)" -- backend/app
 
 Expected: compile and pip check pass; frontend lint matches the documented baseline of zero errors and four warnings; no dependency manifest diff; whitespace check passes; secret scan contains only deliberate documentation/field-name references and no value; `backend/.local/state/gh/device-id` is absent from status/index.
 
-- [ ] **Step 5: Perform the final code review checklist**
+- [x] **Step 5: Perform the final code review checklist**
 
 Inspect and record evidence for all 24 requested review questions, especially:
 
@@ -1014,11 +1014,11 @@ no dependency or baseline regression
 
 If a defect is found, write a failing regression test first, observe RED, implement the minimal fix, rerun GREEN, and amend the relevant logical commit only if it has not been handed off; otherwise create a small repair commit.
 
-- [ ] **Step 6: Update final docs with exact evidence**
+- [x] **Step 6: Update final docs with exact evidence**
 
 `docs/market-intelligence-spec.md` must contain final universe/provider/basis/formulas/ranks/status/publication/version/Data Health/API semantics. `docs/phase1-implementation-report.md` must contain transaction-boundary diagram, migration/rollback, files/commits, test counts, known baseline failures, BLOCKED PostgreSQL/Redis/Celery-worker integrations, lint/dependency/security results, and final review findings.
 
-- [ ] **Step 7: Commit documentation and perform final Git checks**
+- [x] **Step 7: Commit documentation and perform final Git checks**
 
 ```powershell
 git add docs/market-intelligence-spec.md docs/phase1-implementation-report.md docs/superpowers/plans/2026-08-25-market-intelligence-phase-1.md
