@@ -3,7 +3,7 @@
 **Date:** 2026-08-27  
 **Branch:** `feat/market-intelligence-engine`  
 **Phase 1 base:** `7627ac7d2ff47cdc5b15e4f7f2a0be84330a5c36`  
-**Phase 2 status:** `PHASE 2 PARTIALLY BLOCKED`
+**Phase 2 status:** `PHASE 2 STILL BLOCKED — GITHUB EXECUTION ENVIRONMENT`
 
 Phase 2 added repeatable production-integration validation around the Phase 1
 sector-intelligence slice. The live Yahoo provider and every service-independent
@@ -247,7 +247,7 @@ PostgreSQL persistence time, real worker overhead, and deployed API latency are
 | Suite | Result |
 |---|---|
 | Phase 1 exact Market Intelligence suite | 123 passed, 2 warnings |
-| Phase 2 default integration directory | 39 passed, 11 skipped, 2 warnings |
+| Phase 2 default integration directory | 39 passed, 12 skipped, 2 warnings |
 | Live Yahoo opt-in test | 1 passed |
 | PostgreSQL opt-in collection | 8 skipped: service unavailable |
 | Redis/Celery checks | 1 passed, 2 skipped: services unavailable |
@@ -294,7 +294,9 @@ enabled and passed, while the ten service-dependent checks remain blocked.
 - No Phase 1 production file, financial formula, universe, API contract,
   frontend, or provider fallback changed. The fixed universe remains SPY plus
   the eleven Sector SPDR ETFs.
-- Nothing was pushed, merged, or submitted as a PR.
+- No upstream push, merge, or PR was made. The Phase 2B commits were pushed only
+  to the user-owned fork `txu221/stock-screener`, branch
+  `feat/market-intelligence-engine`.
 
 `docs/market-intelligence-spec.md` was intentionally not changed because live
 validation found no defect in the Phase 1 price basis, return, relative-return,
@@ -329,8 +331,9 @@ Remaining risks:
 ## 15. Files and commits
 
 Phase 2 adds one plan, this report, one opt-in live validation script, explicit
-pytest markers, and a focused `backend/tests/integration/market_intelligence`
-package. It does not add or modify production behavior.
+pytest markers, a focused `backend/tests/integration/market_intelligence`
+package, one PostgreSQL-backed API contract test, and one manual-dispatch
+GitHub Actions workflow. It does not add or modify production behavior.
 
 Phase 2 commits:
 
@@ -346,7 +349,59 @@ e388bbb5 test: validate completed sessions and live yahoo data
 763849be docs: close market intelligence phase 2 checkpoint
 ```
 
-## 16. Final review and recommended next phase
+Phase 2B commits pushed to the user-owned fork only:
+
+```text
+b51ce3b8 test: add postgres-backed market intelligence api coverage
+a96785bc ci: add market intelligence integration workflow
+```
+
+## 16. Phase 2B GitHub Actions validation
+
+The current branch was pushed to the user-owned fork
+`https://github.com/txu221/stock-screener`, with upstream kept read-only. The
+workflow file is present on `feat/market-intelligence-engine` and is configured
+for manual dispatch with `ubuntu-latest`, disposable `postgres:16-alpine` and
+`redis:7-alpine` services, migration upgrade/downgrade/re-upgrade checks,
+real-PostgreSQL publication/concurrency/API tests, Redis connectivity, and a
+separate opt-in Yahoo/Celery job.
+
+An attempt to dispatch the core workflow was rejected by GitHub before a run
+was created:
+
+```text
+gh workflow run market-intelligence-integration.yml \\
+  --repo txu221/stock-screener \\
+  --ref feat/market-intelligence-engine \\
+  -f run_live_yahoo=false
+HTTP 404: workflow market-intelligence-integration.yml not found on the default branch
+```
+
+The fork reports `main` as its default branch; the workflow exists only on the
+feature branch because this phase forbids merging or opening a PR. GitHub's
+workflow-dispatch API requires the workflow to be registered from the default
+branch. The fork's workflow listing currently reports zero registered
+workflows, and the existing `ci.yml` likewise returns 404 from the Actions
+workflow API despite its source file being present. No Actions run ID, run URL,
+runner OS, actual PostgreSQL server version, actual Redis server version, or
+uploaded artifact therefore exists. The workflow's declared images/runner are
+configuration intent only, not execution evidence.
+
+The local re-run after adding the workflow remains deterministic: the complete
+Market Intelligence integration directory is `39 passed, 12 skipped, 2
+warnings`; the new PostgreSQL-backed API test is one explicit environment skip.
+No new Phase 2 failure was observed. PostgreSQL, Redis, Celery, and optional
+Yahoo Actions evidence remain `BLOCKED_BY_ENVIRONMENT` /
+`PHASE 2 STILL BLOCKED — GITHUB EXECUTION ENVIRONMENT` under the current
+no-merge/no-PR constraint.
+
+This is an execution-environment block, not a claim that the workflow or its
+real-service tests passed. To clear it, a later explicitly authorized action
+must make the workflow visible on the fork's default branch (or enable a
+repository Actions configuration that registers fork workflows); that action
+was not taken here.
+
+## 17. Final review and recommended next phase
 
 The independent final review found two Critical and ten Important concerns in
 the first harness revision. The Critical database-target and shared-Celery-queue
