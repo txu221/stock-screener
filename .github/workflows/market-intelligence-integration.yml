@@ -89,7 +89,6 @@ jobs:
         run: |
           set -o pipefail
           pg_isready -h localhost -p 5432 -U "$PHASE2_DB_USER" -d "$PHASE2_DB_NAME"
-          redis-cli -h localhost -p 6379 ping
           python - <<'PY' 2>&1 | tee "$RUNNER_TEMP/phase2-services.log"
           import os
           import psycopg2
