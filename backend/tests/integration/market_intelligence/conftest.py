@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+from uuid import uuid4
 
 import pytest
+from sqlalchemy import create_engine, text
 
 from tests.integration.market_intelligence.support import (
     enabled_by_environment,
@@ -43,3 +45,28 @@ def phase2_celery_enabled() -> bool:
 def phase2_live_provider_enabled() -> bool:
     _require_opt_in("RUN_MARKET_INTELLIGENCE_LIVE")
     return True
+
+
+@pytest.fixture
+def phase2_postgresql_engine(phase2_postgresql_url: str):
+    """Yield a real PostgreSQL engine isolated to a generated test schema."""
+
+    schema = f"mi_phase2_{uuid4().hex}"
+    admin_engine = create_engine(phase2_postgresql_url, pool_pre_ping=True)
+    with admin_engine.begin() as connection:
+        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+
+    engine = create_engine(
+        phase2_postgresql_url,
+        connect_args={"options": f"-csearch_path={schema}"},
+        pool_pre_ping=True,
+    )
+    try:
+        if engine.dialect.name != "postgresql":
+            pytest.fail("Phase 2 PostgreSQL fixture connected to a non-PostgreSQL engine")
+        yield engine
+    finally:
+        engine.dispose()
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        admin_engine.dispose()
