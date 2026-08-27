@@ -1,0 +1,322 @@
+name: Market Intelligence Integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_live_yahoo:
+        description: Run the opt-in Yahoo 12-symbol provider and Celery validation
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: market-intelligence-integration-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PHASE2_DB_NAME: market_intelligence_phase2
+  PHASE2_DB_USER: phase2
+  PHASE2_DB_PASSWORD: phase2
+  PHASE2_PG_URL: postgresql+psycopg2://phase2:phase2@localhost:5432/market_intelligence_phase2
+  PHASE2_REDIS_BROKER_URL: redis://localhost:6379/0
+  PHASE2_REDIS_RESULT_URL: redis://localhost:6379/1
+
+jobs:
+  integration:
+    name: PostgreSQL and Redis integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: market_intelligence_phase2
+          POSTGRES_USER: phase2
+          POSTGRES_PASSWORD: phase2
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phase2 -d market_intelligence_phase2"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://phase2:phase2@localhost:5432/market_intelligence_phase2
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CELERY_RESULT_BACKEND: redis://localhost:6379/1
+      PHASE2_POSTGRES_URL: postgresql+psycopg2://phase2:phase2@localhost:5432/market_intelligence_phase2
+      PHASE2_REDIS_URL: redis://localhost:6379/0
+      PHASE2_CELERY_RESULT_URL: redis://localhost:6379/1
+      RUN_MARKET_INTELLIGENCE_POSTGRES: "1"
+      PHASE2_ALLOW_DESTRUCTIVE_POSTGRES_TESTS: "1"
+      RUN_MARKET_INTELLIGENCE_REDIS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-runtime.txt
+            backend/requirements-test.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-runtime.txt -r backend/requirements-test.txt
+
+      - name: Verify service health
+        run: |
+          pg_isready -h localhost -p 5432 -U "$PHASE2_DB_USER" -d "$PHASE2_DB_NAME"
+          redis-cli -h localhost -p 6379 ping
+          python - <<'PY'
+          import os
+          import psycopg2
+          import redis
+
+          with psycopg2.connect(os.environ["DATABASE_URL"]) as connection:
+              with connection.cursor() as cursor:
+                  cursor.execute("SELECT version()")
+                  print("POSTGRES_VERSION=" + cursor.fetchone()[0])
+          client = redis.Redis.from_url(os.environ["PHASE2_REDIS_URL"])
+          print("REDIS_PING=" + str(client.ping()))
+          client.close()
+          PY
+
+      - name: Upgrade to the Phase 1 head
+        working-directory: backend
+        run: |
+          set -o pipefail
+          : > "$RUNNER_TEMP/phase2-migration.log"
+          python -m alembic upgrade head 2>&1 | tee -a "$RUNNER_TEMP/phase2-migration.log"
+
+      - name: Assert migrated schema and existing-row compatibility
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, inspect, text
+
+          engine = create_engine(os.environ["DATABASE_URL"])
+          with engine.begin() as connection:
+              tables = set(inspect(connection).get_table_names())
+              expected = {
+                  "market_intelligence_run_audits",
+                  "market_intelligence_canonical_bars",
+                  "market_intelligence_rejections",
+                  "market_intelligence_sector_snapshots",
+              }
+              missing = expected - tables
+              if missing:
+                  raise SystemExit(f"Missing Phase 1 tables: {sorted(missing)}")
+              connection.execute(
+                  text(
+                      "INSERT INTO feature_runs (as_of_date, run_type, status) "
+                      "VALUES ('2026-08-24', 'daily_snapshot', 'published')"
+                  )
+              )
+              print("MIGRATED_TABLES=" + ",".join(sorted(expected)))
+          engine.dispose()
+          PY
+
+      - name: Downgrade and re-upgrade the disposable database
+        working-directory: backend
+        run: |
+          set -o pipefail
+          python -m alembic downgrade 20260823_0030 2>&1 | tee -a "$RUNNER_TEMP/phase2-migration.log"
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, inspect, text
+
+          engine = create_engine(os.environ["DATABASE_URL"])
+          with engine.connect() as connection:
+              tables = set(inspect(connection).get_table_names())
+              phase1 = {
+                  "market_intelligence_run_audits",
+                  "market_intelligence_canonical_bars",
+                  "market_intelligence_rejections",
+                  "market_intelligence_sector_snapshots",
+              }
+              if phase1 & tables:
+                  raise SystemExit("downgrade left Phase 1 tables behind")
+              if connection.execute(text("SELECT count(*) FROM feature_runs")).scalar_one() != 1:
+                  raise SystemExit("downgrade did not preserve predecessor data")
+          engine.dispose()
+          PY
+          python -m alembic upgrade head 2>&1 | tee -a "$RUNNER_TEMP/phase2-migration.log"
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, inspect, text
+
+          engine = create_engine(os.environ["DATABASE_URL"])
+          with engine.connect() as connection:
+              if connection.execute(text("SELECT count(*) FROM feature_runs")).scalar_one() != 1:
+                  raise SystemExit("re-upgrade did not preserve predecessor data")
+              if "market_intelligence_sector_snapshots" not in inspect(connection).get_table_names():
+                  raise SystemExit("re-upgrade did not restore Phase 1 tables")
+          engine.dispose()
+          PY
+
+      - name: Run real PostgreSQL migration, rollback, publication, concurrency, and API tests
+        working-directory: backend
+        run: |
+          python -m pytest \
+            tests/integration/market_intelligence/test_postgres_migration.py \
+            tests/integration/market_intelligence/test_postgres_publication.py \
+            tests/integration/market_intelligence/test_postgres_api.py \
+            -q 2>&1 | tee "$RUNNER_TEMP/phase2-postgresql.log"
+
+      - name: Run real Redis connectivity test
+        working-directory: backend
+        run: |
+          python -m pytest tests/integration/market_intelligence/test_redis_celery_runtime.py \
+            -k "real_redis_connectivity" -q 2>&1 | tee "$RUNNER_TEMP/phase2-redis.log"
+
+      - name: Run Phase 1 deterministic suite
+        working-directory: backend
+        run: |
+          python -m pytest \
+            tests/unit/market_intelligence \
+            tests/unit/repositories/test_market_intelligence_repo.py \
+            tests/unit/use_cases/test_build_sector_intelligence_snapshot.py \
+            tests/unit/test_market_intelligence_tasks.py \
+            tests/unit/test_market_intelligence_endpoints.py \
+            tests/unit/test_market_intelligence_migration.py \
+            -q 2>&1 | tee "$RUNNER_TEMP/phase1.log"
+
+      - name: Run Phase 2 service-independent suite
+        working-directory: backend
+        run: |
+          python -m pytest tests/integration/market_intelligence \
+            -m "not postgresql_integration and not redis_integration and not live_provider and not manual_provider" \
+            -q 2>&1 | tee "$RUNNER_TEMP/phase2-deterministic.log"
+
+      - name: Write integration metadata
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/phase2-evidence"
+          {
+            echo "github_repository=${GITHUB_REPOSITORY}"
+            echo "github_run_id=${GITHUB_RUN_ID}"
+            echo "github_sha=${GITHUB_SHA}"
+            echo "runner_os=${RUNNER_OS}"
+            echo "postgres_image=postgres:16-alpine"
+            echo "redis_image=redis:7-alpine"
+            echo "postgres_version_and_redis_version=see service-health log"
+          } > "$RUNNER_TEMP/phase2-evidence/run-metadata.txt"
+          cp "$RUNNER_TEMP"/phase2-*.log "$RUNNER_TEMP/phase2-evidence/" 2>/dev/null || true
+          cp docs/phase2-integration-report.md "$RUNNER_TEMP/phase2-evidence/"
+
+      - name: Upload integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-intelligence-integration-${{ github.run_id }}
+          path: ${{ runner.temp }}/phase2-evidence
+          if-no-files-found: error
+
+  live-yahoo-and-celery:
+    name: Optional Yahoo and Celery integration
+    if: ${{ inputs.run_live_yahoo == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: market_intelligence_phase2
+          POSTGRES_USER: phase2
+          POSTGRES_PASSWORD: phase2
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phase2 -d market_intelligence_phase2"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://phase2:phase2@localhost:5432/market_intelligence_phase2
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CELERY_RESULT_BACKEND: redis://localhost:6379/1
+      PHASE2_POSTGRES_URL: postgresql+psycopg2://phase2:phase2@localhost:5432/market_intelligence_phase2
+      PHASE2_REDIS_URL: redis://localhost:6379/0
+      PHASE2_CELERY_RESULT_URL: redis://localhost:6379/1
+      RUN_MARKET_INTELLIGENCE_POSTGRES: "1"
+      PHASE2_ALLOW_DESTRUCTIVE_POSTGRES_TESTS: "1"
+      RUN_MARKET_INTELLIGENCE_REDIS: "1"
+      RUN_MARKET_INTELLIGENCE_CELERY: "1"
+      RUN_MARKET_INTELLIGENCE_LIVE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-runtime.txt
+            backend/requirements-test.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-runtime.txt -r backend/requirements-test.txt
+
+      - name: Migrate disposable Celery database and resolve completed session
+        working-directory: backend
+        run: |
+          python -m alembic upgrade head
+          python - <<'PY' >> "$GITHUB_ENV"
+          from app.services.market_calendar_service import MarketCalendarService
+
+          print(
+              "PHASE2_COMPLETED_SESSION="
+              + MarketCalendarService().last_completed_trading_day("US").isoformat()
+          )
+          PY
+
+      - name: Run opt-in live Yahoo validation
+        working-directory: backend
+        run: |
+          python -m pytest tests/integration/market_intelligence/test_live_yahoo_validation.py \
+            -q 2>&1 | tee "$RUNNER_TEMP/phase2-live-yahoo.log"
+
+      - name: Run real Celery broker-worker task and idempotent rerun
+        working-directory: backend
+        run: |
+          python -m pytest tests/integration/market_intelligence/test_redis_celery_runtime.py \
+            -k "real_celery_worker_one_shot_and_idempotent_rerun" \
+            -q 2>&1 | tee "$RUNNER_TEMP/phase2-celery.log"
+
+      - name: Upload optional live evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-intelligence-live-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/phase2-migration.log
+            ${{ runner.temp }}/phase2-live-yahoo.log
+            ${{ runner.temp }}/phase2-celery.log
+            docs/phase2-integration-report.md
+          if-no-files-found: error
