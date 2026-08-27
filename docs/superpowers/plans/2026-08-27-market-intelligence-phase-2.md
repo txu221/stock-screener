@@ -36,7 +36,7 @@ Move Phase 1's status from deterministic unit-tested behavior to evidence-backed
 
 ## PostgreSQL validation
 
-- Require an explicit PostgreSQL test URL and `STOCKSCANNER_TEST_ALLOW_POSTGRES=1`; refuse SQLite for the PostgreSQL test module.
+- Require `PHASE2_POSTGRES_URL`, `RUN_MARKET_INTELLIGENCE_POSTGRES=1`, and the exact destructive-test acknowledgement `PHASE2_ALLOW_DESTRUCTIVE_POSTGRES_TESTS=1`; refuse SQLite, generic `DATABASE_URL`, and database names without `phase2`/`test`. Do not enable the repository-wide PostgreSQL fixture for this suite.
 - Use an isolated test database/schema under existing Alembic metadata and destroy only explicitly created test data.
 - Validate real SQL types, timezone columns, JSON behavior, foreign keys, checks, unique constraints, indexes, nullable fields, defaults, advisory locking, row locking, and committed query results.
 - Record server version with `SELECT version()`.
@@ -150,23 +150,23 @@ All cases use independent PostgreSQL sessions, a synchronization barrier, bounde
 
 ## Acceptance criteria
 
-- [ ] Fixed 12-symbol universe is enforced in live and deterministic paths.
-- [ ] Existing infrastructure is reused and host capabilities are truthfully recorded.
-- [ ] Migration upgrade/downgrade/re-upgrade and schema contract pass on real PostgreSQL, or each is `BLOCKED_BY_ENVIRONMENT`.
-- [ ] Transaction rollback failure points pass on real PostgreSQL, or are blocked.
-- [ ] PostgreSQL concurrency Cases A–C, pointer monotonicity, same-day revision, old backfill, and unique race pass, or are blocked.
-- [ ] Redis connectivity and real Celery one-shot/retry/idempotency pass, or are blocked.
-- [ ] Live Yahoo exactly-12-symbol fetch completes with summarized lineage/freshness evidence.
-- [ ] SPY, XLK, XLE, and XLU raw-to-canonical/snapshot calculations are manually reconciled.
-- [ ] Completed-session open/after-close/weekend/holiday/early-close behavior is deterministic and excludes unfinished bars.
-- [ ] Controlled SUCCEEDED/PARTIAL/FAILED semantics preserve latest pointer and health truth.
-- [ ] Five-session chronological historical replay has no future leakage and preserves rank continuity/history/latest/version.
-- [ ] Latest/history/health API contracts match persisted state.
-- [ ] Performance observations are recorded without optimization or SLO claims.
-- [ ] All Phase 1 tests and new service-independent Phase 2 tests pass.
-- [ ] No new backend/frontend regression is introduced relative to Phase 1 baselines.
-- [ ] No unnecessary dependency, secret/local state, scope expansion, push, PR, or merge occurs.
-- [ ] `docs/phase2-integration-report.md` records evidence and all blocks/risks.
+- [x] Fixed 12-symbol universe is enforced in live and deterministic paths.
+- [x] Existing infrastructure is reused and host capabilities are truthfully recorded.
+- [x] Migration upgrade/downgrade/re-upgrade and schema contract are explicitly `BLOCKED_BY_ENVIRONMENT`.
+- [x] Real-PostgreSQL transaction rollback failure points are explicitly `BLOCKED_BY_ENVIRONMENT`.
+- [x] PostgreSQL concurrency Cases A–C, pointer monotonicity, same-day revision, old backfill, and unique race are explicitly `BLOCKED_BY_ENVIRONMENT`.
+- [x] Redis connectivity and real Celery one-shot/retry/idempotency are explicitly `BLOCKED_BY_ENVIRONMENT`.
+- [x] Live Yahoo exactly-12-symbol fetch completes with summarized lineage/freshness evidence.
+- [x] SPY, XLK, XLE, and XLU raw-to-canonical/snapshot calculations are manually reconciled.
+- [x] Completed-session open/after-close/weekend/holiday/early-close behavior is deterministic and excludes unfinished bars.
+- [x] Controlled SUCCEEDED/PARTIAL/FAILED semantics preserve latest pointer and health truth in the service-independent harness.
+- [x] Five-session chronological historical replay has no future leakage and preserves rank continuity/history/latest/version in the service-independent harness.
+- [x] Latest/history/health API contracts match persisted service-independent test state; real-PostgreSQL comparison is blocked.
+- [x] Performance observations are recorded without optimization or SLO claims.
+- [x] All Phase 1 tests and new service-independent Phase 2 tests pass.
+- [x] No new backend/frontend regression is introduced relative to Phase 1 baselines.
+- [x] No unnecessary dependency, secret/local state, scope expansion, push, PR, or merge occurs.
+- [x] `docs/phase2-integration-report.md` records evidence and all blocks/risks.
 
 ## Rollback strategy
 
@@ -186,7 +186,7 @@ All cases use independent PostgreSQL sessions, a synchronization barrier, bounde
 - [x] Confirm branch `feat/market-intelligence-engine`, Phase 1 HEAD `7627ac7d`, clean tree, and no nested AGENTS instructions.
 - [x] Inspect existing Compose, Dockerfiles, Makefile, CI, pytest, Alembic, Redis, Celery, UoW, repository, provider, and API conventions.
 - [x] Probe Docker/WSL/PostgreSQL/Redis without installing or altering the host.
-- [ ] Commit the plan alone: `git add docs/superpowers/plans/2026-08-27-market-intelligence-phase-2.md && git commit -m "docs: plan market intelligence phase 2 validation"`.
+- [x] Commit the plan alone: `git add docs/superpowers/plans/2026-08-27-market-intelligence-phase-2.md && git commit -m "docs: plan market intelligence phase 2 validation"`.
 
 ### Task 2: Add explicit integration gates and environment preflight tests
 
@@ -195,10 +195,10 @@ All cases use independent PostgreSQL sessions, a synchronization barrier, bounde
 - Create: `backend/tests/integration/market_intelligence/conftest.py`
 - Create: `backend/tests/integration/market_intelligence/test_environment_contract.py`
 
-- [ ] Write tests proving a PostgreSQL suite refuses SQLite, live checks require explicit opt-in, the universe is exactly 12 symbols, and secret-bearing URLs are redacted.
-- [ ] Run the new tests and observe the intended red state for missing helpers/markers.
-- [ ] Implement the minimal reusable fixtures/gates; rerun to green.
-- [ ] Commit: `test: add phase 2 integration environment gates`.
+- [x] Write tests proving a PostgreSQL suite refuses SQLite, live checks require explicit opt-in, the universe is exactly 12 symbols, and secret-bearing URLs are redacted.
+- [x] Run the new tests and observe the intended red state for missing helpers/markers.
+- [x] Implement the minimal reusable fixtures/gates; rerun to green.
+- [x] Commit: `test: add phase 2 integration environment gates`.
 
 ### Task 3: Add PostgreSQL migration and publication integration coverage
 
@@ -208,10 +208,10 @@ All cases use independent PostgreSQL sessions, a synchronization barrier, bounde
 - Modify only if a defect is proven: `backend/app/infra/db/repositories/market_intelligence_repo.py`
 - Modify only if a defect is proven: `backend/app/infra/db/repositories/feature_run_repo.py`
 
-- [ ] Add opt-in real-PostgreSQL upgrade/downgrade/re-upgrade, schema, compatibility, rollback, same-day revision, backfill, concurrency A–C, and unique-race tests.
-- [ ] Verify collection/gating locally; execute against PostgreSQL if available.
-- [ ] For any defect, observe red, make the smallest production fix, rerun green.
-- [ ] Commit test harness and any separately justified fix in logical commits.
+- [x] Add opt-in real-PostgreSQL upgrade/downgrade/re-upgrade, schema, compatibility, rollback, same-day revision, backfill, concurrency A–C, and unique-race tests.
+- [x] Verify collection/gating locally; real PostgreSQL execution is `BLOCKED_BY_ENVIRONMENT`.
+- [x] No production defect was evidenced without a PostgreSQL server; no speculative production fix was made.
+- [x] Commit the test harness in a logical commit.
 
 ### Task 4: Add Redis and real Celery integration coverage
 
@@ -220,10 +220,10 @@ All cases use independent PostgreSQL sessions, a synchronization barrier, bounde
 - Modify only if a defect is proven: `backend/app/tasks/market_intelligence_tasks.py`
 - Modify only if a defect is proven: `backend/app/wiring/market_intelligence_services.py`
 
-- [ ] Validate registration/queue without services and add opt-in Redis ping plus real-worker one-shot/retry/idempotency assertions.
-- [ ] Execute only with explicit service URLs; otherwise record `BLOCKED_BY_ENVIRONMENT`.
-- [ ] Use red/green production fixes only if evidence requires them.
-- [ ] Commit: `test: cover market intelligence service runtime`.
+- [x] Validate registration/queue without services and add opt-in Redis ping plus real-worker one-shot/retry/idempotency assertions.
+- [x] Execute only with explicit service URLs; real services are recorded `BLOCKED_BY_ENVIRONMENT`.
+- [x] No production defect was evidenced without the services; no speculative production fix was made.
+- [x] Commit: `test: cover market intelligence service runtime`.
 
 ### Task 5: Validate completed sessions and live Yahoo data
 
@@ -234,11 +234,11 @@ All cases use independent PostgreSQL sessions, a synchronization barrier, bounde
 - Modify only if a defect is proven: `backend/app/services/market_intelligence_session_source.py`
 - Modify only if a defect is proven: `backend/app/infra/providers/market_intelligence_yahoo.py`
 
-- [ ] Add frozen open/after-close/weekend/holiday/early-close and unfinished-bar exclusion tests.
-- [ ] Add an opt-in live check that requests exactly 12 symbols and emits redacted summary JSON.
-- [ ] Execute the live fetch; inspect SPY, XLK, XLE, and XLU raw/adjusted OHLCV and independently recompute returns, RVOL, RS, and proxy metrics.
-- [ ] Record provider timing, coverage, rejection, date range, counts, and freshness.
-- [ ] Commit: `test: validate completed sessions and live yahoo data`.
+- [x] Add frozen open/after-close/weekend/holiday/early-close and unfinished-bar exclusion tests.
+- [x] Add an opt-in live check that requests exactly 12 symbols and emits redacted summary JSON.
+- [x] Execute the live fetch; inspect SPY, XLK, XLE, and XLU raw/adjusted OHLCV and independently recompute returns, RVOL, RS, and proxy metrics.
+- [x] Record provider timing, coverage, rejection, date range, counts, and freshness.
+- [x] Commit: `test: validate completed sessions and live yahoo data`.
 
 ### Task 6: Validate state semantics, APIs, replay, and performance
 
@@ -248,23 +248,23 @@ All cases use independent PostgreSQL sessions, a synchronization barrier, bounde
 - Create: `backend/tests/integration/market_intelligence/test_api_contract.py`
 - Create: `backend/tests/integration/market_intelligence/test_performance_baseline.py`
 
-- [ ] Add deterministic end-to-end SUCCEEDED/PARTIAL/FAILED tests through the production use case/UoW/API with frozen inputs.
-- [ ] Add chronological five-session replay/no-lookahead/rank/history/latest/version tests; execute the same replay over the captured live response without persisting vendor payloads.
-- [ ] Compare API responses to committed repository state and record diagnostic timings.
-- [ ] Execute real PostgreSQL variants if available; otherwise distinguish deterministic evidence from blocked real-service evidence.
-- [ ] Commit: `test: validate sector intelligence runtime semantics`.
+- [x] Add deterministic end-to-end SUCCEEDED/PARTIAL/FAILED tests through the production use case/UoW/API with frozen inputs.
+- [x] Add chronological five-session replay/no-lookahead/rank/history/latest/version tests; execute the same replay over the live response without persisting vendor payloads.
+- [x] Compare API responses to committed repository state and record diagnostic timings.
+- [x] Distinguish deterministic evidence from real-PostgreSQL variants that are `BLOCKED_BY_ENVIRONMENT`.
+- [x] Commit: `test: validate sector intelligence runtime semantics`.
 
 ### Task 7: Regression and security verification
 
 **Files:**
 - Modify only if required by discovered defects and corresponding tests.
 
-- [ ] Run Phase 1 exact and adjacent tests.
-- [ ] Run all new Phase 2 service-independent tests and collect opt-in blocked/pass results.
-- [ ] Run full backend diagnostic with the Phase 1 source-neutral environment and compare the exact known failure set.
-- [ ] Run unmodified Windows backend diagnostic and record platform collection blocks separately.
-- [ ] Run frontend tests, lint, and build diagnostics without fixing unrelated baselines.
-- [ ] Run compile/import checks, dependency diff, tracked secret scan, device-state check, and review scope.
+- [x] Run Phase 1 exact and adjacent tests.
+- [x] Run all new Phase 2 service-independent tests and collect opt-in blocked/pass results.
+- [x] Run full backend diagnostic with the Phase 1 source-neutral environment and compare the exact known failure set.
+- [x] Run unmodified Windows backend diagnostic and record platform collection blocks separately.
+- [x] Run frontend tests, lint, and build diagnostics without fixing unrelated baselines.
+- [x] Run compile/import checks, dependency diff, tracked secret scan, device-state check, and review scope.
 
 ### Task 8: Integration report and final review
 
@@ -272,8 +272,8 @@ All cases use independent PostgreSQL sessions, a synchronization barrier, bounde
 - Create: `docs/phase2-integration-report.md`
 - Modify only if evidence changes semantics: `docs/market-intelligence-spec.md`
 
-- [ ] Write the report with commands, versions, outcomes, timings, manual reconciliations, blocks, and risks; do not call blocked infrastructure complete.
-- [ ] Perform the final code review against every Phase 2 acceptance item and inspect transaction/concurrency/security language.
+- [x] Write the report with commands, versions, outcomes, timings, manual reconciliations, blocks, and risks; do not call blocked infrastructure complete.
+- [x] Perform the final code review against every Phase 2 acceptance item and inspect transaction/concurrency/security language; retain remaining blocked/risk findings explicitly.
 - [ ] Commit: `docs: report market intelligence phase 2 validation`.
 - [ ] Show `git status`, `git log --oneline upstream/main..HEAD`, and `git diff --stat upstream/main...HEAD`.
-- [ ] If PostgreSQL/Redis/Celery remain unverified, report `PHASE 2 PARTIALLY BLOCKED` and stop; otherwise report `PHASE 2 COMPLETE` and stop.
+- [x] PostgreSQL/Redis/Celery remain unverified, so report `PHASE 2 PARTIALLY BLOCKED` and stop.
