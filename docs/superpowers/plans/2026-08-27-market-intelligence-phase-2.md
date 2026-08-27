@@ -274,6 +274,6 @@ All cases use independent PostgreSQL sessions, a synchronization barrier, bounde
 
 - [x] Write the report with commands, versions, outcomes, timings, manual reconciliations, blocks, and risks; do not call blocked infrastructure complete.
 - [x] Perform the final code review against every Phase 2 acceptance item and inspect transaction/concurrency/security language; retain remaining blocked/risk findings explicitly.
-- [ ] Commit: `docs: report market intelligence phase 2 validation`.
-- [ ] Show `git status`, `git log --oneline upstream/main..HEAD`, and `git diff --stat upstream/main...HEAD`.
+- [x] Commit: `docs: report market intelligence phase 2 validation`.
+- [x] Show `git status`, `git log --oneline upstream/main..HEAD`, and `git diff --stat upstream/main...HEAD`.
 - [x] PostgreSQL/Redis/Celery remain unverified, so report `PHASE 2 PARTIALLY BLOCKED` and stop.

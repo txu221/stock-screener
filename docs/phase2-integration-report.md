@@ -332,7 +332,7 @@ Phase 2 adds one plan, this report, one opt-in live validation script, explicit
 pytest markers, and a focused `backend/tests/integration/market_intelligence`
 package. It does not add or modify production behavior.
 
-Implementation commits before this report:
+Phase 2 commits:
 
 ```text
 c91e818b docs: plan market intelligence phase 2 validation
@@ -342,6 +342,7 @@ cccbc43c test: cover market intelligence service runtime
 e388bbb5 test: validate completed sessions and live yahoo data
 470740e2 test: validate sector intelligence runtime semantics
 97aff611 test: harden phase 2 integration validation
+67fb5e5d docs: report market intelligence phase 2 validation
 ```
 
 ## 16. Final review and recommended next phase
