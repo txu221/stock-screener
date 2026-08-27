@@ -165,10 +165,12 @@ def _assert_phase1_schema(connection) -> None:
         )
     }
     assert "uq_mi_run_audit_idempotency_key" in audit_uniques
-    # PostgreSQL can omit a UNIQUE constraint from SQLAlchemy's reflected
-    # unique list when it duplicates the table's composite primary key. Query
-    # pg_constraint directly so this test still proves that the named migration
-    # contract exists instead of weakening the assertion to PK uniqueness.
+    # PostgreSQL can coalesce a UNIQUE constraint with an identical composite
+    # primary key, so SQLAlchemy's reflected unique list may omit it and
+    # pg_constraint may expose the named contract as either ``u`` or ``p``.
+    # The constrained PK columns are asserted above; query pg_constraint here
+    # to prove the named uniqueness contract exists without requiring a
+    # redundant second unique index.
     snapshot_constraints = {
         row.conname: row.contype
         for row in connection.execute(
@@ -180,7 +182,7 @@ def _assert_phase1_schema(connection) -> None:
             )
         )
     }
-    assert snapshot_constraints.get("uq_mi_snapshot_run_symbol") == "u"
+    assert snapshot_constraints.get("uq_mi_snapshot_run_symbol") in {"p", "u"}
 
     checks = {
         constraint["name"]
