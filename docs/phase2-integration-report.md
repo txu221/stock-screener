@@ -3,17 +3,18 @@
 **Date:** 2026-08-27  
 **Branch:** `feat/market-intelligence-engine`  
 **Phase 1 base:** `7627ac7d2ff47cdc5b15e4f7f2a0be84330a5c36`  
-**Phase 2 status:** `PHASE 2 STILL BLOCKED — GITHUB EXECUTION ENVIRONMENT`
+**Phase 2 status:** `PHASE 2 COMPLETE`
 
 Phase 2 added repeatable production-integration validation around the Phase 1
-sector-intelligence slice. The live Yahoo provider and every service-independent
-path were exercised. Real PostgreSQL, Redis, and Celery worker execution remain
-`BLOCKED_BY_ENVIRONMENT`; no SQLite or mock result is presented as a substitute.
-No Phase 1 financial semantics or production code changed.
+sector-intelligence slice. The live Yahoo provider, every service-independent
+path, PostgreSQL transaction/concurrency behavior, Redis, a real Celery worker,
+and PostgreSQL-backed APIs were exercised successfully. No SQLite or mock result
+is presented as a substitute for these real-service claims. No Phase 1 financial
+semantics changed.
 
 ## 1. Environment and infrastructure
 
-The host is Windows and has no usable Docker engine, WSL distribution,
+The local host is Windows and has no usable Docker engine, WSL distribution,
 `psql`, `redis-server`, or `redis-cli`. Docker Compose therefore could not start
 the repository's existing PostgreSQL 16 and Redis 7 services. No system package,
 service, WSL distribution, Docker component, PostgreSQL, Redis, or host setting
@@ -27,8 +28,9 @@ The existing production infrastructure was inspected and retained:
   runtime path;
 - installed Python clients are psycopg2 2.9.12, SQLAlchemy 2.0.25, Alembic
   1.14.1, redis-py 5.0.1, and Celery 5.3.4;
-- PostgreSQL server version and Redis server version are unavailable because no
-  server could be reached.
+- GitHub Actions run `33126196870` cleared the local environment block on the
+  `ubuntu-24.04` runner image. The actual servers reported PostgreSQL `16.15`
+  (`x86_64-pc-linux-musl`) and Redis `7.4.11`.
 
 The opt-in service fixtures require explicit URLs and refuse unsafe
 substitution. PostgreSQL checks accept only `PHASE2_POSTGRES_URL` whose database
@@ -55,11 +57,11 @@ this host. Its migration-module smoke check applies the `20260826_0031`
 It inspects all four Market Intelligence tables, columns, types, primary and
 foreign keys, unique/check constraints, indexes, nullability, and defaults. It
 also seeds predecessor `FeatureRun`/pointer state and verifies that state remains
-readable after the module round trip. This is not an `alembic.command` traversal
-from the repository's real `20260823_0030` schema and cannot satisfy the required
-production migration acceptance criterion by itself. Real committed
-upgrade/downgrade/re-upgrade, `alembic_version`, `env.py`, and existing-database
-compatibility results are therefore `BLOCKED_BY_ENVIRONMENT`, not passed.
+readable after the module round trip. GitHub Actions additionally executed the
+repository's real Alembic path against PostgreSQL:
+`upgrade head -> downgrade 20260823_0030 -> upgrade head`. The four typed tables
+were present after both upgrades, absent after downgrade, and predecessor
+`feature_runs` data survived. The complete nine-test PostgreSQL group passed.
 
 ## 3. Transaction rollback and concurrent publication
 
@@ -77,9 +79,9 @@ rejection/snapshot evidence, and synchronization barriers. They cover:
 The required observations are no orphan audit/bar/rejection/snapshot rows,
 consistent `FeatureRun` state, rollback of pointer mutation, history/pointer
 winner agreement through the repository history reader, and a latest pointer that never moves to an older trading
-date. The harness is present and locally gates correctly, but all real
-PostgreSQL rollback, advisory-lock, row-lock, monotonicity, revision, backfill,
-and concurrency claims remain `BLOCKED_BY_ENVIRONMENT`.
+date. These rollback, advisory-lock, row-lock, monotonicity, revision, backfill,
+and concurrency checks all passed in run `33126196870` using independent real
+PostgreSQL sessions.
 
 Sequential rollback/publication behavior continues to pass in the existing
 Phase 1 and Phase 2 SQLite test harness. That result validates deterministic
@@ -94,10 +96,13 @@ one-shot/idempotency check against explicit PostgreSQL and Redis URLs. Every
 worker run receives a UUID queue, the readiness ping targets that exact worker
 node, broker/result Redis DBs must differ, and task result keys are forgotten.
 
-Local result: one registration test passed and two real-service checks skipped.
-Redis connectivity, real Celery dependency injection, DB session creation,
-provider call, run/canonical/snapshot persistence, pointer/Data Health results,
-and same-input worker idempotency are `BLOCKED_BY_ENVIRONMENT`.
+The local result remains one registration test passed and two explicit service
+skips. In Actions, the Redis scoped round trip passed against Redis `7.4.11`.
+A real isolated-queue Celery worker consumed the production task through Redis,
+created its production database session, called the existing Yahoo provider,
+wrote FeatureRun/audit/canonical/snapshot/pointer state to PostgreSQL, and
+returned the same run and idempotency key for the repeated completed-session
+delivery. The worker test passed in `10.36 s`.
 
 The task currently declares no Celery `autoretry_for` policy. Consequently a
 real broker/worker retry sequence was not validated and remains a production
@@ -207,8 +212,9 @@ The checks compare API values/run IDs with committed repository state. Latest
 contains 11 sector rows and SPY only as the benchmark, follows the published
 pointer, and reports `market_intelligence_v1`. History is chronological and
 chooses the latest published revision per session. Health reports the latest
-attempt even when it is PARTIAL or FAILED. Repeating the comparison against
-committed real-PostgreSQL state is `BLOCKED_BY_ENVIRONMENT`.
+attempt even when it is PARTIAL or FAILED. The same latest/history/health
+comparison passed against committed real-PostgreSQL state in the Actions
+PostgreSQL group.
 
 ## 10. Historical replay and look-ahead prevention
 
@@ -226,8 +232,10 @@ with 12 snapshots and `market_intelligence_v1`. The first session had no prior
 ranks; each later session had all 66 previous-rank entries and exact
 previous/current rank identity checks. Chronological history, latest selection,
 rank continuity/change, version, and repeat-run idempotency passed in the
-production-use-case SQLite harness. PostgreSQL pointer/history persistence for
-the replay remains blocked.
+production-use-case SQLite harness. Five-session replay persistence was not
+repeated on PostgreSQL and remains a non-gating coverage gap; PostgreSQL
+history/pointer semantics were independently proven by the concurrency and API
+tests.
 
 ## 11. Performance observations
 
@@ -238,9 +246,11 @@ These are diagnostic observations, not SLOs:
 - deterministic harness sample: 12 symbols and 1,140 input bars; total use-case
   run 0.1797 s, latest API 0.00483 s, history API 0.00409 s.
 
-The latter uses SQLite and is not a PostgreSQL performance benchmark. Real
-PostgreSQL persistence time, real worker overhead, and deployed API latency are
-`BLOCKED_BY_ENVIRONMENT`.
+The latter uses SQLite and is not a PostgreSQL performance benchmark. The real
+PostgreSQL test group completed in `4.64 s` and the real Celery worker test in
+`10.36 s`; these are CI observations, not production SLOs. Deployed API latency
+remains unmeasured and is a future operational risk, not a Phase 2 correctness
+block.
 
 ## 12. Test and regression results
 
@@ -249,8 +259,11 @@ PostgreSQL persistence time, real worker overhead, and deployed API latency are
 | Phase 1 exact Market Intelligence suite | 123 passed, 2 warnings |
 | Phase 2 default integration directory | 39 passed, 12 skipped, 2 warnings |
 | Live Yahoo opt-in test | 1 passed |
-| PostgreSQL opt-in collection | 8 skipped: service unavailable |
-| Redis/Celery checks | 1 passed, 2 skipped: services unavailable |
+| Actions PostgreSQL migration/publication/concurrency/API | 9 passed, 2 warnings |
+| Actions Redis connectivity | 1 passed, 2 deselected, 2 warnings |
+| Actions real Celery worker/idempotent rerun | 1 passed, 2 deselected, 2 warnings |
+| Actions Phase 1 deterministic suite | 123 passed, 2 warnings |
+| Actions Phase 2 service-independent suite | 39 passed, 12 deselected, 2 warnings |
 | Completed-session/freshness tests | 8 passed |
 | Runtime semantics/API/replay/performance group | 4 passed |
 | Adjacent source-neutral feature-run/UoW group | 113 passed |
@@ -263,8 +276,8 @@ PostgreSQL persistence time, real worker overhead, and deployed API latency are
 The full source-neutral backend diagnostic completed with `16 failed, 6359
 passed, 21 skipped`. The unit subset retained exactly `13 failed, 6122 passed, 3
 skipped`, matching the Phase 1 known unit failure set. The three additional
-failures are existing theme-pipeline API integration 503 failures. No Phase 2
-test failed.
+failures are existing theme-pipeline API integration 503 failures. The final
+Phase 2 Actions run has no failed test.
 
 The frontend full run produced `597 passed, 9 failed` plus the same Windows
 doubled-drive-path suite-load failure. The initial `App.static` timeout caused
@@ -274,9 +287,10 @@ and eight order/timeout-sensitive `App.static` failures (`598 passed, 8 failed`)
 and Phase 2 has no frontend source diff. This evidence supports zero new
 frontend regression while preserving the exact observed full-run result.
 
-No new Phase 2 failure was hidden with skip or xfail. The 11 default Phase 2
-skips are explicit service/live opt-in gates; the live test was separately
-enabled and passed, while the ten service-dependent checks remain blocked.
+No new Phase 2 failure was hidden with skip or xfail. The 12 local default skips
+are explicit service/live opt-in gates; Actions enabled those gates against real
+services and the corresponding PostgreSQL, Redis, Celery, and Yahoo checks
+passed.
 
 ## 13. Security, dependencies, and scope
 
@@ -302,29 +316,29 @@ enabled and passed, while the ten service-dependent checks remain blocked.
 validation found no defect in the Phase 1 price basis, return, relative-return,
 RVOL, flow-proxy, ranking, version, or publication semantics.
 
-## 14. Remaining blocked items and risks
+## 14. Completed infrastructure gates and remaining risks
 
-`BLOCKED_BY_ENVIRONMENT`:
+Completed in GitHub Actions run `33126196870`:
 
-1. PostgreSQL server/version and real migration upgrade/downgrade/re-upgrade;
-2. existing-database upgrade compatibility on PostgreSQL;
-3. rollback visibility from an independent PostgreSQL session;
-4. concurrency Cases A-C, first-publication locking, pointer monotonicity,
-   same-day revision, old-date backfill, and unique idempotency race;
-5. Redis server/version/connectivity and isolated key cleanup;
-6. real Celery worker one-shot, dependency injection, persistence, retry,
-   pointer/health result, and repeated-task idempotency;
-7. API-to-real-PostgreSQL value comparison and replay persistence;
-8. PostgreSQL persistence and deployed API performance timings.
+1. PostgreSQL `16.15` migration upgrade/downgrade/re-upgrade and predecessor
+   compatibility;
+2. rollback visibility from independent PostgreSQL sessions before and after
+   pointer mutation;
+3. concurrency Cases A-C, pointer monotonicity, same-day revision, old-date
+   backfill, history/pointer winner agreement, and unique idempotency race;
+4. Redis `7.4.11` connectivity and isolated key cleanup;
+5. real Celery worker one-shot plus same-session repeated-delivery idempotency;
+6. committed PostgreSQL values matched by latest/history/health APIs;
+7. live Yahoo 12-symbol validation on the Linux runner.
 
 Remaining risks:
 
-- PostgreSQL advisory/row-lock and transactional assumptions are covered by an
-  executable harness but have not run against a server;
-- broker/worker configuration, delivery behavior, and outage recovery remain
-  unobserved;
+- worker/process outage recovery remains unobserved beyond clean worker startup,
+  task execution, repeat delivery, and teardown;
 - there is no explicit Celery automatic retry policy to exercise;
 - Yahoo is an external provider whose shape and availability can drift;
+- live replay persistence and deployed API latency were not measured as
+  production SLOs;
 - existing backend, frontend, lint, and npm advisory baselines remain and were
   deliberately not repaired in this phase.
 
@@ -354,6 +368,10 @@ Phase 2B commits pushed to the user-owned fork only:
 ```text
 b51ce3b8 test: add postgres-backed market intelligence api coverage
 a96785bc ci: add market intelligence integration workflow
+1055c108 ci: run market intelligence integration on feature branch
+a6eaebbc ci: verify redis through installed python client
+46d78bc0 test: inspect postgres snapshot constraint directly
+d694e8c3 test: accept postgres primary uniqueness reflection
 ```
 
 ## 16. Phase 2B GitHub Actions validation
@@ -387,21 +405,49 @@ runner OS, actual PostgreSQL server version, actual Redis server version, or
 uploaded artifact therefore exists. The workflow's declared images/runner are
 configuration intent only, not execution evidence.
 
-The local re-run after adding the workflow remains deterministic: the complete
-Market Intelligence integration directory is `39 passed, 12 skipped, 2
-warnings`; the new PostgreSQL-backed API test is one explicit environment skip.
-No new Phase 2 failure was observed. PostgreSQL, Redis, Celery, and optional
-Yahoo Actions evidence remain `BLOCKED_BY_ENVIRONMENT` /
-`PHASE 2 STILL BLOCKED — GITHUB EXECUTION ENVIRONMENT` under the current
-no-merge/no-PR constraint.
+This section records the historical Phase 2B block. It was cleared without a
+merge or PR by adding a feature-branch `push` trigger, as documented below.
 
-This is an execution-environment block, not a claim that the workflow or its
-real-service tests passed. To clear it, a later explicitly authorized action
-must make the workflow visible on the fork's default branch (or enable a
-repository Actions configuration that registers fork workflows); that action
-was not taken here.
+## 17. Phase 2C successful Actions execution
 
-## 17. Final review and recommended next phase
+The workflow retained `workflow_dispatch` and added a path-scoped push trigger
+for `feat/market-intelligence-engine`. Final green run:
+
+```text
+Run ID:       33126196870
+Event:        push
+Branch:       feat/market-intelligence-engine
+Head SHA:     d694e8c385fecf3db69db20c9d22459719ab221b
+Runner image: ubuntu-24.04 (release 20260823.283)
+PostgreSQL:   16.15, x86_64-pc-linux-musl
+Redis:        7.4.11
+Conclusion:   success
+URL:          https://github.com/txu221/stock-screener/actions/runs/33126196870
+```
+
+Both jobs passed. The core job proved service health, real Alembic traversal,
+schema/existing-row compatibility, rollback, concurrency, pointer monotonicity,
+same-day revision, backfill, PostgreSQL-backed APIs, Redis, Phase 1, and Phase 2
+deterministic behavior. The second job proved live Yahoo and a real
+Redis-brokered Celery worker one-shot/idempotent rerun.
+
+Two CI/test-harness defects were exposed and fixed before the green run:
+
+1. `redis-cli` was not installed on the runner. The redundant host CLI probe was
+   removed; container health plus redis-py `PING` and `INFO server` remain the
+   actual service checks.
+2. PostgreSQL reflects the snapshot's named uniqueness contract as primary-key
+   type `p` when it duplicates the `(run_id, symbol)` composite PK. The migration
+   test now queries `pg_constraint` directly and accepts the stronger PK or a
+   separate unique constraint while still asserting the exact constrained PK
+   columns.
+
+Artifacts `market-intelligence-integration-33126196870` and
+`market-intelligence-live-33126196870` contain the migration, PostgreSQL,
+Redis, Phase 1, Phase 2, Yahoo, and Celery evidence logs. No upstream push,
+merge, or PR was made.
+
+## 18. Final review and transition
 
 The independent final review found two Critical and ten Important concerns in
 the first harness revision. The Critical database-target and shared-Celery-queue
@@ -412,17 +458,9 @@ child-row rollback evidence, repository history-winner comparison, per-symbol
 Yahoo freshness, independent raw-to-canonical reconciliation, stricter output
 redaction, and exact destructive gates.
 
-The remaining Important findings are not silently called complete. Full Alembic
-command traversal, production-app/auth API integration, live replay persistence,
-controlled Celery failure/retry/health behavior, task database cleanup, and all
-real-service executions remain blocked items or risks above. The bare-router API
-test is valid contract evidence but not full application-startup evidence.
-
-Recommended Phase 3, **not started**: first execute the prepared opt-in suite in
-an isolated environment using the repository's PostgreSQL 16, Redis 7, and
-Celery services. Capture server versions, migration/reversal evidence,
-transaction/concurrency results, worker idempotency, and deployed latency. Only
-after those Phase 2 blocks are cleared should a separately approved Phase 3
-consider product expansion. Do not expand the universe, add movers/themes/news/
-AI/flow claims, or redesign the frontend while these production boundaries are
-unverified.
+The former real-service findings are now closed by the green Actions run. The
+remaining items are reliability/operations work rather than Phase 2 correctness
+blocks: explicit Celery retry policy, controlled outage recovery, full
+application-startup/auth-path API coverage, live replay persistence, and
+deployed latency. Phase 2 is complete and the authorized Market Intelligence
+MVP v1 work may proceed without changing Phase 1 financial semantics.
