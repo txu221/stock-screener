@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
 import time
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import pytest
@@ -38,6 +40,16 @@ def _result_backend_url() -> str:
             "PHASE2_CELERY_RESULT_URL must explicitly select a Redis result database"
         )
     return value
+
+
+def _redis_endpoint(value: str) -> tuple[str | None, int, int]:
+    parsed = urlsplit(value)
+    database_text = parsed.path.lstrip("/") or "0"
+    try:
+        database = int(database_text)
+    except ValueError:
+        pytest.fail("Phase 2 Redis URLs must use a numeric database path")
+    return parsed.hostname, parsed.port or 6379, database
 
 
 def test_market_intelligence_task_is_registered_on_us_market_queue() -> None:
@@ -82,7 +94,11 @@ def test_real_celery_worker_one_shot_and_idempotent_rerun(
         pytest.fail("PHASE2_COMPLETED_SESSION must be an explicit ISO date")
 
     result_backend = _result_backend_url()
-    worker_name = f"phase2-mi-{uuid4().hex}@%h"
+    if _redis_endpoint(phase2_redis_url) == _redis_endpoint(result_backend):
+        pytest.fail("Phase 2 Celery broker and result backend must use separate Redis DBs")
+    identity = uuid4().hex
+    worker_name = f"phase2-mi-{identity}@{socket.gethostname()}"
+    queue_name = f"phase2_market_intelligence_{identity}"
     worker_environment = os.environ.copy()
     worker_environment.update(
         {
@@ -106,7 +122,7 @@ def test_real_celery_worker_one_shot_and_idempotent_rerun(
         "--without-gossip",
         "--without-heartbeat",
         "-Q",
-        "market_jobs_us",
+        queue_name,
         "-n",
         worker_name,
     ]
@@ -125,27 +141,32 @@ def test_real_celery_worker_one_shot_and_idempotent_rerun(
         result_serializer="json",
         accept_content=["json"],
     )
+    submitted_results = []
     try:
         ready = False
         for _ in range(40):
             if worker.poll() is not None:
                 pytest.fail(f"Celery worker exited early with code {worker.returncode}")
-            if client.control.ping(timeout=1):
+            if client.control.ping(destination=[worker_name], timeout=1):
                 ready = True
                 break
             time.sleep(0.5)
         assert ready, "Celery worker did not become ready"
 
-        first = client.send_task(
+        first_result = client.send_task(
             TASK_NAME,
             args=[calculation_date],
-            queue="market_jobs_us",
-        ).get(timeout=180)
-        second = client.send_task(
+            queue=queue_name,
+        )
+        submitted_results.append(first_result)
+        first = first_result.get(timeout=180)
+        second_result = client.send_task(
             TASK_NAME,
             args=[calculation_date],
-            queue="market_jobs_us",
-        ).get(timeout=180)
+            queue=queue_name,
+        )
+        submitted_results.append(second_result)
+        second = second_result.get(timeout=180)
 
         assert first["status"] == "SUCCEEDED"
         assert first["published"] is True
@@ -172,6 +193,11 @@ def test_real_celery_worker_one_shot_and_idempotent_rerun(
         finally:
             engine.dispose()
     finally:
+        for result in submitted_results:
+            try:
+                result.forget()
+            except Exception:
+                pass
         worker.terminate()
         try:
             worker.wait(timeout=10)

@@ -25,8 +25,17 @@ def test_live_yahoo_fixed_universe_metrics_and_replay(
     assert summary["missing"] == []
     assert summary["rejected_rows"] == 0
     assert summary["freshness"]["complete_through_target"] is True
+    assert summary["freshness"]["target_complete_count"] == 12
+    assert summary["freshness"]["missing_target_symbols"] == []
+    assert set(summary["freshness"]["per_symbol_latest"]) == set(
+        MARKET_INTELLIGENCE_UNIVERSE
+    )
     assert summary["candidate_status"] == "SUCCEEDED"
     assert summary["snapshot_count"] == 12
+    assert all(
+        evidence["canonical_fields_match"]
+        for evidence in summary["manual_checks"].values()
+    )
     assert all(
         evidence["all_metrics_match"]
         for evidence in summary["manual_checks"].values()

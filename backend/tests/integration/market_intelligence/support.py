@@ -15,6 +15,12 @@ def enabled_by_environment(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def explicitly_enabled(value: str | None) -> bool:
+    """Use an exact opt-in for checks that can mutate external services."""
+
+    return value == "1"
+
+
 def require_postgresql_url(value: str | None) -> str:
     """Reject SQLite and other substitutes for real PostgreSQL evidence."""
 
@@ -24,6 +30,13 @@ def require_postgresql_url(value: str | None) -> str:
         raise Phase2EnvironmentError(
             "Phase 2 PostgreSQL checks require a real PostgreSQL URL"
         )
+    database_name = urlsplit(candidate).path.rsplit("/", 1)[-1].lower()
+    if not database_name or not any(
+        marker in database_name for marker in ("phase2", "test")
+    ):
+        raise Phase2EnvironmentError(
+            "Phase 2 PostgreSQL checks require a dedicated phase2/test database"
+        )
     return candidate
 
 
@@ -32,12 +45,10 @@ def redact_service_url(value: str) -> str:
 
     parsed = urlsplit(value)
     if parsed.username is None:
-        return value
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
     host = parsed.hostname or ""
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     port = f":{parsed.port}" if parsed.port is not None else ""
     credentials = "***:***" if parsed.password is not None else "***"
-    return urlunsplit(
-        (parsed.scheme, f"{credentials}@{host}{port}", parsed.path, parsed.query, parsed.fragment)
-    )
+    return urlunsplit((parsed.scheme, f"{credentials}@{host}{port}", parsed.path, "", ""))

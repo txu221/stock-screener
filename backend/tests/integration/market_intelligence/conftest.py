@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, text
 
 from tests.integration.market_intelligence.support import (
     enabled_by_environment,
+    explicitly_enabled,
     require_postgresql_url,
 )
 
@@ -22,7 +23,13 @@ def _require_opt_in(name: str) -> None:
 @pytest.fixture(scope="session")
 def phase2_postgresql_url() -> str:
     _require_opt_in("RUN_MARKET_INTELLIGENCE_POSTGRES")
-    value = os.environ.get("PHASE2_POSTGRES_URL") or os.environ.get("DATABASE_URL")
+    if not explicitly_enabled(
+        os.environ.get("PHASE2_ALLOW_DESTRUCTIVE_POSTGRES_TESTS")
+    ):
+        pytest.skip(
+            "set PHASE2_ALLOW_DESTRUCTIVE_POSTGRES_TESTS=1 for a disposable database"
+        )
+    value = os.environ.get("PHASE2_POSTGRES_URL")
     return require_postgresql_url(value)
 
 

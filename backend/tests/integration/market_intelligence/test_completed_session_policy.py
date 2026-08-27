@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pandas as pd
@@ -13,6 +14,7 @@ from app.infra.providers.market_intelligence_yahoo import (
     YahooMarketIntelligenceProvider,
 )
 from app.services.market_calendar_service import MarketCalendarService
+from scripts.validate_market_intelligence_live import _source_freshness
 
 
 @pytest.mark.parametrize(
@@ -71,3 +73,20 @@ def test_unfinished_current_session_bar_is_excluded_by_provider_boundary() -> No
     assert len(result.rows) == 12
     assert {row.trading_date for row in result.rows} == {completed}
     assert all(row.trading_date <= completed for row in result.rows)
+
+
+def test_live_freshness_requires_the_target_session_for_every_symbol() -> None:
+    target = date(2026, 8, 26)
+    bars = [
+        SimpleNamespace(symbol=symbol, trading_date=target)
+        for symbol in MARKET_INTELLIGENCE_UNIVERSE
+    ]
+    bars[-1] = SimpleNamespace(symbol="XLU", trading_date=date(2026, 8, 25))
+
+    freshness = _source_freshness(bars, target)
+
+    assert freshness["status"] == "STALE"
+    assert freshness["complete_through_target"] is False
+    assert freshness["target_complete_count"] == 11
+    assert freshness["missing_target_symbols"] == ["XLU"]
+    assert freshness["per_symbol_latest"]["XLU"] == "2026-08-25"

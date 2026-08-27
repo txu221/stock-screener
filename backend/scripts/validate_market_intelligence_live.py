@@ -107,7 +107,53 @@ def _manual_metrics(symbol_bars, spy_bars, sessions: tuple[date, ...]) -> dict[s
     }
 
 
-def _calculate_candidate(canonical_bars, sessions, *, as_of, previous):
+def _source_freshness(canonical_bars, target: date) -> dict[str, Any]:
+    latest_by_symbol: dict[str, date] = {}
+    for bar in canonical_bars:
+        current = latest_by_symbol.get(bar.symbol)
+        if current is None or bar.trading_date > current:
+            latest_by_symbol[bar.symbol] = bar.trading_date
+    complete = sorted(
+        symbol
+        for symbol in MARKET_INTELLIGENCE_UNIVERSE
+        if latest_by_symbol.get(symbol) == target
+    )
+    missing_target = sorted(set(MARKET_INTELLIGENCE_UNIVERSE) - set(complete))
+    return {
+        "status": "FRESH" if not missing_target else "STALE",
+        "target_session": target.isoformat(),
+        "complete_through_target": not missing_target,
+        "target_complete_count": len(complete),
+        "missing_target_symbols": missing_target,
+        "per_symbol_latest": {
+            symbol: (
+                latest_by_symbol[symbol].isoformat()
+                if symbol in latest_by_symbol
+                else None
+            )
+            for symbol in MARKET_INTELLIGENCE_UNIVERSE
+        },
+    }
+
+
+def _safe_failure(failure) -> dict[str, Any]:
+    """Keep failure topology without emitting provider-controlled messages."""
+
+    safe = {"code": str(failure.code)}
+    symbol = getattr(failure, "symbol", None)
+    if symbol is not None:
+        safe["symbol"] = str(symbol)
+    return safe
+
+
+def _calculate_candidate(
+    canonical_bars,
+    sessions,
+    *,
+    as_of,
+    previous,
+    source_freshness,
+):
     bars_by_symbol = defaultdict(list)
     for bar in canonical_bars:
         bars_by_symbol[bar.symbol].append(bar)
@@ -139,7 +185,7 @@ def _calculate_candidate(canonical_bars, sessions, *, as_of, previous):
         rejection_count=0,
         provider_failures=(),
         provider="yahoo",
-        source_freshness={"status": "FRESH", "as_of": as_of.isoformat()},
+        source_freshness=source_freshness,
         calculation_timestamp=datetime.now(timezone.utc),
         previous_published=previous,
     )
@@ -152,7 +198,10 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
 
     started = perf_counter()
     calendar = MarketCalendarService()
-    target = as_of or calendar.last_completed_trading_day("US")
+    last_completed = calendar.last_completed_trading_day("US")
+    target = as_of or last_completed
+    if target > last_completed:
+        raise RuntimeError("requested session is not yet completed")
     sessions = tuple(
         calendar.trading_days("US", target - timedelta(days=210), target)
     )
@@ -174,9 +223,9 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
         "fetch_duration_seconds": fetch_duration,
         "response_timestamp": result.response_timestamp.isoformat(),
         "request_failure": (
-            None if result.request_failure is None else asdict(result.request_failure)
+            None if result.request_failure is None else _safe_failure(result.request_failure)
         ),
-        "symbol_failures": [asdict(failure) for failure in result.symbol_failures],
+        "symbol_failures": [_safe_failure(failure) for failure in result.symbol_failures],
     }
     if result.request_failure is not None:
         return {**base, "total_duration_seconds": perf_counter() - started}
@@ -193,6 +242,7 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
     row_counts = Counter(row.symbol for row in result.rows)
     raw_dates = [row.trading_date for row in result.rows if row.trading_date is not None]
     rejection_counts = Counter(item.code.value for item in validation.rejections)
+    freshness = _source_freshness(validation.canonical_bars, target)
 
     calculation_started = perf_counter()
     candidate, metrics, bars_by_symbol = _calculate_candidate(
@@ -200,6 +250,7 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
         sessions,
         as_of=target,
         previous={},
+        source_freshness=freshness,
     )
     calculation_duration = perf_counter() - calculation_started
 
@@ -223,26 +274,48 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
             for horizon in (1, 5, 20, 60):
                 independent[f"relative_return_vs_spy_{horizon}d"] = None
         production = asdict(metrics[symbol])
+        raw_open = float(raw.open)
+        raw_high = float(raw.high)
+        raw_low = float(raw.low)
+        raw_close = float(raw.close)
+        adjusted_close = float(raw.adjusted_close)
+        raw_volume = float(raw.volume)
+        independent_factor = adjusted_close / raw_close
+        independent_canonical = {
+            "adjustment_factor": independent_factor,
+            "adjusted_open": raw_open * independent_factor,
+            "adjusted_high": raw_high * independent_factor,
+            "adjusted_low": raw_low * independent_factor,
+            "adjusted_close": adjusted_close,
+            "volume": raw_volume,
+        }
+        canonical_output = {
+            "adjustment_factor": canonical.adjustment_factor,
+            "adjusted_open": canonical.adjusted_open,
+            "adjusted_high": canonical.adjusted_high,
+            "adjusted_low": canonical.adjusted_low,
+            "adjusted_close": canonical.adjusted_close,
+            "volume": canonical.provider_volume,
+        }
+        canonical_fields_match = all(
+            _close(canonical_output[name], value)
+            for name, value in independent_canonical.items()
+        )
         manual_checks[symbol] = {
             "raw": {
-                "open": float(raw.open),
-                "high": float(raw.high),
-                "low": float(raw.low),
-                "close": float(raw.close),
-                "adj_close": float(raw.adjusted_close),
-                "volume": float(raw.volume),
+                "open": raw_open,
+                "high": raw_high,
+                "low": raw_low,
+                "close": raw_close,
+                "adj_close": adjusted_close,
+                "volume": raw_volume,
             },
-            "canonical": {
-                "adjustment_factor": canonical.adjustment_factor,
-                "adjusted_open": canonical.adjusted_open,
-                "adjusted_high": canonical.adjusted_high,
-                "adjusted_low": canonical.adjusted_low,
-                "adjusted_close": canonical.adjusted_close,
-                "volume": canonical.provider_volume,
-            },
+            "independent_canonical": independent_canonical,
+            "canonical": canonical_output,
+            "canonical_fields_match": canonical_fields_match,
             "independent_metrics": independent,
             "production_metrics": production,
-            "all_metrics_match": all(
+            "all_metrics_match": canonical_fields_match and all(
                 _close(production[name], value)
                 for name, value in independent.items()
             ),
@@ -260,11 +333,15 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
         replay_validation = validate_provider_rows(
             replay_rows, replay_sessions, result.response_timestamp
         )
+        replay_freshness = _source_freshness(
+            replay_validation.canonical_bars, replay_date
+        )
         replay_candidate, _, _ = _calculate_candidate(
             replay_validation.canonical_bars,
             replay_sessions,
             as_of=replay_date,
             previous=previous,
+            source_freshness=replay_freshness,
         )
         max_input = max(
             bar.trading_date for bar in replay_validation.canonical_bars
@@ -304,11 +381,7 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
         "canonical_bars": len(validation.canonical_bars),
         "rejected_rows": len(validation.rejections),
         "rejection_codes": dict(sorted(rejection_counts.items())),
-        "freshness": {
-            "target_session": target.isoformat(),
-            "latest_provider_bar": max(raw_dates).isoformat() if raw_dates else None,
-            "complete_through_target": bool(raw_dates and max(raw_dates) == target),
-        },
+        "freshness": freshness,
         "validation_duration_seconds": validation_duration,
         "calculation_duration_seconds": calculation_duration,
         "candidate_status": candidate.ingestion_status.value,

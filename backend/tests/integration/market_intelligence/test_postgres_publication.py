@@ -19,10 +19,25 @@ from app.domain.market_intelligence.constants import (
     PRICE_BASIS,
     UNIVERSE_HASH,
 )
-from app.domain.market_intelligence.models import IngestionStatus, RunAudit
+from app.domain.market_intelligence.models import (
+    BarRejection,
+    CanonicalBar,
+    IngestionStatus,
+    RankDirection,
+    RankRecord,
+    RejectionCode,
+    RunAudit,
+    SectorMetrics,
+    SectorSnapshot,
+)
 from app.domain.market_intelligence.ports import MarketIntelligenceIdempotencyConflict
 from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
-from app.infra.db.models.market_intelligence import MarketIntelligenceRunAudit
+from app.infra.db.models.market_intelligence import (
+    MarketIntelligenceCanonicalBar,
+    MarketIntelligenceRejection,
+    MarketIntelligenceRunAudit,
+    MarketIntelligenceSectorSnapshot,
+)
 from app.infra.db.uow import SqlUnitOfWork
 
 
@@ -39,6 +54,9 @@ def _create_tables(engine) -> None:
         FeatureRun.__table__,
         FeatureRunPointer.__table__,
         MarketIntelligenceRunAudit.__table__,
+        MarketIntelligenceCanonicalBar.__table__,
+        MarketIntelligenceRejection.__table__,
+        MarketIntelligenceSectorSnapshot.__table__,
     ]
     FeatureRun.metadata.create_all(engine, tables=tables)
 
@@ -65,6 +83,83 @@ def _audit(key: str, as_of: date) -> RunAudit:
     )
 
 
+def _bar(as_of: date) -> CanonicalBar:
+    return CanonicalBar(
+        provider="yahoo",
+        provider_symbol="SPY",
+        symbol="SPY",
+        raw_trading_date=as_of.isoformat(),
+        trading_date=as_of,
+        raw_open=100.0,
+        raw_high=103.0,
+        raw_low=99.0,
+        raw_close=102.0,
+        provider_adjusted_close=101.49,
+        adjustment_factor=0.995,
+        adjusted_open=99.5,
+        adjusted_high=102.485,
+        adjusted_low=98.505,
+        adjusted_close=101.49,
+        provider_volume=1_250_000.0,
+        source_timestamp=NOW,
+        ingestion_timestamp=NOW,
+        price_basis=PRICE_BASIS,
+        normalization_version=NORMALIZATION_VERSION,
+    )
+
+
+def _rejection(as_of: date) -> BarRejection:
+    return BarRejection(
+        provider="yahoo",
+        provider_symbol="XLU",
+        symbol="XLU",
+        trading_date=as_of,
+        code=RejectionCode.NEGATIVE_VOLUME,
+        reason="volume must be >= 0",
+        raw_evidence={"volume": -1},
+        ingestion_timestamp=NOW,
+    )
+
+
+def _snapshot(as_of: date) -> SectorSnapshot:
+    metrics = SectorMetrics(
+        return_1d=0.01,
+        return_5d=0.02,
+        return_20d=0.03,
+        return_60d=0.04,
+        relative_return_vs_spy_1d=0.005,
+        relative_return_vs_spy_5d=0.01,
+        relative_return_vs_spy_20d=0.015,
+        relative_return_vs_spy_60d=0.02,
+        rvol20=1.25,
+        flow_pressure_1d_proxy=0.5,
+        cmf_5d_proxy=0.2,
+        cmf_20d_proxy=0.15,
+        cmf_60d_proxy=0.1,
+    )
+    return SectorSnapshot(
+        trading_date=as_of,
+        symbol="XLK",
+        asset_type="sector_etf",
+        sector_name="Technology",
+        metrics=metrics,
+        ranks={
+            "relative_return_vs_spy_20d": RankRecord(
+                current_rank=1,
+                previous_rank=2,
+                rank_change=1,
+                rank_direction=RankDirection.IMPROVED,
+            )
+        },
+        provider="yahoo",
+        source_freshness={"status": "FRESH", "as_of": as_of.isoformat()},
+        price_basis=PRICE_BASIS,
+        metric_version=METRIC_VERSION,
+        calculation_timestamp=NOW,
+        data_quality_status="COMPLETE",
+    )
+
+
 def _create_candidate(factory, as_of: date, key: str) -> int:
     with SqlUnitOfWork(factory) as uow:
         run = uow.feature_runs.start_run(
@@ -75,7 +170,7 @@ def _create_candidate(factory, as_of: date, key: str) -> int:
             config_json={"pipeline": PIPELINE_NAME},
         )
         uow.market_intelligence.persist_candidate(
-            run.id, _audit(key, as_of), (), (), ()
+            run.id, _audit(key, as_of), (_bar(as_of),), (), (_snapshot(as_of),)
         )
         uow.feature_runs.mark_completed(run.id, RunStats(12, 12, 0, 0.1, 12))
         uow.commit()
@@ -116,13 +211,20 @@ def test_exception_before_pointer_update_rolls_back_candidate(pg_factory) -> Non
                 config_json={"pipeline": PIPELINE_NAME},
             )
             uow.market_intelligence.persist_candidate(
-                run.id, _audit("a" * 64, date(2026, 8, 26)), (), (), ()
+                run.id,
+                _audit("a" * 64, date(2026, 8, 26)),
+                (_bar(date(2026, 8, 26)),),
+                (_rejection(date(2026, 8, 26)),),
+                (_snapshot(date(2026, 8, 26)),),
             )
             raise RuntimeError("before pointer")
 
     with pg_factory() as session:
         assert session.query(func.count(FeatureRun.id)).scalar() == 0
         assert session.query(func.count(MarketIntelligenceRunAudit.run_id)).scalar() == 0
+        assert session.query(func.count(MarketIntelligenceCanonicalBar.run_id)).scalar() == 0
+        assert session.query(func.count(MarketIntelligenceRejection.id)).scalar() == 0
+        assert session.query(func.count(MarketIntelligenceSectorSnapshot.run_id)).scalar() == 0
         assert session.query(func.count(FeatureRunPointer.key)).scalar() == 0
 
 
@@ -140,7 +242,11 @@ def test_exception_after_pointer_update_rolls_back_pointer_and_candidate(pg_fact
                 config_json={"pipeline": PIPELINE_NAME},
             )
             uow.market_intelligence.persist_candidate(
-                run.id, _audit("2" * 64, date(2026, 8, 26)), (), (), ()
+                run.id,
+                _audit("2" * 64, date(2026, 8, 26)),
+                (_bar(date(2026, 8, 26)),),
+                (),
+                (_snapshot(date(2026, 8, 26)),),
             )
             uow.feature_runs.mark_completed(run.id, RunStats(12, 12, 0, 0.1, 12))
             uow.feature_runs.publish_atomically_if_not_older(
@@ -152,6 +258,9 @@ def test_exception_after_pointer_update_rolls_back_pointer_and_candidate(pg_fact
     with pg_factory() as session:
         assert session.query(func.count(FeatureRun.id)).scalar() == 1
         assert session.query(func.count(MarketIntelligenceRunAudit.run_id)).scalar() == 1
+        assert session.query(func.count(MarketIntelligenceCanonicalBar.run_id)).scalar() == 1
+        assert session.query(func.count(MarketIntelligenceRejection.id)).scalar() == 0
+        assert session.query(func.count(MarketIntelligenceSectorSnapshot.run_id)).scalar() == 1
 
 
 def test_concurrent_case_a_same_day_history_winner_matches_pointer(pg_factory) -> None:
@@ -179,6 +288,12 @@ def test_concurrent_case_a_same_day_history_winner_matches_pointer(pg_factory) -
             .scalar()
         )
     assert _pointer(pg_factory) == winner
+    with SqlUnitOfWork(pg_factory) as uow:
+        history = uow.market_intelligence.list_published_history(
+            metric_version=METRIC_VERSION,
+            limit=10,
+        )
+    assert history and history[0].run_id == winner
 
 
 def test_concurrent_case_b_old_backfill_cannot_replace_newer_date(pg_factory) -> None:
