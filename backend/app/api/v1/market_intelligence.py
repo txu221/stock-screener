@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -17,14 +18,84 @@ from app.infra.db.repositories.market_intelligence_repo import (
     SqlMarketIntelligenceRepository,
 )
 from app.schemas.market_intelligence import (
+    EtfRadarResponse,
     MarketIntelligenceHealthResponse,
     MarketIntelligenceHealthRunResponse,
+    MarketIntelligenceOverviewResponse,
+    MarketMoversResponse,
     SectorIntelligenceHistoryItemResponse,
     SectorIntelligenceHistoryResponse,
     SectorIntelligenceLatestResponse,
 )
+from app.services.market_intelligence_read_service import (
+    DEFAULT_MIN_PRICE,
+    MarketIntelligenceReadService,
+)
 
 router = APIRouter()
+
+
+@router.get(
+    "/overview",
+    response_model=MarketIntelligenceOverviewResponse,
+)
+def market_intelligence_overview(
+    db: Session = Depends(get_db),
+) -> MarketIntelligenceOverviewResponse:
+    return MarketIntelligenceOverviewResponse.from_domain(
+        MarketIntelligenceReadService(db).get_overview()
+    )
+
+
+@router.get(
+    "/movers",
+    response_model=MarketMoversResponse,
+)
+def market_intelligence_movers(
+    limit: int = Query(default=20, ge=1, le=100),
+    sector: str | None = Query(default=None, min_length=1, max_length=100),
+    direction: Literal["all", "gainers", "losers"] = "all",
+    min_price: float = Query(default=DEFAULT_MIN_PRICE, ge=0),
+    min_rvol: float | None = Query(default=None, ge=0),
+    market_cap_group: Literal["mega", "large", "mid", "small"] | None = None,
+    search: str | None = Query(default=None, min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+) -> MarketMoversResponse:
+    return MarketMoversResponse.from_domain(
+        MarketIntelligenceReadService(db).get_movers(
+            limit=limit,
+            sector=sector,
+            direction=direction,
+            min_price=min_price,
+            min_rvol=min_rvol,
+            market_cap_group=market_cap_group,
+            search=search,
+        )
+    )
+
+
+@router.get(
+    "/etfs",
+    response_model=EtfRadarResponse,
+)
+def market_intelligence_etfs(
+    category: Literal[
+        "all",
+        "broad_market",
+        "sector",
+        "semiconductor",
+        "software",
+        "biotech",
+        "defense",
+        "energy",
+        "metals",
+        "uranium",
+    ] = "all",
+    db: Session = Depends(get_db),
+) -> EtfRadarResponse:
+    return EtfRadarResponse.from_domain(
+        MarketIntelligenceReadService(db).get_etf_radar(category=category)
+    )
 
 
 @router.get(
