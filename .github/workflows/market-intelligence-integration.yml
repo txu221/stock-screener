@@ -1,6 +1,13 @@
 name: Market Intelligence Integration
 
 on:
+  push:
+    branches:
+      - feat/market-intelligence-engine
+    paths:
+      - .github/workflows/market-intelligence-integration.yml
+      - backend/**
+      - docs/phase2-integration-report.md
   workflow_dispatch:
     inputs:
       run_live_yahoo:
@@ -80,9 +87,10 @@ jobs:
 
       - name: Verify service health
         run: |
+          set -o pipefail
           pg_isready -h localhost -p 5432 -U "$PHASE2_DB_USER" -d "$PHASE2_DB_NAME"
           redis-cli -h localhost -p 6379 ping
-          python - <<'PY'
+          python - <<'PY' 2>&1 | tee "$RUNNER_TEMP/phase2-services.log"
           import os
           import psycopg2
           import redis
@@ -93,6 +101,7 @@ jobs:
                   print("POSTGRES_VERSION=" + cursor.fetchone()[0])
           client = redis.Redis.from_url(os.environ["PHASE2_REDIS_URL"])
           print("REDIS_PING=" + str(client.ping()))
+          print("REDIS_VERSION=" + str(client.info("server")["redis_version"]))
           client.close()
           PY
 
@@ -173,6 +182,7 @@ jobs:
       - name: Run real PostgreSQL migration, rollback, publication, concurrency, and API tests
         working-directory: backend
         run: |
+          set -o pipefail
           python -m pytest \
             tests/integration/market_intelligence/test_postgres_migration.py \
             tests/integration/market_intelligence/test_postgres_publication.py \
@@ -182,12 +192,14 @@ jobs:
       - name: Run real Redis connectivity test
         working-directory: backend
         run: |
+          set -o pipefail
           python -m pytest tests/integration/market_intelligence/test_redis_celery_runtime.py \
             -k "real_redis_connectivity" -q 2>&1 | tee "$RUNNER_TEMP/phase2-redis.log"
 
       - name: Run Phase 1 deterministic suite
         working-directory: backend
         run: |
+          set -o pipefail
           python -m pytest \
             tests/unit/market_intelligence \
             tests/unit/repositories/test_market_intelligence_repo.py \
@@ -200,6 +212,7 @@ jobs:
       - name: Run Phase 2 service-independent suite
         working-directory: backend
         run: |
+          set -o pipefail
           python -m pytest tests/integration/market_intelligence \
             -m "not postgresql_integration and not redis_integration and not live_provider and not manual_provider" \
             -q 2>&1 | tee "$RUNNER_TEMP/phase2-deterministic.log"
@@ -230,7 +243,7 @@ jobs:
 
   live-yahoo-and-celery:
     name: Optional Yahoo and Celery integration
-    if: ${{ inputs.run_live_yahoo == true }}
+    if: ${{ github.event_name == 'push' || inputs.run_live_yahoo == true }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -299,12 +312,14 @@ jobs:
       - name: Run opt-in live Yahoo validation
         working-directory: backend
         run: |
+          set -o pipefail
           python -m pytest tests/integration/market_intelligence/test_live_yahoo_validation.py \
             -q 2>&1 | tee "$RUNNER_TEMP/phase2-live-yahoo.log"
 
       - name: Run real Celery broker-worker task and idempotent rerun
         working-directory: backend
         run: |
+          set -o pipefail
           python -m pytest tests/integration/market_intelligence/test_redis_celery_runtime.py \
             -k "real_celery_worker_one_shot_and_idempotent_rerun" \
             -q 2>&1 | tee "$RUNNER_TEMP/phase2-celery.log"
