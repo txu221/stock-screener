@@ -117,4 +117,3 @@ Final verification includes focused and full backend/frontend suites, lint, prod
 ## Scope Guard
 
 This milestone does not add AI, news, options flow, institutional or real ETF fund flow, theme rotation, alerts, portfolio trading, buy/sell recommendations, prediction models, backtesting strategies, or an OTC/full-market scanner.
-

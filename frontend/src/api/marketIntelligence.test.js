@@ -80,4 +80,3 @@ describe('market intelligence API', () => {
     expect(marketIntelligenceKeys.etfs('all')).toEqual(['market-intelligence', 'etfs', 'all']);
   });
 });
-

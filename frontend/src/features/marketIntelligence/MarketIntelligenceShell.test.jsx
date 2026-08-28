@@ -25,4 +25,3 @@ describe('MarketIntelligenceShell', () => {
     expect(screen.getByRole('tab', { name: 'Sectors' })).toHaveAttribute('aria-selected', 'true');
   });
 });
-

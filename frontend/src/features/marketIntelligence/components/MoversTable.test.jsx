@@ -49,4 +49,3 @@ describe('MoversTable', () => {
     expect(screen.getByText('No Top Gainers match the current filters.')).toBeInTheDocument();
   });
 });
-

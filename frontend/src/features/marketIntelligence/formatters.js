@@ -28,4 +28,3 @@ export const directionLabel = (value) => {
   if (Number(value) < 0) return '↓ DOWN';
   return '→ UNCHANGED';
 };
-
