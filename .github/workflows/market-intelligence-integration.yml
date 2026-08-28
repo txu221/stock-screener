@@ -240,6 +240,7 @@ jobs:
             tests/unit/test_market_intelligence_endpoints.py \
             tests/unit/test_market_intelligence_mvp_endpoints.py \
             tests/unit/test_market_intelligence_migration.py \
+            tests/unit/test_market_intelligence_migration_heads.py \
             -q 2>&1 | tee "$RUNNER_TEMP/phase1.log"
 
       - name: Run Phase 2 service-independent suite

@@ -104,11 +104,11 @@ Sector and Today pages query Data Health independently from the published sector
 
 Current evidence:
 
-- code-final deterministic backend Market Intelligence suite: 131 passed;
-- code-final focused frontend Market Intelligence suite: 10 files and 31 tests passed;
+- post-target-integration deterministic backend Market Intelligence suite: 132 passed;
+- post-target-integration focused frontend Market Intelligence suite: 11 files and 35 tests passed;
 - local frontend full diagnostic: 631 passed, 9 known concurrent `App.static` failures, plus the known Windows doubled-drive-path suite-load error;
 - isolated `App.static`: 9/9 passed immediately;
-- Linux Actions frontend: 100 files and 660 tests passed;
+- pre-target-integration Linux Actions frontend checkpoint: 100 files and 662 tests passed;
 - code-final production build: 2,510 modules transformed and passed;
 - lint: 0 errors and the same 4 pre-existing warnings; an initially introduced fifth warning was removed before closure;
 - source-neutral Windows backend full-unit comparison: 6,141 passed, 13 known baseline failures, and 3 skipped in 15m11s;
@@ -137,7 +137,7 @@ MVP read paths use bounded local-table queries: 120 calendar days for four pulse
 - `backend/.local/state/gh/device-id`: absent;
 - no raw Yahoo payload, token, cookie, `.env`, local database, broker URL, device identifier, or machine-local state was committed;
 - no new dependency, authentication system, static publisher, provider, or parallel data pipeline was added;
-- no upstream push or merge was performed.
+- no upstream push or feature-to-main merge was performed; fork `main` was merged into the feature branch before Draft PR review so the exact target-base combination could be validated.
 
 ## 11. Independent review findings
 
@@ -157,6 +157,8 @@ The independent review confirmed the read-only architecture, deterministic unive
 The reviewer also identified that the existing `stock_prices` history is not fully corporate-action reconciled because bounded historical anchors are not revised on every adjustment change. Correcting that is a cross-cutting ingestion/schema/backfill project outside this MVP's no-rewrite scope. The product now discloses the limitation in API and UI, uses a published date boundary, and does not claim revision-consistent total-return correctness.
 
 The implementation was also reviewed for big-bang refactors, provider calls in read paths, duplicate financial calculations in React, stale-data disclosure, proxy language, ordinal ties, completed-session bounds, S&P 500/liquidity eligibility, null handling, API types, transaction safety, security, performance, and non-color accessibility. Review-driven fixes are recorded in the commit history and all affected tests are rerun.
+
+Draft PR integration exposed two target-base issues that did not exist at the Phase 0 baseline: fork `main` had independently created a second Alembic head and its v1.5 release notes no longer satisfied the retained release-note contract. The branch now includes an explicit no-op merge revision with a single-head regression test and restores the accurate `first-run bootstrap` release wording. This keeps the feature PR migration-safe without rewriting either additive parent migration.
 
 ## 12. Known limitations and remaining risks
 
@@ -184,4 +186,4 @@ GitHub Actions run `33193795883` validated review-fix commit `43cb90e1` on the f
 - Frontend tests and production build: success, including lint, the full Linux Vitest suite, and Vite production bundle;
 - independent review regressions: 1D rank contract, same-day partial boundary, non-finite market cap, latest-attempt/stable disclosure, separate Today lineage, accessible metric help, source-unavailable Movers, and ETF All-rank semantics all passed.
 
-No upstream push, merge, dependency change, credential, local device state, or scope expansion occurred.
+No upstream push, feature-to-main merge, dependency change, credential, local device state, or scope expansion occurred. Fork `main` was merged into the feature branch only to validate the exact Draft PR target; the feature remains unmerged.

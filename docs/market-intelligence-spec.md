@@ -527,7 +527,7 @@ Idempotency is content-addressed by pipeline, trading date, fixed-universe hash,
 
 ### 17.6 Persistence, Data Health, and API
 
-Migration `20260826_0031` adds `market_intelligence_run_audits`, `market_intelligence_canonical_bars`, `market_intelligence_rejections`, and `market_intelligence_sector_snapshots`, all tied to existing `feature_runs`. Derived snapshots record trading date, identity, every metric, current/previous/change/direction ranks, provider/freshness, price basis, `market_intelligence_v1`, calculation time, and data-quality status. Normalization is versioned as `market_intelligence_adjusted_ohlcv_v1`.
+Migration `20260826_0031` adds `market_intelligence_run_audits`, `market_intelligence_canonical_bars`, `market_intelligence_rejections`, and `market_intelligence_sector_snapshots`, all tied to existing `feature_runs`. Derived snapshots record trading date, identity, every metric, current/previous/change/direction ranks, provider/freshness, price basis, `market_intelligence_v1`, calculation time, and data-quality status. Normalization is versioned as `market_intelligence_adjusted_ohlcv_v1`. After fork `main` independently added the breadth/classification branch `20260825_0031 -> 20260825_0032`, no-op merge revision `20260828_0033` joined `20260825_0032` and `20260826_0031` into one explicit Alembic head; it changes no table or data itself.
 
 Data Health reads persisted audit truth, including expected/received/usable symbols, valid/rejected bars, missing symbols, duplicate rows, invalid volume/OHLC, provider status/failures, request failure, latest attempted run, latest published run, publication occurrence, freshness, timestamps, price basis, and metric/normalization versions.
 

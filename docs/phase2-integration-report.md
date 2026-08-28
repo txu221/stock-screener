@@ -66,6 +66,14 @@ repository's real Alembic path against PostgreSQL:
 were present after both upgrades, absent after downgrade, and predecessor
 `feature_runs` data survived. The complete nine-test PostgreSQL group passed.
 
+Before Draft PR review, fork `main` was integrated into the feature branch. It
+contained the separately developed breadth/classification migration branch
+`20260825_0031 -> 20260825_0032`, which shares predecessor `20260823_0030` with
+the Market Intelligence migration. No-op revision `20260828_0033` explicitly
+merges heads `20260825_0032` and `20260826_0031`. A deterministic Alembic graph
+test requires that merge revision to be the only head; the real PostgreSQL
+upgrade/downgrade/re-upgrade workflow covers the combined graph.
+
 ## 3. Transaction rollback and concurrent publication
 
 The opt-in PostgreSQL tests use independent sessions, non-empty audit/bar/
