@@ -104,7 +104,7 @@ Sector and Today pages query Data Health independently from the published sector
 
 Current evidence:
 
-- post-target-integration deterministic backend Market Intelligence suite: 132 passed;
+- post-target-integration deterministic backend Market Intelligence suite: 149 passed;
 - post-target-integration focused frontend Market Intelligence suite: 11 files and 35 tests passed;
 - local frontend full diagnostic: 631 passed, 9 known concurrent `App.static` failures, plus the known Windows doubled-drive-path suite-load error;
 - isolated `App.static`: 9/9 passed immediately;
@@ -120,7 +120,9 @@ Component tests validate all five routes through the shared shell. Page tests co
 
 Phase 2 is complete. The dedicated Actions workflow uses Ubuntu 24.04, PostgreSQL 16.15, and Redis 7.4.11. It proves Alembic upgrade/downgrade/re-upgrade, predecessor compatibility, rollback before/after pointer mutation, same-date revision concurrency, old backfill monotonicity, PostgreSQL-backed APIs, Redis, a real isolated Celery worker, Yahoo ingestion, and idempotent repeated delivery.
 
-The code-final validation run is GitHub Actions run `33193795883`: all three jobs completed successfully at commit `43cb90e1` ([run URL](https://github.com/txu221/stock-screener/actions/runs/33193795883)).
+Target-base integration exposed that two independent live Yahoo calls can occasionally return a corrected completed-session value. The scheduled task now resolves an existing published run for the same date/version before a retry performs provider I/O; an explicit `force_refresh=True` remains available for intentional, audited same-day revisions. Red-first regressions prove both published-session reuse and recovery of an unpublished partial session; they are included in the 149-test deterministic suite. This changes delivery behavior, not metric formulas or publication atomicity.
+
+The pre-target-integration checkpoint is GitHub Actions run `33193795883`: all three jobs completed successfully at commit `43cb90e1` ([run URL](https://github.com/txu221/stock-screener/actions/runs/33193795883)). Final target-base evidence is attached to the Draft PR checks for the final feature-branch commit.
 
 An additional non-persisting local Yahoo reconciliation on 2026-08-28 requested SPY, XLK, XLE, AAPL, NVDA, MU, SMH, and QQQ for completed session 2026-08-27. All 8 returned 125 sessions through the target, and the backend calculation produced finite 1D/5D/20D/60D returns, RVOL20, and 60D drawdown. Representative semantic checks included NVDA at approximately +8.74% 1D with 2.56 RVOL, XLE at approximately -0.22% 1D with 1.15 RVOL, and SMH at approximately +3.10% 1D. These observations were printed as summarized metrics only; no raw provider payload was written or committed.
 

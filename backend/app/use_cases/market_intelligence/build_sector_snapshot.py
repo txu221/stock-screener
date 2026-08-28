@@ -73,6 +73,7 @@ class CompletedSessionSource(Protocol):
 @dataclass(frozen=True)
 class BuildSectorSnapshotCommand:
     as_of: date
+    reuse_published: bool = False
 
 
 @dataclass(frozen=True)
@@ -272,6 +273,17 @@ class BuildSectorSnapshotUseCase:
         self,
         command: BuildSectorSnapshotCommand,
     ) -> BuildSectorSnapshotResult:
+        if command.reuse_published:
+            with self._uow_factory() as uow:
+                published = uow.market_intelligence.list_published_history(
+                    metric_version=METRIC_VERSION,
+                    date_from=command.as_of,
+                    date_to=command.as_of,
+                    limit=1,
+                )
+            if published:
+                return self._result_from_existing(published[0])
+
         sessions = tuple(
             self._session_source.completed_sessions(
                 "US", command.as_of, minimum=90

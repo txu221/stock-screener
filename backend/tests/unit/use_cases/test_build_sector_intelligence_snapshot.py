@@ -332,6 +332,52 @@ def test_case_g_identical_input_rerun_reuses_run_and_row_counts() -> None:
     assert _table_counts() == before
 
 
+def test_scheduled_retry_reuses_published_session_before_provider_fetch() -> None:
+    as_of = date(2026, 5, 15)
+    first = _runner(_batch(as_of), _sessions(as_of)).execute(_command(as_of))
+
+    class _ProviderMustNotRun:
+        def fetch(self, symbols, requested_as_of):
+            raise AssertionError(
+                "published scheduled retry must not refetch provider data"
+            )
+
+    retry_runner = BuildSectorSnapshotUseCase(
+        provider=_ProviderMustNotRun(),
+        session_source=_StaticSessions(_sessions(as_of)),
+        uow_factory=lambda: SqlUnitOfWork(SessionLocal),
+        clock=lambda: NOW + timedelta(minutes=5),
+    )
+
+    retry = retry_runner.execute(
+        BuildSectorSnapshotCommand(as_of=as_of, reuse_published=True)
+    )
+
+    assert retry.run_id == first.run_id
+    assert retry.idempotency_key == first.idempotency_key
+    assert retry.ingestion_status is IngestionStatus.SUCCEEDED
+    assert retry.published is True
+    assert _table_counts()["runs"] == 1
+
+
+def test_scheduled_retry_rebuilds_unpublished_partial_session() -> None:
+    as_of = date(2026, 5, 15)
+    partial = _runner(
+        _batch(as_of, missing_symbol="XLU"),
+        _sessions(as_of),
+    ).execute(_command(as_of))
+
+    recovered = _runner(_batch(as_of), _sessions(as_of)).execute(
+        BuildSectorSnapshotCommand(as_of=as_of, reuse_published=True)
+    )
+
+    assert partial.ingestion_status is IngestionStatus.PARTIAL
+    assert recovered.ingestion_status is IngestionStatus.SUCCEEDED
+    assert recovered.published is True
+    assert recovered.run_id != partial.run_id
+    assert _pointer_run_id() == recovered.run_id
+
+
 def test_commit_failure_rolls_back_run_snapshot_and_pointer() -> None:
     as_of = date(2026, 5, 15)
 

@@ -28,6 +28,7 @@ def calculate_sector_intelligence_snapshot(
     *,
     market: str = "US",
     activity_lifecycle: str | None = None,
+    force_refresh: bool = False,
 ) -> dict:
     del activity_lifecycle
     if normalize_market(market) != "US":
@@ -38,7 +39,10 @@ def calculate_sector_intelligence_snapshot(
         else get_market_calendar_service().last_completed_trading_day("US")
     )
     result = get_market_intelligence_runner().execute(
-        BuildSectorSnapshotCommand(as_of=as_of)
+        BuildSectorSnapshotCommand(
+            as_of=as_of,
+            reuse_published=not force_refresh,
+        )
     )
     return {
         "status": result.ingestion_status.value,

@@ -115,6 +115,17 @@ wrote FeatureRun/audit/canonical/snapshot/pointer state to PostgreSQL, and
 returned the same run and idempotency key for the repeated completed-session
 delivery. The worker test passed in `10.36 s`.
 
+During exact Draft-PR target integration, one later live run observed a Yahoo
+historical correction between the first and second delivery. Both executions
+were valid `SUCCEEDED` revisions, but that is not broker-redelivery
+idempotency. The production task now defaults to `reuse_published=True`: it
+returns the newest published run for the same session and metric version before
+calendar/provider I/O. Operators can request an intentional audited correction
+with `force_refresh=True`; partial and failed sessions remain retryable. A
+red-first unit regression proves the provider is not called on the normal
+published-session retry, while existing content-hash and same-day revision
+tests preserve the correction path.
+
 The task currently declares no Celery `autoretry_for` policy. Consequently a
 real broker/worker retry sequence was not validated and remains a production
 risk to resolve through observation or a separately specified retry policy; it
@@ -498,3 +509,25 @@ Yahoo/Celery job revalidated the live provider plus real worker one-shot and
 idempotent rerun. The frontend job passed lint, the complete Linux test suite,
 and the production build. This run closed the post-review infrastructure gate;
 it introduced no change to Phase 1 publication semantics.
+
+## 20. Fork-main integration hardening
+
+Before final Draft PR review, fork `main` was merged into the feature branch so
+the exact `txu221/stock-screener:main` target combination—not only the original
+Phase 0 merge base—was validated. That integration exposed two target-base
+issues and one live-delivery edge case:
+
+1. breadth/classification and Market Intelligence migrations shared predecessor
+   `20260823_0030`; no-op revision `20260828_0033` now merges their two heads;
+2. the target's release-doc assertion required the accurate phrase `first-run
+   bootstrap`;
+3. a completed Yahoo bar changed between two live task deliveries, so scheduled
+   delivery reuse is now resolved before provider I/O while explicit forced
+   corrections retain content-addressed same-day revisions.
+
+Local post-fix evidence is 149 deterministic Market Intelligence tests and 39
+service-independent integration tests passing. The merge revision is the sole
+Alembic head locally, and the dedicated PostgreSQL job proved its real
+upgrade/downgrade/re-upgrade traversal. Final Linux service, live-provider,
+frontend, and full target-branch CI evidence is attached to the Draft PR checks
+for the final feature-branch commit.
