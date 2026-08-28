@@ -29,6 +29,10 @@ const payload = {
   published_at: '2026-08-26T22:05:00Z',
   provider: 'existing_stock_prices',
   metric_version: 'market_intelligence_mvp_v1',
+  price_basis: 'cached_adjusted_close',
+  price_history_quality: 'not_corporate_action_reconciled',
+  expected_session: '2026-08-27',
+  freshness_status: 'STALE',
   eligible_count: 420,
   gainers: [nvda],
   losers: [mu],
@@ -105,5 +109,22 @@ describe('MoversPage', () => {
     api.getMarketMovers.mockResolvedValueOnce({ ...payload, eligible_count: 0, gainers: [], losers: [], unusual_volume: [], sectors: [] });
     renderWithProviders(<MoversPage />);
     expect(await screen.findByText('No eligible S&P 500 movers match the current filters.')).toBeInTheDocument();
+  });
+
+  it('distinguishes unavailable source data from a valid empty filter result', async () => {
+    api.getMarketMovers.mockResolvedValueOnce({
+      ...payload,
+      eligible_count: 0,
+      gainers: [],
+      losers: [],
+      unusual_volume: [],
+      sectors: [],
+      unavailable_reason: 'no_published_us_feature_run',
+    });
+
+    renderWithProviders(<MoversPage />);
+
+    expect(await screen.findByText(/Movers source unavailable: no published us feature run/i)).toBeInTheDocument();
+    expect(screen.queryByText('No eligible S&P 500 movers match the current filters.')).not.toBeInTheDocument();
   });
 });

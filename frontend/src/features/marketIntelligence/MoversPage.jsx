@@ -27,6 +27,21 @@ const LISTS = {
 };
 
 const optionalNumber = (value) => (value === '' ? undefined : Number(value));
+const STANDARD_SECTORS = [
+  'Communication Services',
+  'Consumer Discretionary',
+  'Consumer Staples',
+  'Energy',
+  'Financials',
+  'Health Care',
+  'Industrials',
+  'Information Technology',
+  'Materials',
+  'Real Estate',
+  'Utilities',
+];
+
+const unavailableLabel = (reason) => reason.replaceAll('_', ' ');
 
 export default function MoversPage() {
   const [search, setSearch] = useState('');
@@ -60,7 +75,10 @@ export default function MoversPage() {
   }
 
   const data = query.data;
-  const sectorOptions = data?.sectors?.map((item) => item.sector) || [];
+  const sectorOptions = [...new Set([
+    ...STANDARD_SECTORS,
+    ...(data?.sectors?.map((item) => item.sector) || []),
+  ])].sort();
   const selectedList = LISTS[activeList];
 
   return (
@@ -76,6 +94,10 @@ export default function MoversPage() {
           lastUpdated={data.published_at}
           provider={data.provider}
           metricVersion={data.metric_version}
+          priceBasis={data.price_basis}
+          priceHistoryQuality={data.price_history_quality}
+          expectedSession={data.expected_session}
+          freshnessStatus={data.freshness_status}
         />
       )}
 
@@ -109,6 +131,7 @@ export default function MoversPage() {
               <MenuItem value="mega">Mega</MenuItem>
               <MenuItem value="large">Large</MenuItem>
               <MenuItem value="mid">Mid</MenuItem>
+              <MenuItem value="small">Small</MenuItem>
             </TextField>
           </Grid>
         </Grid>
@@ -120,7 +143,13 @@ export default function MoversPage() {
         </Box>
       )}
 
-      {data?.eligible_count === 0 && (
+      {data?.unavailable_reason && (
+        <Alert severity="warning">
+          Movers source unavailable: {unavailableLabel(data.unavailable_reason)}.
+        </Alert>
+      )}
+
+      {data?.eligible_count === 0 && !data.unavailable_reason && (
         <Alert severity="info">No eligible S&amp;P 500 movers match the current filters.</Alert>
       )}
 

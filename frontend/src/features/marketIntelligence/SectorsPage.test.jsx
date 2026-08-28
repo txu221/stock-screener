@@ -10,8 +10,10 @@ import SectorsPage from './SectorsPage';
 vi.mock('../../api/marketIntelligence', () => ({
   marketIntelligenceKeys: {
     sectors: () => ['market-intelligence', 'sectors', 'latest'],
+    health: () => ['market-intelligence', 'health'],
   },
   getSectorLatest: vi.fn(),
+  getMarketIntelligenceHealth: vi.fn(),
 }));
 
 const symbols = ['XLC', 'XLY', 'XLP', 'XLE', 'XLF', 'XLV', 'XLI', 'XLB', 'XLRE', 'XLK', 'XLU'];
@@ -42,25 +44,25 @@ const sectorPayload = {
       cmf_60d: 0.4,
     },
     ranks: {
-      relative_return_vs_spy_1d: index + 1,
+      return_1d: index + 1,
       relative_return_vs_spy_5d: index + 1,
       relative_return_vs_spy_20d: index + 1,
       relative_return_vs_spy_60d: index + 1,
     },
     previous_ranks: {
-      relative_return_vs_spy_1d: index === 0 ? 5 : index + 1,
+      return_1d: index === 0 ? 5 : index + 1,
       relative_return_vs_spy_5d: index + 1,
       relative_return_vs_spy_20d: index + 1,
       relative_return_vs_spy_60d: index + 1,
     },
     rank_changes: {
-      relative_return_vs_spy_1d: index === 0 ? 4 : index === 1 ? -2 : 0,
+      return_1d: index === 0 ? 4 : index === 1 ? -2 : 0,
       relative_return_vs_spy_5d: 0,
       relative_return_vs_spy_20d: 0,
       relative_return_vs_spy_60d: 0,
     },
     rank_directions: {
-      relative_return_vs_spy_1d: index === 0 ? 'IMPROVED' : index === 1 ? 'DECLINED' : 'UNCHANGED',
+      return_1d: index === 0 ? 'IMPROVED' : index === 1 ? 'DECLINED' : 'UNCHANGED',
       relative_return_vs_spy_5d: 'UNCHANGED',
       relative_return_vs_spy_20d: 'UNCHANGED',
       relative_return_vs_spy_60d: 'UNCHANGED',
@@ -72,6 +74,10 @@ describe('SectorsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getSectorLatest.mockResolvedValue(sectorPayload);
+    api.getMarketIntelligenceHealth.mockResolvedValue({
+      latest_attempt: { status: 'PARTIAL', as_of: '2026-08-27' },
+      last_complete_published_snapshot: '2026-08-26',
+    });
   });
 
   it('renders exactly the fixed 11 sectors and keeps SPY benchmark-only', async () => {
@@ -83,6 +89,8 @@ describe('SectorsPage', () => {
     expect(screen.queryByTestId('sector-SPY')).not.toBeInTheDocument();
     expect(screen.getByText('+4 ↑ IMPROVED')).toBeInTheDocument();
     expect(screen.getByText('-2 ↓ DECLINED')).toBeInTheDocument();
+    expect(screen.getByText('Latest attempt PARTIAL')).toBeInTheDocument();
+    expect(screen.getByText('Displayed stable snapshot 2026-08-26')).toBeInTheDocument();
   });
 
   it('switches periods without recalculating backend financial values', async () => {
@@ -102,7 +110,7 @@ describe('SectorsPage', () => {
     renderWithProviders(<SectorsPage />);
     await screen.findByRole('heading', { name: 'Sector Heatmap' });
 
-    await user.hover(screen.getByText('Flow Pressure'));
+    await user.hover(screen.getByRole('button', { name: 'Explain Flow Pressure' }));
 
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
       'OHLCV-derived pressure proxy. Not measured institutional or exchange net flow.'
@@ -120,4 +128,3 @@ describe('SectorsPage', () => {
     expect(await screen.findByText('No published sector rows are available.')).toBeInTheDocument();
   });
 });
-

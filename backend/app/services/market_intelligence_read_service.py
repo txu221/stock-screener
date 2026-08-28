@@ -7,7 +7,6 @@ from datetime import date, datetime, timedelta, timezone
 import math
 from typing import Iterable
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.domain.market_intelligence.mvp import (
@@ -15,6 +14,8 @@ from app.domain.market_intelligence.mvp import (
     ETF_STRENGTH_VERSION,
     ETF_UNIVERSE,
     MVP_METRIC_VERSION,
+    MVP_PRICE_BASIS,
+    MVP_PRICE_HISTORY_QUALITY,
     PULSE_SYMBOLS,
     EtfRadar,
     EtfStrengthItem,
@@ -99,46 +100,43 @@ class MarketIntelligenceReadService:
             grouped[row.symbol].append(row)
         return dict(grouped)
 
-    def _spy_as_of(self) -> date | None:
-        completed_session = self._completed_session
-        if completed_session is None:
-            completed_session = MarketCalendarService().last_completed_trading_day("US")
-        return (
-            self._session.query(func.max(StockPrice.date))
-            .filter(
-                StockPrice.symbol == "SPY",
-                StockPrice.date <= completed_session,
-            )
-            .scalar()
-        )
+    def _expected_session(self) -> date:
+        if self._completed_session is not None:
+            return self._completed_session
+        return MarketCalendarService().last_completed_trading_day("US")
 
-    def _last_updated(self, symbols: Iterable[str], *, as_of: date) -> datetime | None:
-        value = (
-            self._session.query(func.max(StockPrice.created_at))
-            .filter(
-                StockPrice.symbol.in_(tuple(symbols)),
-                StockPrice.date == as_of,
-            )
-            .scalar()
-        )
-        return _as_utc(value)
+    @staticmethod
+    def _freshness_status(*, as_of: date | None, expected_session: date) -> str:
+        if as_of is None:
+            return "UNAVAILABLE"
+        if as_of == expected_session:
+            return "FRESH"
+        if as_of < expected_session:
+            return "STALE"
+        return "FUTURE"
 
     def get_overview(self) -> MarketOverview:
-        as_of = self._spy_as_of()
-        if as_of is None:
+        expected_session = self._expected_session()
+        run = self._published_us_run()
+        if run is None:
             return MarketOverview(
                 as_of=None,
                 last_updated=None,
                 provider=PRICE_SOURCE,
                 metric_version=MVP_METRIC_VERSION,
+                price_basis=MVP_PRICE_BASIS,
+                price_history_quality=MVP_PRICE_HISTORY_QUALITY,
+                expected_session=expected_session,
+                freshness_status="UNAVAILABLE",
                 market_status=None,
                 pulse=tuple(
                     MarketPulseItem(symbol=symbol, available=False)
                     for symbol in PULSE_SYMBOLS
                 ),
                 missing_symbols=PULSE_SYMBOLS,
-                unavailable_reason="no_completed_spy_price",
+                unavailable_reason="no_published_us_feature_run",
             )
+        as_of = run.as_of_date
 
         grouped = self._price_rows(
             PULSE_SYMBOLS,
@@ -164,9 +162,16 @@ class MarketIntelligenceReadService:
             )
         return MarketOverview(
             as_of=as_of,
-            last_updated=self._last_updated(PULSE_SYMBOLS, as_of=as_of),
+            last_updated=_as_utc(run.published_at),
             provider=PRICE_SOURCE,
             metric_version=MVP_METRIC_VERSION,
+            price_basis=MVP_PRICE_BASIS,
+            price_history_quality=MVP_PRICE_HISTORY_QUALITY,
+            expected_session=expected_session,
+            freshness_status=self._freshness_status(
+                as_of=as_of,
+                expected_session=expected_session,
+            ),
             market_status=None,
             pulse=tuple(pulse),
             missing_symbols=tuple(missing),
@@ -176,7 +181,10 @@ class MarketIntelligenceReadService:
         pointer = self._session.get(FeatureRunPointer, US_PUBLISHED_POINTER)
         if pointer is None:
             return None
-        return self._session.get(FeatureRun, pointer.run_id)
+        run = self._session.get(FeatureRun, pointer.run_id)
+        if run is None or run.status != "published" or run.published_at is None:
+            return None
+        return run
 
     def get_movers(
         self,
@@ -201,6 +209,7 @@ class MarketIntelligenceReadService:
         if market_cap_group not in {None, "mega", "large", "mid", "small"}:
             raise ValueError("unsupported market_cap_group")
 
+        expected_session = self._expected_session()
         run = self._published_us_run()
         if run is None:
             return MoverSummary(
@@ -208,6 +217,10 @@ class MarketIntelligenceReadService:
                 published_at=None,
                 provider=PRICE_SOURCE,
                 metric_version=MVP_METRIC_VERSION,
+                price_basis=MVP_PRICE_BASIS,
+                price_history_quality=MVP_PRICE_HISTORY_QUALITY,
+                expected_session=expected_session,
+                freshness_status="UNAVAILABLE",
                 eligible_count=0,
                 gainers=(),
                 losers=(),
@@ -228,6 +241,13 @@ class MarketIntelligenceReadService:
                 published_at=_as_utc(run.published_at),
                 provider=PRICE_SOURCE,
                 metric_version=MVP_METRIC_VERSION,
+                price_basis=MVP_PRICE_BASIS,
+                price_history_quality=MVP_PRICE_HISTORY_QUALITY,
+                expected_session=expected_session,
+                freshness_status=self._freshness_status(
+                    as_of=run.as_of_date,
+                    expected_session=expected_session,
+                ),
                 eligible_count=0,
                 gainers=(),
                 losers=(),
@@ -287,7 +307,8 @@ class MarketIntelligenceReadService:
                 continue
             if normalized_direction == "losers" and metrics.return_1d >= 0:
                 continue
-            if not self._market_cap_matches(metadata.market_cap, market_cap_group):
+            market_cap = _finite_number(metadata.market_cap)
+            if not self._market_cap_matches(market_cap, market_cap_group):
                 continue
             items.append(
                 MoverItem(
@@ -300,7 +321,7 @@ class MarketIntelligenceReadService:
                     average_dollar_volume=average_dollar_volume,
                     sector=metadata.sector,
                     industry=metadata.industry,
-                    market_cap=metadata.market_cap,
+                    market_cap=market_cap,
                 )
             )
 
@@ -328,6 +349,13 @@ class MarketIntelligenceReadService:
             published_at=_as_utc(run.published_at),
             provider=PRICE_SOURCE,
             metric_version=MVP_METRIC_VERSION,
+            price_basis=MVP_PRICE_BASIS,
+            price_history_quality=MVP_PRICE_HISTORY_QUALITY,
+            expected_session=expected_session,
+            freshness_status=self._freshness_status(
+                as_of=run.as_of_date,
+                expected_session=expected_session,
+            ),
             eligible_count=len(items),
             gainers=gainers,
             losers=losers,
@@ -385,13 +413,18 @@ class MarketIntelligenceReadService:
             if normalized_category == "all"
             else ETF_CATEGORIES[normalized_category]
         )
-        as_of = self._spy_as_of()
-        if as_of is None:
+        expected_session = self._expected_session()
+        run = self._published_us_run()
+        if run is None:
             return EtfRadar(
                 as_of=None,
                 last_updated=None,
                 provider=PRICE_SOURCE,
                 metric_version=MVP_METRIC_VERSION,
+                price_basis=MVP_PRICE_BASIS,
+                price_history_quality=MVP_PRICE_HISTORY_QUALITY,
+                expected_session=expected_session,
+                freshness_status="UNAVAILABLE",
                 score_version=ETF_STRENGTH_VERSION,
                 category=normalized_category,
                 items=tuple(
@@ -403,8 +436,9 @@ class MarketIntelligenceReadService:
                     for symbol in selected_symbols
                 ),
                 missing_symbols=tuple(selected_symbols),
-                unavailable_reason="no_completed_spy_price",
+                unavailable_reason="no_published_us_feature_run",
             )
+        as_of = run.as_of_date
 
         grouped = self._price_rows(
             ETF_UNIVERSE,
@@ -446,9 +480,16 @@ class MarketIntelligenceReadService:
         items = tuple(scored[symbol] for symbol in selected_symbols)
         return EtfRadar(
             as_of=as_of,
-            last_updated=self._last_updated(ETF_UNIVERSE, as_of=as_of),
+            last_updated=_as_utc(run.published_at),
             provider=PRICE_SOURCE,
             metric_version=MVP_METRIC_VERSION,
+            price_basis=MVP_PRICE_BASIS,
+            price_history_quality=MVP_PRICE_HISTORY_QUALITY,
+            expected_session=expected_session,
+            freshness_status=self._freshness_status(
+                as_of=as_of,
+                expected_session=expected_session,
+            ),
             score_version=ETF_STRENGTH_VERSION,
             category=normalized_category,
             items=items,

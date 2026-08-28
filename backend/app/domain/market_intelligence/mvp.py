@@ -11,6 +11,8 @@ from typing import Iterable, Mapping, Protocol, Sequence
 
 MVP_METRIC_VERSION = "market_intelligence_mvp_v1"
 ETF_STRENGTH_VERSION = "etf_strength_v1"
+MVP_PRICE_BASIS = "cached_adjusted_close"
+MVP_PRICE_HISTORY_QUALITY = "not_corporate_action_reconciled"
 
 PULSE_SYMBOLS = ("SPY", "QQQ", "DIA", "IWM")
 
@@ -89,6 +91,10 @@ class MarketOverview:
     last_updated: datetime | None
     provider: str
     metric_version: str
+    price_basis: str
+    price_history_quality: str
+    expected_session: date | None
+    freshness_status: str
     market_status: str | None
     pulse: tuple[MarketPulseItem, ...]
     missing_symbols: tuple[str, ...]
@@ -124,6 +130,10 @@ class MoverSummary:
     published_at: datetime | None
     provider: str
     metric_version: str
+    price_basis: str
+    price_history_quality: str
+    expected_session: date | None
+    freshness_status: str
     eligible_count: int
     gainers: tuple[MoverItem, ...]
     losers: tuple[MoverItem, ...]
@@ -160,6 +170,10 @@ class EtfRadar:
     last_updated: datetime | None
     provider: str
     metric_version: str
+    price_basis: str
+    price_history_quality: str
+    expected_session: date | None
+    freshness_status: str
     score_version: str
     category: str
     items: tuple[EtfStrengthItem, ...]

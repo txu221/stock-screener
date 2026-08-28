@@ -278,6 +278,10 @@ class MarketIntelligenceOverviewResponse(BaseModel):
     last_updated: datetime | None
     provider: str
     metric_version: str
+    price_basis: str
+    price_history_quality: str
+    expected_session: date | None
+    freshness_status: str
     market_status: str | None
     pulse: list[MarketPulseItemResponse]
     missing_symbols: list[str]
@@ -290,6 +294,10 @@ class MarketIntelligenceOverviewResponse(BaseModel):
             last_updated=value.last_updated,
             provider=value.provider,
             metric_version=value.metric_version,
+            price_basis=value.price_basis,
+            price_history_quality=value.price_history_quality,
+            expected_session=value.expected_session,
+            freshness_status=value.freshness_status,
             market_status=value.market_status,
             pulse=[MarketPulseItemResponse.from_domain(item) for item in value.pulse],
             missing_symbols=list(value.missing_symbols),
@@ -331,6 +339,10 @@ class MarketMoversResponse(BaseModel):
     published_at: datetime | None
     provider: str
     metric_version: str
+    price_basis: str
+    price_history_quality: str
+    expected_session: date | None
+    freshness_status: str
     eligible_count: int
     gainers: list[MarketMoverItemResponse]
     losers: list[MarketMoverItemResponse]
@@ -345,6 +357,10 @@ class MarketMoversResponse(BaseModel):
             published_at=value.published_at,
             provider=value.provider,
             metric_version=value.metric_version,
+            price_basis=value.price_basis,
+            price_history_quality=value.price_history_quality,
+            expected_session=value.expected_session,
+            freshness_status=value.freshness_status,
             eligible_count=value.eligible_count,
             gainers=[MarketMoverItemResponse.from_domain(item) for item in value.gainers],
             losers=[MarketMoverItemResponse.from_domain(item) for item in value.losers],
@@ -424,6 +440,10 @@ class EtfRadarResponse(BaseModel):
     last_updated: datetime | None
     provider: str
     metric_version: str
+    price_basis: str
+    price_history_quality: str
+    expected_session: date | None
+    freshness_status: str
     score_version: str
     category: str
     items: list[EtfStrengthItemResponse]
@@ -438,6 +458,10 @@ class EtfRadarResponse(BaseModel):
             last_updated=value.last_updated,
             provider=value.provider,
             metric_version=value.metric_version,
+            price_basis=value.price_basis,
+            price_history_quality=value.price_history_quality,
+            expected_session=value.expected_session,
+            freshness_status=value.freshness_status,
             score_version=value.score_version,
             category=value.category,
             items=[EtfStrengthItemResponse.from_domain(item) for item in value.items],

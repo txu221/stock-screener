@@ -12,14 +12,20 @@ export default function FreshnessBanner({
   lastUpdated,
   provider,
   metricVersion,
+  priceBasis,
+  priceHistoryQuality,
   status,
   stableAsOf,
+  expectedSession,
+  freshnessStatus,
+  scopeLabel,
 }) {
   const partial = status === 'PARTIAL' || status === 'FAILED';
+  const stale = freshnessStatus && freshnessStatus !== 'FRESH';
 
   return (
     <Alert
-      severity={partial ? 'warning' : 'info'}
+      severity={partial || stale ? 'warning' : 'info'}
       icon={false}
       sx={{ mb: 1.5, py: 0.25, '& .MuiAlert-message': { width: '100%' } }}
     >
@@ -30,10 +36,26 @@ export default function FreshnessBanner({
         flexWrap="wrap"
         alignItems={{ md: 'center' }}
       >
-        <Typography variant="caption">As of {asOf || 'Unavailable'}</Typography>
+        <Typography variant="caption">
+          {scopeLabel ? `${scopeLabel} as of` : 'As of'} {asOf || 'Unavailable'}
+        </Typography>
         <Typography variant="caption">Last updated {formatTimestamp(lastUpdated)}</Typography>
         <Typography variant="caption">Provider {provider || 'Unavailable'}</Typography>
         <Typography variant="caption">Metric {metricVersion || 'Unavailable'}</Typography>
+        {priceBasis && <Typography variant="caption">Price basis {priceBasis}</Typography>}
+        {freshnessStatus && (
+          <Chip
+            size="small"
+            label={`${scopeLabel || ''}${scopeLabel ? ' freshness' : 'Freshness'} ${freshnessStatus}`}
+            color={stale ? 'warning' : 'success'}
+          />
+        )}
+        {expectedSession && freshnessStatus !== 'FRESH' && (
+          <Typography variant="caption">Expected session {expectedSession}</Typography>
+        )}
+        {priceHistoryQuality === 'not_corporate_action_reconciled' && (
+          <Chip size="small" label="Cached history not corporate-action reconciled" color="warning" variant="outlined" />
+        )}
         {status && <Chip size="small" label={`Latest attempt ${status}`} color={partial ? 'warning' : 'default'} />}
         {stableAsOf && (
           <Box component="span">
@@ -44,4 +66,3 @@ export default function FreshnessBanner({
     </Alert>
   );
 }
-

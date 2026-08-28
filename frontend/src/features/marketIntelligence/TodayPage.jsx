@@ -14,6 +14,7 @@ import {
 
 import {
   getMarketIntelligenceOverview,
+  getMarketIntelligenceHealth,
   getSectorLatest,
   marketIntelligenceKeys,
 } from '../../api/marketIntelligence';
@@ -35,6 +36,11 @@ export default function TodayPage() {
   const sectorsQuery = useQuery({
     queryKey: marketIntelligenceKeys.sectors(),
     queryFn: getSectorLatest,
+    enabled: overviewQuery.isSuccess,
+  });
+  const healthQuery = useQuery({
+    queryKey: marketIntelligenceKeys.health(),
+    queryFn: getMarketIntelligenceHealth,
     enabled: overviewQuery.isSuccess,
   });
 
@@ -62,10 +68,15 @@ export default function TodayPage() {
   return (
     <Box>
       <FreshnessBanner
+        scopeLabel="Market Pulse"
         asOf={overview.as_of}
         lastUpdated={overview.last_updated}
         provider={overview.provider}
         metricVersion={overview.metric_version}
+        priceBasis={overview.price_basis}
+        priceHistoryQuality={overview.price_history_quality}
+        expectedSession={overview.expected_session}
+        freshnessStatus={overview.freshness_status}
       />
 
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
@@ -104,6 +115,18 @@ export default function TodayPage() {
         <Typography component="h2" variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
           20D Sector Leadership
         </Typography>
+        {sectorsQuery.data && (
+          <FreshnessBanner
+            scopeLabel="Sector snapshot"
+            asOf={sectorsQuery.data.as_of}
+            lastUpdated={sectorsQuery.data.published_at}
+            provider={sectorsQuery.data.provider}
+            metricVersion={sectorsQuery.data.metric_version}
+            priceBasis={sectorsQuery.data.price_basis}
+            status={healthQuery.data?.latest_attempt?.status}
+            stableAsOf={healthQuery.data?.last_complete_published_snapshot || sectorsQuery.data.as_of}
+          />
+        )}
         {sectorsQuery.isError && (
           <Alert severity="warning">Sector context unavailable: {sectorsQuery.error.message}</Alert>
         )}
@@ -123,4 +146,3 @@ export default function TodayPage() {
     </Box>
   );
 }
-

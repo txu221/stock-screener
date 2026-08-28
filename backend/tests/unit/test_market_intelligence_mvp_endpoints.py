@@ -75,6 +75,20 @@ def _prices(symbol: str, closes: list[float], *, current_volume: int = 2_000_000
 
 def _seed_pulse_and_etfs(factory):
     with factory() as session:
+        run = FeatureRun(
+            as_of_date=AS_OF,
+            run_type="daily_snapshot",
+            status="published",
+            published_at=PUBLISHED_AT,
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            FeatureRunPointer(
+                key="latest_published_market:US",
+                run_id=run.id,
+            )
+        )
         spy = [80.0] * 61
         spy[-2:] = [100.0, 105.0]
         qqq = [70.0] * 61
@@ -138,6 +152,10 @@ async def test_overview_contract_exposes_fixed_pulse_and_freshness(mvp_client):
     assert body["last_updated"] is not None
     assert body["provider"] == "existing_stock_prices"
     assert body["metric_version"] == "market_intelligence_mvp_v1"
+    assert body["price_basis"] == "cached_adjusted_close"
+    assert body["price_history_quality"] == "not_corporate_action_reconciled"
+    assert body["freshness_status"] in {"FRESH", "STALE"}
+    assert body["expected_session"] is not None
     assert body["market_status"] is None
     assert [item["symbol"] for item in body["pulse"]] == ["SPY", "QQQ", "DIA", "IWM"]
     assert body["pulse"][0]["return_1d"] == pytest.approx(0.05)
@@ -158,6 +176,9 @@ async def test_movers_contract_exposes_backend_ordering_filters_and_sector_count
     body = response.json()
     assert body["as_of"] == AS_OF.isoformat()
     assert body["published_at"] is not None
+    assert body["price_basis"] == "cached_adjusted_close"
+    assert body["price_history_quality"] == "not_corporate_action_reconciled"
+    assert body["freshness_status"] in {"FRESH", "STALE"}
     assert body["eligible_count"] == 1
     assert [item["symbol"] for item in body["gainers"]] == ["AAPL"]
     assert body["gainers"][0]["change_1d"] == pytest.approx(0.10)
@@ -187,6 +208,9 @@ async def test_etf_contract_exposes_category_ranks_and_score_explanation(mvp_cli
     assert response.status_code == 200
     body = response.json()
     assert body["category"] == "broad_market"
+    assert body["price_basis"] == "cached_adjusted_close"
+    assert body["price_history_quality"] == "not_corporate_action_reconciled"
+    assert body["freshness_status"] in {"FRESH", "STALE"}
     assert [item["symbol"] for item in body["items"]] == ["SPY", "QQQ", "IWM", "DIA"]
     assert body["score_definition"]["version"] == "etf_strength_v1"
     assert body["score_definition"]["weights"] == {
@@ -220,4 +244,3 @@ async def test_mvp_query_validation_is_explicit(mvp_client, path, params):
     response = await client.get(path, params=params)
 
     assert response.status_code == 422
-

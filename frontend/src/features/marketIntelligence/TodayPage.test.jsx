@@ -10,9 +10,11 @@ vi.mock('../../api/marketIntelligence', () => ({
   marketIntelligenceKeys: {
     overview: () => ['market-intelligence', 'overview'],
     sectors: () => ['market-intelligence', 'sectors', 'latest'],
+    health: () => ['market-intelligence', 'health'],
   },
   getMarketIntelligenceOverview: vi.fn(),
   getSectorLatest: vi.fn(),
+  getMarketIntelligenceHealth: vi.fn(),
 }));
 
 const overview = {
@@ -20,6 +22,10 @@ const overview = {
   last_updated: '2026-08-26T22:05:00Z',
   provider: 'existing_stock_prices',
   metric_version: 'market_intelligence_mvp_v1',
+  price_basis: 'cached_adjusted_close',
+  price_history_quality: 'not_corporate_action_reconciled',
+  expected_session: '2026-08-27',
+  freshness_status: 'STALE',
   market_status: null,
   missing_symbols: [],
   pulse: ['SPY', 'QQQ', 'DIA', 'IWM'].map((symbol, index) => ({
@@ -34,6 +40,11 @@ const overview = {
 };
 
 const sectors = {
+  as_of: '2026-08-26',
+  published_at: '2026-08-26T22:10:00Z',
+  provider: 'yahoo',
+  metric_version: 'market_intelligence_v1',
+  price_basis: 'adjusted',
   sectors: [
     { symbol: 'XLK', name: 'Technology', ranks: { relative_return_vs_spy_20d: 1 }, relative_strength: { '20d_vs_spy': 0.05 } },
     { symbol: 'XLE', name: 'Energy', ranks: { relative_return_vs_spy_20d: 2 }, relative_strength: { '20d_vs_spy': 0.03 } },
@@ -45,6 +56,10 @@ describe('TodayPage', () => {
     vi.clearAllMocks();
     api.getMarketIntelligenceOverview.mockResolvedValue(overview);
     api.getSectorLatest.mockResolvedValue(sectors);
+    api.getMarketIntelligenceHealth.mockResolvedValue({
+      latest_attempt: { status: 'PARTIAL', as_of: '2026-08-27' },
+      last_complete_published_snapshot: '2026-08-26',
+    });
   });
 
   it('renders the fixed completed-session Market Pulse and no invented status', async () => {
@@ -56,8 +71,11 @@ describe('TodayPage', () => {
     }
     expect(screen.queryByText('VIX')).not.toBeInTheDocument();
     expect(screen.getByText('Raw completed-session pulse')).toBeInTheDocument();
-    expect(screen.getByText(/As of 2026-08-26/)).toBeInTheDocument();
+    expect(screen.getByText(/Market Pulse as of 2026-08-26/)).toBeInTheDocument();
     expect(await screen.findByText('Technology')).toBeInTheDocument();
+    expect(screen.getByText('Market Pulse freshness STALE')).toBeInTheDocument();
+    expect(screen.getByText('Sector snapshot as of 2026-08-26')).toBeInTheDocument();
+    expect(screen.getByText('Latest attempt PARTIAL')).toBeInTheDocument();
   });
 
   it('shows a bounded loading state', () => {

@@ -13,6 +13,9 @@ describe('FreshnessBanner', () => {
         lastUpdated="2026-08-26T22:05:00Z"
         provider="yahoo"
         metricVersion="market_intelligence_v1"
+        priceBasis="adjusted"
+        freshnessStatus="FRESH"
+        expectedSession="2026-08-26"
       />
     );
 
@@ -20,6 +23,8 @@ describe('FreshnessBanner', () => {
     expect(screen.getByText(/Last updated/)).toHaveTextContent('2026');
     expect(screen.getByText(/Provider yahoo/)).toBeInTheDocument();
     expect(screen.getByText(/Metric market_intelligence_v1/)).toBeInTheDocument();
+    expect(screen.getByText(/Price basis adjusted/)).toBeInTheDocument();
+    expect(screen.getByText('Freshness FRESH')).toBeInTheDocument();
   });
 
   it('calls out a partial attempt and the older stable snapshot separately', () => {
@@ -37,4 +42,3 @@ describe('FreshnessBanner', () => {
     expect(screen.getByText('Displayed stable snapshot 2026-08-26')).toBeInTheDocument();
   });
 });
-

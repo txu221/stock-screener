@@ -21,7 +21,11 @@ import {
   Typography,
 } from '@mui/material';
 
-import { getSectorLatest, marketIntelligenceKeys } from '../../api/marketIntelligence';
+import {
+  getMarketIntelligenceHealth,
+  getSectorLatest,
+  marketIntelligenceKeys,
+} from '../../api/marketIntelligence';
 import FreshnessBanner from './components/FreshnessBanner';
 import MetricTooltip from './components/MetricTooltip';
 import { formatNumber, formatPercent } from './formatters';
@@ -35,7 +39,9 @@ const flowKey = {
   '60d': 'cmf_60d',
 };
 
-const rankKey = (period) => `relative_return_vs_spy_${period}`;
+const rankKey = (period) => (
+  period === '1d' ? 'return_1d' : `relative_return_vs_spy_${period}`
+);
 
 const rankChangeLabel = (change, direction) => {
   if (change == null) return '— UNAVAILABLE';
@@ -55,6 +61,10 @@ export default function SectorsPage() {
   const query = useQuery({
     queryKey: marketIntelligenceKeys.sectors(),
     queryFn: getSectorLatest,
+  });
+  const healthQuery = useQuery({
+    queryKey: marketIntelligenceKeys.health(),
+    queryFn: getMarketIntelligenceHealth,
   });
 
   if (query.isPending) {
@@ -85,7 +95,9 @@ export default function SectorsPage() {
         lastUpdated={data.published_at}
         provider={data.provider}
         metricVersion={data.metric_version}
-        status={data.status}
+        priceBasis={data.price_basis}
+        status={healthQuery.data?.latest_attempt?.status}
+        stableAsOf={healthQuery.data?.last_complete_published_snapshot || data.as_of}
       />
 
       <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'center' }} sx={{ mb: 1 }}>

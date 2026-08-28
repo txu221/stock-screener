@@ -35,6 +35,10 @@ const payload = {
   last_updated: '2026-08-26T22:10:00Z',
   provider: 'existing_stock_prices',
   metric_version: 'market_intelligence_mvp_v1',
+  price_basis: 'cached_adjusted_close',
+  price_history_quality: 'not_corporate_action_reconciled',
+  expected_session: '2026-08-27',
+  freshness_status: 'STALE',
   score_version: 'etf_strength_v1',
   category: 'all',
   items: [spy, qqq],
@@ -69,7 +73,7 @@ describe('EtfsPage', () => {
     const spyRow = await screen.findByRole('row', { name: /^SPY\b/ });
     expect(within(spyRow).getByText('75.50')).toBeInTheDocument();
     expect(within(spyRow).getByText('#2')).toBeInTheDocument();
-    expect(within(spyRow).getByText('#1')).toBeInTheDocument();
+    expect(within(spyRow).queryByText('#1')).not.toBeInTheDocument();
     const qqqRow = screen.getByRole('row', { name: /QQQ/ });
     expect(within(qqqRow).getAllByText('—').length).toBeGreaterThan(3);
     expect(screen.getByText(/As of 2026-08-26/)).toBeInTheDocument();

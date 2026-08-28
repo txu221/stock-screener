@@ -158,11 +158,17 @@ def test_movers_use_latest_published_sp500_snapshot_and_backend_metrics(session)
     session.add_all(_prices("NOSNAPSHOT", [*base, 150.0]))
     session.commit()
 
-    result = MarketIntelligenceReadService(session).get_movers(limit=20)
+    result = MarketIntelligenceReadService(
+        session, completed_session=AS_OF
+    ).get_movers(limit=20)
 
     assert result.as_of == AS_OF
     assert result.published_at == PUBLISHED_AT
     assert result.provider == "existing_stock_prices"
+    assert result.price_basis == "cached_adjusted_close"
+    assert result.price_history_quality == "not_corporate_action_reconciled"
+    assert result.expected_session == AS_OF
+    assert result.freshness_status == "FRESH"
     assert result.eligible_count == 2
     assert [item.symbol for item in result.gainers] == ["AAPL"]
     assert [item.symbol for item in result.losers] == ["MSFT"]
@@ -195,6 +201,7 @@ def _etf_closes(*, start: float, d20: float, d5: float, d1: float, today: float)
 
 
 def test_overview_and_etf_radar_use_completed_adjusted_sessions(session):
+    _published_run(session)
     session.add_all(
         _prices(
             "SPY",
@@ -212,11 +219,16 @@ def test_overview_and_etf_radar_use_completed_adjusted_sessions(session):
     session.add_all(_prices("IWM", [100.0] * 10))
     session.commit()
 
-    service = MarketIntelligenceReadService(session)
+    service = MarketIntelligenceReadService(session, completed_session=AS_OF)
     overview = service.get_overview()
     radar = service.get_etf_radar(category="broad_market")
 
     assert overview.as_of == AS_OF
+    assert overview.last_updated == PUBLISHED_AT
+    assert overview.price_basis == "cached_adjusted_close"
+    assert overview.price_history_quality == "not_corporate_action_reconciled"
+    assert overview.expected_session == AS_OF
+    assert overview.freshness_status == "FRESH"
     assert [item.symbol for item in overview.pulse] == ["SPY", "QQQ", "DIA", "IWM"]
     assert overview.pulse[0].return_1d == pytest.approx(0.05)
     assert overview.pulse[2].available is False
@@ -236,9 +248,15 @@ def test_overview_and_etf_radar_use_completed_adjusted_sessions(session):
     assert "DIA" in radar.missing_symbols
     assert radar.metric_version == "market_intelligence_mvp_v1"
     assert radar.score_version == "etf_strength_v1"
+    assert radar.last_updated == PUBLISHED_AT
+    assert radar.price_basis == "cached_adjusted_close"
+    assert radar.price_history_quality == "not_corporate_action_reconciled"
+    assert radar.expected_session == AS_OF
+    assert radar.freshness_status == "FRESH"
 
 
 def test_overview_and_etf_radar_ignore_unfinished_daily_price_row(session):
+    _published_run(session)
     session.add_all(
         _prices(
             "SPY",
@@ -267,6 +285,47 @@ def test_overview_and_etf_radar_ignore_unfinished_daily_price_row(session):
     assert overview.pulse[0].price == pytest.approx(105)
     assert radar.as_of == AS_OF
     assert radar.items[0].price == pytest.approx(105)
+
+
+def test_overview_and_etf_radar_use_published_boundary_not_same_day_partial_bar(session):
+    published_date = AS_OF - timedelta(days=1)
+    run = FeatureRun(
+        as_of_date=published_date,
+        run_type="daily_snapshot",
+        status="published",
+        published_at=PUBLISHED_AT - timedelta(days=1),
+    )
+    session.add(run)
+    session.flush()
+    session.add(FeatureRunPointer(key="latest_published_market:US", run_id=run.id))
+    session.add_all(_prices("SPY", [100.0] * 20 + [105.0]))
+    session.commit()
+
+    service = MarketIntelligenceReadService(session, completed_session=AS_OF)
+    overview = service.get_overview()
+    radar = service.get_etf_radar(category="broad_market")
+
+    assert overview.as_of == published_date
+    assert overview.pulse[0].price == pytest.approx(100.0)
+    assert overview.freshness_status == "STALE"
+    assert radar.as_of == published_date
+    assert radar.items[0].price == pytest.approx(100.0)
+    assert radar.freshness_status == "STALE"
+
+
+def test_movers_normalize_non_finite_market_cap_before_serialization(session):
+    run = _published_run(session)
+    session.add(_universe("NAN", price_market_cap=float("nan")))
+    session.add(_feature(run.id, "NAN"))
+    session.add_all(_prices("NAN", [100.0] * 20 + [110.0]))
+    session.commit()
+
+    result = MarketIntelligenceReadService(
+        session, completed_session=AS_OF
+    ).get_movers()
+
+    assert result.gainers[0].symbol == "NAN"
+    assert result.gainers[0].market_cap is None
 
 
 def test_rvol_zero_baseline_is_null_not_infinity(session):

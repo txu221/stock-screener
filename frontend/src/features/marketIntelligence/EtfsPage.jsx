@@ -39,9 +39,8 @@ const CATEGORIES = [
 const rankLabel = (rank) => (rank == null ? '—' : `#${rank}`);
 
 const categoryRank = (item, category) => {
-  if (category !== 'all') return item.category_ranks?.[category];
-  const ranks = Object.values(item.category_ranks || {});
-  return ranks.length ? Math.min(...ranks) : null;
+  if (category === 'all') return null;
+  return item.category_ranks?.[category];
 };
 
 const weightPercent = (value) => `${Math.round(Number(value) * 100)}%`;
@@ -69,6 +68,10 @@ export default function EtfsPage() {
           lastUpdated={data.last_updated}
           provider={data.provider}
           metricVersion={data.metric_version}
+          priceBasis={data.price_basis}
+          priceHistoryQuality={data.price_history_quality}
+          expectedSession={data.expected_session}
+          freshnessStatus={data.freshness_status}
         />
       )}
 
@@ -109,7 +112,9 @@ export default function EtfsPage() {
                 <TableCell>Categories</TableCell>
                 <TableCell align="right">Price</TableCell>
                 <TableCell align="right">Overall Rank</TableCell>
-                <TableCell align="right">Category Rank</TableCell>
+                <TableCell align="right">
+                  {category === 'all' ? 'Category Rank (select category)' : 'Category Rank'}
+                </TableCell>
                 <TableCell align="right">1D</TableCell>
                 <TableCell align="right">5D</TableCell>
                 <TableCell align="right">20D</TableCell>
