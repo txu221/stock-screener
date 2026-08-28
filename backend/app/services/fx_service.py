@@ -41,7 +41,9 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+from typing import Any, Callable, Collection, Dict, Mapping, Optional, Tuple
+
+import pandas as pd
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -373,6 +375,67 @@ class FXService:
             if quote is not None:
                 quotes[currency] = quote
         return quotes
+
+    def get_historical_usd_rates(
+        self,
+        currencies: Collection[str],
+        dates: Collection[date],
+        *,
+        max_age_days: int = 7,
+    ) -> Mapping[str, pd.Series]:
+        """Resolve reproducible backward-only FX rates without live fallbacks."""
+        from .breadth.universe import resolve_historical_fx_series
+
+        requested = tuple(sorted(set(dates)))
+        normalized_currencies = tuple(
+            sorted({value.strip().upper() for value in currencies if value.strip()})
+        )
+        if not requested:
+            empty_index = pd.DatetimeIndex([])
+            return {
+                currency: pd.Series(index=empty_index, dtype=float)
+                for currency in normalized_currencies
+            }
+
+        resolved: dict[str, pd.Series] = {}
+        db = self._session_factory()
+        try:
+            for currency in normalized_currencies:
+                if currency == USD:
+                    resolved[currency] = resolve_historical_fx_series(
+                        currency,
+                        requested,
+                        {},
+                        max_age_days=max_age_days,
+                    )
+                    continue
+                rows = (
+                    db.query(FXRate)
+                    .filter(
+                        FXRate.from_currency == currency,
+                        FXRate.to_currency == USD,
+                        FXRate.as_of_date <= requested[-1],
+                    )
+                    .order_by(
+                        FXRate.as_of_date.asc(),
+                        FXRate.created_at.asc(),
+                        FXRate.id.asc(),
+                    )
+                    .all()
+                )
+                observations = {
+                    row.as_of_date: float(row.rate)
+                    for row in rows
+                }
+                resolved[currency] = resolve_historical_fx_series(
+                    currency,
+                    requested,
+                    observations,
+                    max_age_days=max_age_days,
+                )
+        finally:
+            db.close()
+        return resolved
 
     def _quote_from_fetch_result(
         self,

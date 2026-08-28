@@ -18,15 +18,15 @@ class BreadthResponse(BaseModel):
     ratio_5day: Optional[float] = Field(None, description="5-day up/down ratio")
     ratio_10day: Optional[float] = Field(None, description="10-day up/down ratio")
 
-    # Quarterly movers (63 trading days)
-    stocks_up_25pct_quarter: int = Field(..., description="Stocks up 25%+ in a quarter")
-    stocks_down_25pct_quarter: int = Field(..., description="Stocks down 25%+ in a quarter")
+    # Quarterly movers (65 trading sessions)
+    stocks_up_25pct_quarter: int = Field(..., description="Stocks up 25%+ from a 65-session low")
+    stocks_down_25pct_quarter: int = Field(..., description="Stocks down 25%+ from a 65-session high")
 
-    # Monthly movers (21 trading days, 25% threshold)
+    # Monthly movers (exactly 20 trading sessions, 25% threshold)
     stocks_up_25pct_month: int = Field(..., description="Stocks up 25%+ in a month")
     stocks_down_25pct_month: int = Field(..., description="Stocks down 25%+ in a month")
 
-    # Monthly extreme movers (21 trading days, 50% threshold)
+    # Monthly extreme movers (exactly 20 trading sessions, 50% threshold)
     stocks_up_50pct_month: int = Field(..., description="Stocks up 50%+ in a month")
     stocks_down_50pct_month: int = Field(..., description="Stocks down 50%+ in a month")
 
@@ -34,8 +34,35 @@ class BreadthResponse(BaseModel):
     stocks_up_13pct_34days: int = Field(..., description="Stocks up 13%+ in 34 days")
     stocks_down_13pct_34days: int = Field(..., description="Stocks down 13%+ in 34 days")
 
+    # Broad-universe context metrics (optional for legacy rows)
+    advancing_count: Optional[int] = Field(None, description="Stocks advancing from the prior adjusted close")
+    declining_count: Optional[int] = Field(None, description="Stocks declining from the prior adjusted close")
+    unchanged_count: Optional[int] = Field(None, description="Stocks unchanged from the prior adjusted close")
+    new_high_52week_count: Optional[int] = Field(None, description="Strict new adjusted 52-week highs (StockBee)")
+    new_low_52week_count: Optional[int] = Field(None, description="Strict new adjusted 52-week lows (StockBee)")
+    t2108_count: Optional[int] = Field(None, description="Stocks above their adjusted 40-day moving average")
+    t2108_pct: Optional[float] = Field(None, description="T2108 percentage of its eligible universe")
+    atr_10x_extension_count: Optional[int] = Field(None, description="Stocks extended at least 10 ATR from SMA50 (screenshot-derived)")
+
+    # Metric-specific eligible denominators
+    broad_universe_count: Optional[int] = Field(None, description="Active point-in-time common-stock universe")
+    advance_decline_eligible_count: Optional[int] = None
+    stockbee_daily_eligible_count: Optional[int] = None
+    stockbee_month_eligible_count: Optional[int] = None
+    stockbee_34day_eligible_count: Optional[int] = None
+    stockbee_quarter_eligible_count: Optional[int] = None
+    t2108_eligible_count: Optional[int] = None
+    high_low_52week_eligible_count: Optional[int] = None
+    atr_extension_eligible_count: Optional[int] = None
+
     # Metadata
-    total_stocks_scanned: int = Field(..., description="Total stocks scanned")
+    total_stocks_scanned: int = Field(
+        ...,
+        description="Deprecated compatibility alias for broad_universe_count",
+    )
+    eligibility_signature: Optional[str] = Field(None, description="Broad-universe signature")
+    stockbee_eligibility_signature: Optional[str] = Field(None, description="StockBee liquidity-universe signature")
+    calculation_revision: Optional[int] = Field(None, description="Internal stale-data guard; current value is 2")
     calculation_duration_seconds: Optional[float] = Field(None, description="Time taken to calculate")
 
     class Config:

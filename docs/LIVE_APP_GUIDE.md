@@ -310,23 +310,38 @@ Each result row carries a color-coded **market badge**; cross-market scans inter
 
 ## Breadth
 
-StockBee-style internal-strength view with a benchmark (SPY, or a per-market ETF) overlay and a daily-movers list.
+StockBee-style internal-strength view built from one shared daily calculation layer. Each formula uses only stocks with enough history and valid inputs for that formula, so eligibility can differ between metrics.
 
-![Breadth chart with benchmark overlay and movers](screenshots/breadth-chart.png)
-*Market Breadth — stacked advance/decline with benchmark overlay*
+![Breadth overview with health bars and benchmark overlay](screenshots/breadth-chart.jpg)
+*Market Breadth overview — advance/decline and new-high/new-low health bars, T2108, ATR extension, universe size, and the benchmark overlay*
+
+The top health bars show the balance between **advancing and declining stocks** and between **new 52-week highs and lows**. Neutral advance/decline stocks remain visible as the center segment. The context cards display **T2108** (the percentage above the 40-day moving average), **10x ATR extensions**, and the broad-universe size.
+
+![Breadth recent-history heatmap](screenshots/breadth-history.jpg)
+*Recent History — compact primary, secondary, and context groups with significance-based green/red heat levels*
+
+The history table is grouped by purpose:
+
+- **Primary — Daily movers & ratios:** ±4% daily movers and their 5-day / 10-day ratios.
+- **Secondary — Trend windows:** quarterly, monthly, and 34-session upside/downside participation.
+- **Context — Market context:** 10x ATR extensions, T2108, and broad-universe size.
+
+Directional cells use a dark neutral background for ordinary readings, lighter green/red for notable readings, and stronger green/red for the most significant readings in the visible history. Up and down metrics retain their own color direction, while group bands and vertical dividers make the three families easy to track across a row.
 
 **Indicators (per market, daily):**
 
 | Indicator | Definition |
 |-----------|------------|
-| ±4% movers | Count of stocks closing ≥ +4% / ≤ −4% vs prior close |
+| ±4% movers | Count of liquid stocks closing ≥ +4% / ≤ −4% vs prior close, with StockBee volume filters |
 | 5-day / 10-day ratio | Σ up-4% ÷ Σ down-4% over the trailing 5 / 10 sessions |
-| 25% in a month | Count moving ±25% over 21 sessions |
-| 50% in a month | Count moving ±50% over 21 sessions |
-| 13% in 34 days | Count moving ±13% over 34 sessions (IBD-style) |
-| 25% in a quarter | Count moving ±25% over 63 sessions |
+| 25% in a month | Count at least ±25% from the adjusted close 20 sessions earlier |
+| 50% in a month | Count at least ±50% from the adjusted close 20 sessions earlier |
+| 13% in 34 days | Count at least 13% above the 34-session low / below the 34-session high |
+| 25% in a quarter | Count at least 25% above the 65-session low / below the 65-session high |
+| T2108 | Percentage of eligible stocks closing above their 40-session simple moving average |
+| 10x ATR extension | Count extended at least 10 ATR above the 50-session moving average |
 
-The **Stockbee MM** tab on the Daily page surfaces these same daily counts in a market-monitor grid. Time-range selector covers 3M/6M (and longer) windows.
+Formula tooltips identify the source, required history, liquidity rule, and eligible denominator. The **Stockbee MM** tab on the Daily page surfaces the same daily counts in a market-monitor grid. The chart time-range selector covers 1M, 3M, 6M, and 1Y windows.
 
 ---
 

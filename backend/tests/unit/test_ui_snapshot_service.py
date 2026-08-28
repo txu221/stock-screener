@@ -36,6 +36,7 @@ from app.services.ui_snapshot_service import (
     GROUPS_VIEW_KEY,
     UISnapshotService,
     _force_forget_snapshot_tables,
+    market_breadth_to_dict,
 )
 
 
@@ -468,6 +469,82 @@ def test_breadth_payload_uses_benchmark_fallback_when_primary_cache_is_empty(mon
     assert payload["benchmark_overlay"] == [{"date": "2026-04-24", "close": 18.4}]
     assert payload["spy_overlay"] == payload["benchmark_overlay"]
     assert history_calls == [("^HSI", "1mo"), ("2800.HK", "1mo")]
+
+
+def test_market_breadth_snapshot_serializes_revision_2_context_and_denominators():
+    row = MarketBreadth(
+        market="US",
+        date=date(2026, 8, 21),
+        stocks_up_4pct=10,
+        stocks_down_4pct=5,
+        stocks_up_25pct_quarter=8,
+        stocks_down_25pct_quarter=4,
+        stocks_up_25pct_month=7,
+        stocks_down_25pct_month=3,
+        stocks_up_50pct_month=2,
+        stocks_down_50pct_month=1,
+        stocks_up_13pct_34days=9,
+        stocks_down_13pct_34days=6,
+        total_stocks_scanned=100,
+        advancing_count=60,
+        declining_count=35,
+        unchanged_count=5,
+        new_high_52week_count=4,
+        new_low_52week_count=2,
+        t2108_count=55,
+        t2108_pct=57.89,
+        atr_10x_extension_count=3,
+        broad_universe_count=110,
+        advance_decline_eligible_count=100,
+        stockbee_daily_eligible_count=95,
+        stockbee_month_eligible_count=90,
+        stockbee_34day_eligible_count=88,
+        stockbee_quarter_eligible_count=85,
+        t2108_eligible_count=95,
+        high_low_52week_eligible_count=80,
+        atr_extension_eligible_count=92,
+        eligibility_signature="broad",
+        stockbee_eligibility_signature="stockbee",
+        calculation_revision=2,
+    )
+
+    payload = market_breadth_to_dict(row)
+
+    assert payload["t2108_pct"] == 57.89
+    assert payload["broad_universe_count"] == 110
+    assert payload["stockbee_daily_eligible_count"] == 95
+    assert payload["stockbee_eligibility_signature"] == "stockbee"
+    assert payload["calculation_revision"] == 2
+
+
+def test_breadth_source_revision_includes_calculation_revision():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[MarketBreadth.__table__])
+    Session = sessionmaker(bind=engine)
+    service = UISnapshotService(Session)
+    with Session() as db:
+        db.add(
+            MarketBreadth(
+                market="US",
+                date=date(2026, 8, 21),
+                stocks_up_4pct=1,
+                stocks_down_4pct=0,
+                stocks_up_25pct_quarter=0,
+                stocks_down_25pct_quarter=0,
+                stocks_up_25pct_month=0,
+                stocks_down_25pct_month=0,
+                stocks_up_50pct_month=0,
+                stocks_down_50pct_month=0,
+                stocks_up_13pct_34days=0,
+                stocks_down_13pct_34days=0,
+                total_stocks_scanned=1,
+                calculation_revision=2,
+            )
+        )
+        db.commit()
+        revision = service._resolve_breadth_source_revision(db, "US")  # noqa: SLF001
+
+    assert revision == "2026-08-21|breadth-r2"
 
 
 def test_publish_groups_bootstrap_serializes_rankings_when_available():

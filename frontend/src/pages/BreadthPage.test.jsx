@@ -91,6 +91,20 @@ function breadthRow(market = 'HK') {
     stocks_up_13pct_34days: 18,
     stocks_down_13pct_34days: 7,
     total_stocks_scanned: 30,
+    advancing_count: 20,
+    declining_count: 8,
+    unchanged_count: 2,
+    advance_decline_eligible_count: 30,
+    new_high_52week_count: 5,
+    new_low_52week_count: 1,
+    high_low_52week_eligible_count: 25,
+    t2108_count: 55,
+    t2108_pct: 57.89,
+    t2108_eligible_count: 95,
+    atr_10x_extension_count: 3,
+    atr_extension_eligible_count: 28,
+    broad_universe_count: 32,
+    calculation_revision: 2,
     calculation_duration_seconds: 1.25,
   };
 }
@@ -120,10 +134,30 @@ beforeEach(() => {
 });
 
 describe('BreadthPage', () => {
+  it('explains the purpose of each recent-history indicator group', async () => {
+    renderBreadthPage();
+
+    expect(await screen.findByText(
+      'Primary tracks daily movers and ratios; secondary tracks trend windows; context adds T2108, ATR extension, and universe size.',
+    )).toBeInTheDocument();
+  });
+
+  it('renders the latest date without shifting a date-only value', async () => {
+    vi.stubEnv('TZ', 'America/Los_Angeles');
+    try {
+      renderBreadthPage();
+
+      expect(await screen.findByText('Apr 24, 2026')).toBeInTheDocument();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('defaults breadth requests to the runtime primary market', async () => {
     renderBreadthPage();
 
     expect(await screen.findByText('Latest Breadth Data')).toBeInTheDocument();
+    expect(await screen.findByText('57.89% (55 / 95)')).toBeInTheDocument();
 
     await waitFor(() => {
       expect(breadthApi.getCurrentBreadth).toHaveBeenCalledWith('HK');

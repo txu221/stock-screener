@@ -8,9 +8,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer, StockFeatureDaily
-from app.infra.db.models.relative_strength import MarketRsFormulaPointer
 from app.domain.relative_strength import LEGACY_RS_FORMULA_VERSION
+from app.infra.db.models.feature_store import (
+    FeatureRun,
+    FeatureRunPointer,
+    StockFeatureDaily,
+)
+from app.infra.db.models.relative_strength import MarketRsFormulaPointer
 from app.models.industry import IBDGroupRank
 from app.models.market_breadth import MarketBreadth
 from app.models.stock import StockFundamental
@@ -238,6 +242,7 @@ def seed_market_copilot_data(session_factory: sessionmaker) -> None:
                     ratio_5day=1.82,
                     ratio_10day=1.54,
                     total_stocks_scanned=4081,
+                    calculation_revision=2,
                 ),
                 MarketBreadth(
                     date=date(2026, 3, 28),
@@ -246,6 +251,7 @@ def seed_market_copilot_data(session_factory: sessionmaker) -> None:
                     ratio_5day=1.70,
                     ratio_10day=1.48,
                     total_stocks_scanned=4075,
+                    calculation_revision=2,
                 ),
                 MarketBreadth(
                     date=date(2026, 3, 27),
@@ -254,6 +260,7 @@ def seed_market_copilot_data(session_factory: sessionmaker) -> None:
                     ratio_5day=1.55,
                     ratio_10day=1.42,
                     total_stocks_scanned=4070,
+                    calculation_revision=2,
                 ),
             ]
         )

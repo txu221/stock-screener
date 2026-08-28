@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pickle
 from datetime import date
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -22,6 +23,53 @@ def _price_frame(closes: list[float], days: list[date]) -> pd.DataFrame:
     )
     data.index.name = "Date"
     return data
+
+
+def test_cached_only_fresh_can_return_structurally_valid_short_history():
+    rows = [
+        SimpleNamespace(
+            symbol="NEW",
+            date=row_date,
+            open=close,
+            high=close,
+            low=close,
+            close=close,
+            adj_close=close,
+            volume=1_000_000,
+        )
+        for row_date, close in (
+            (date(2026, 8, 25), 100.0),
+            (date(2026, 8, 26), 101.0),
+        )
+    ]
+
+    class FakeQuery:
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def all(self):
+            return rows
+
+    class FakeSession:
+        def query(self, *_args):
+            return FakeQuery()
+
+        def close(self):
+            pass
+
+    service = PriceCacheService(redis_client=None, session_factory=FakeSession)
+
+    result = service.get_many_cached_only_fresh(
+        ["NEW"],
+        required_as_of_date=date(2026, 8, 26),
+        minimum_rows=1,
+    )
+
+    assert result["NEW"] is not None
+    assert result["NEW"]["Adj Close"].tolist() == [100.0, 101.0]
 
 
 def test_store_batch_in_cache_skips_non_finite_close_rows():

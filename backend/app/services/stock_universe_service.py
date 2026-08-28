@@ -2344,6 +2344,7 @@ class StockUniverseService:
                     existing.currency = identity.currency
                     existing.timezone = identity.timezone
                     existing.local_code = identity.local_code or existing.local_code
+                    existing.is_common_stock = True
                     existing.sector = prefer_meaningful(stock_data["sector"], existing.sector)
                     existing.industry = prefer_meaningful(stock_data["industry"], existing.industry)
                     existing.market_cap = stock_data["market_cap"] or existing.market_cap
@@ -2374,6 +2375,7 @@ class StockUniverseService:
                         is_active=True,
                         status=UNIVERSE_STATUS_ACTIVE,
                         status_reason="Imported from CSV",
+                        is_common_stock=True,
                         source="csv",
                         consecutive_fetch_failures=0,
                         added_at=now,
@@ -2665,7 +2667,14 @@ class StockUniverseService:
         )
         return tuple(dict.fromkeys(value for value in values if value))
 
-    def add_manual_symbol(self, db: Session, symbol: str, name: str = "") -> bool:
+    def add_manual_symbol(
+        self,
+        db: Session,
+        symbol: str,
+        name: str = "",
+        *,
+        is_common_stock: bool | None = None,
+    ) -> bool:
         """
         Manually add a symbol to the universe.
 
@@ -2673,6 +2682,9 @@ class StockUniverseService:
             db: Database session
             symbol: Stock symbol
             name: Company name
+            is_common_stock: Optional explicit operator classification. New
+                rows default fail-closed; existing rows preserve the current
+                classification when this argument is omitted.
 
         Returns:
             True if successful, False otherwise
@@ -2687,6 +2699,8 @@ class StockUniverseService:
                 # Reactivate if inactive
                 if self._normalize_status(existing) != UNIVERSE_STATUS_ACTIVE:
                     existing.name = name or existing.name
+                    if is_common_stock is not None:
+                        existing.is_common_stock = is_common_stock
                     if existing.exchange is None:
                         existing.exchange = 'MANUAL'
                     self._apply_status_transition(
@@ -2704,6 +2718,18 @@ class StockUniverseService:
                     logger.info(f"Reactivated symbol: {symbol}")
                     return True
                 else:
+                    changed = (
+                        is_common_stock is not None
+                        and existing.is_common_stock != is_common_stock
+                    )
+                    if name and existing.name != name:
+                        existing.name = name
+                        changed = True
+                    if changed:
+                        if is_common_stock is not None:
+                            existing.is_common_stock = is_common_stock
+                        existing.updated_at = datetime.utcnow()
+                        db.commit()
                     logger.info(f"Symbol already exists and is active: {symbol}")
                     return True
             else:
@@ -2715,6 +2741,9 @@ class StockUniverseService:
                     is_active=True,
                     status=UNIVERSE_STATUS_ACTIVE,
                     status_reason="Manually added by admin",
+                    is_common_stock=(
+                        is_common_stock if is_common_stock is not None else False
+                    ),
                     source='manual',
                     added_at=datetime.utcnow(),
                     first_seen_at=datetime.utcnow(),

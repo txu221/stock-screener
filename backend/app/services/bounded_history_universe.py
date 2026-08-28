@@ -36,6 +36,7 @@ class CurrentActiveUniverse:
             .filter(
                 StockUniverse.market == normalized_market,
                 StockUniverse.active_filter(),
+                StockUniverse.is_common_stock.is_(True),
             )
             .order_by(StockUniverse.symbol.asc())
             .all()

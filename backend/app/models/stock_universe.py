@@ -46,6 +46,7 @@ class StockUniverse(Base):
     is_active = Column(Boolean, default=True, index=True)  # Derived from lifecycle status
     status = Column(String(32), nullable=False, default=UNIVERSE_STATUS_ACTIVE, index=True)
     status_reason = Column(String(255))
+    is_common_stock = Column(Boolean, nullable=False, default=True)
     is_sp500 = Column(Boolean, default=False, index=True)  # S&P 500 membership
     source = Column(String(20), default="finviz")  # finviz, manual
     added_at = Column(DateTime(timezone=True), server_default=func.now())

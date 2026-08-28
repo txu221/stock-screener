@@ -20,11 +20,19 @@ from app.services.market_calendar_service import MarketCalendarService
 
 
 @dataclass(frozen=True)
+class PointInTimeUniverseMember:
+    symbol: str
+    currency: str
+    is_common_stock: bool = True
+
+
+@dataclass(frozen=True)
 class PointInTimeUniverse:
     market: str
     as_of_date: date
     symbols: tuple[str, ...]
     universe_hash: str
+    members: tuple[PointInTimeUniverseMember, ...] = ()
 
 
 class PointInTimeUniverseUnavailable(RuntimeError):
@@ -52,12 +60,14 @@ class PointInTimeUniverseService:
         market: str,
         as_of_date: date,
         symbols: tuple[str, ...],
+        members: tuple[PointInTimeUniverseMember, ...] = (),
     ) -> PointInTimeUniverse:
         return PointInTimeUniverse(
             market=market,
             as_of_date=as_of_date,
             symbols=symbols,
             universe_hash=hash_point_in_time_universe_symbols(symbols),
+            members=members,
         )
 
     def resolve(
@@ -69,20 +79,29 @@ class PointInTimeUniverseService:
     ) -> PointInTimeUniverse:
         normalized = self._market_calendar.normalize_market(market)
         if as_of_date == self._market_calendar.market_now(normalized).date():
-            symbols = tuple(
-                row[0]
-                for row in db.query(StockUniverse.symbol)
+            rows = tuple(
+                db.query(StockUniverse)
                 .filter(
                     StockUniverse.market == normalized,
                     StockUniverse.active_filter(),
+                    StockUniverse.is_common_stock.is_(True),
                 )
                 .order_by(StockUniverse.symbol.asc())
                 .all()
             )
+            symbols = tuple(row.symbol for row in rows)
             return self._snapshot(
                 market=normalized,
                 as_of_date=as_of_date,
                 symbols=symbols,
+                members=tuple(
+                    PointInTimeUniverseMember(
+                        symbol=row.symbol,
+                        currency=row.currency,
+                        is_common_stock=row.is_common_stock,
+                    )
+                    for row in rows
+                ),
             )
 
         market_timezone = ZoneInfo(
@@ -94,22 +113,24 @@ class PointInTimeUniverseService:
             tzinfo=market_timezone,
         ).astimezone(timezone.utc)
 
-        candidates = tuple(
-            row[0]
-            for row in db.query(StockUniverse.symbol)
+        candidate_rows = tuple(
+            db.query(StockUniverse)
             .filter(
                 StockUniverse.market == normalized,
                 StockUniverse.first_seen_at < cutoff,
+                StockUniverse.is_common_stock.is_(True),
             )
             .order_by(StockUniverse.symbol.asc())
-            .all()
+                .all()
         )
-        if not candidates:
+        if not candidate_rows:
             return self._snapshot(
                 market=normalized,
                 as_of_date=as_of_date,
                 symbols=(),
             )
+        candidates = tuple(row.symbol for row in candidate_rows)
+        rows_by_symbol = {row.symbol: row for row in candidate_rows}
 
         events = (
             db.query(StockUniverseStatusEvent)
@@ -148,4 +169,12 @@ class PointInTimeUniverseService:
             market=normalized,
             as_of_date=as_of_date,
             symbols=symbols,
+            members=tuple(
+                PointInTimeUniverseMember(
+                    symbol=symbol,
+                    currency=rows_by_symbol[symbol].currency,
+                    is_common_stock=rows_by_symbol[symbol].is_common_stock,
+                )
+                for symbol in symbols
+            ),
         )

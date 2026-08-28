@@ -134,6 +134,19 @@ describe('StaticBreadthPage', () => {
                 stocks_up_4pct: 22,
                 stocks_down_4pct: 8,
                 ratio_10day: 2.4,
+                advancing_count: 20,
+                declining_count: 8,
+                unchanged_count: 2,
+                advance_decline_eligible_count: 30,
+                new_high_52week_count: 5,
+                new_low_52week_count: 1,
+                high_low_52week_eligible_count: 25,
+                t2108_count: 18,
+                t2108_pct: 60,
+                t2108_eligible_count: 30,
+                atr_10x_extension_count: 2,
+                atr_extension_eligible_count: 28,
+                broad_universe_count: 32,
               },
               chart_data: [{ market: 'HK', date: '2026-04-24', stocks_up_4pct: 22, stocks_down_4pct: 8 }],
               history_90d: [],
@@ -152,6 +165,7 @@ describe('StaticBreadthPage', () => {
     renderPage('/breadth?market=HK');
 
     expect(await screen.findByRole('heading', { name: 'Hong Kong Breadth' })).toBeInTheDocument();
+    expect(screen.getByText('60.00% (18 / 30)')).toBeInTheDocument();
     expect(screen.getByTestId('breadth-chart')).toHaveTextContent('^HSI:1');
   });
 

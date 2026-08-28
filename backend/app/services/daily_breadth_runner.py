@@ -62,7 +62,10 @@ class DailyBreadthOutcome:
         result = {
             "date": self.calculation_date.isoformat(),
             "indicators": dict(self.indicators),
-            "total_stocks_scanned": self.coverage.total_stocks_scanned,
+            "total_stocks_scanned": self.indicators.get(
+                "total_stocks_scanned",
+                self.coverage.total_stocks_scanned,
+            ),
             "calculation_duration_seconds": self.duration_seconds,
             "timestamp": datetime.now().isoformat(),
         }
@@ -95,12 +98,17 @@ def run_daily_breadth(
     if completeness_error:
         raise IncompleteDailyBreadth(completeness_error, coverage)
 
-    metrics = calculation.to_metrics_dict()
-    dependencies.calculator.store_daily_breadth(
-        request.calculation_date,
-        metrics,
-        duration_seconds=duration_seconds,
-    )
+    if calculation.daily_result is not None:
+        dependencies.calculator.store_daily_result(
+            calculation.daily_result,
+            duration_seconds=duration_seconds,
+        )
+    else:
+        dependencies.calculator.store_daily_breadth(
+            request.calculation_date,
+            calculation.to_metrics_dict(),
+            duration_seconds=duration_seconds,
+        )
     try:
         dependencies.publish_snapshot(request.market)
     except Exception as snapshot_error:

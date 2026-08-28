@@ -27,6 +27,7 @@ from app.schemas.user_watchlist import (
     WatchlistStewardshipResponse,
     WatchlistStewardshipSummaryCounts,
 )
+from app.services.breadth.query import breadth_query, latest_breadth
 from app.services.stock_event_context_service import StockEventContextService
 from app.services.strategy_profile_service import (
     DEFAULT_PROFILE,
@@ -258,8 +259,8 @@ class WatchlistStewardshipService:
         )
         if latest_feature_date is not None:
             candidates.append(latest_feature_date)
-        latest_breadth_date = db.query(func.max(MarketBreadth.date)).filter(
-            MarketBreadth.market == "US",
+        latest_breadth_date = breadth_query(db, market="US").with_entities(
+            func.max(MarketBreadth.date)
         ).scalar()
         if latest_breadth_date is not None:
             candidates.append(latest_breadth_date)
@@ -294,15 +295,7 @@ class WatchlistStewardshipService:
 
     def _load_latest_breadth(self, db: Session, as_of_date: date) -> MarketBreadth | None:
         # Watchlist stewardship is US-scoped today.
-        return (
-            db.query(MarketBreadth)
-            .filter(
-                MarketBreadth.date <= as_of_date,
-                MarketBreadth.market == "US",
-            )
-            .order_by(MarketBreadth.date.desc())
-            .first()
-        )
+        return latest_breadth(db, market="US", as_of_date=as_of_date)
 
     def _load_feature_rows(
         self,

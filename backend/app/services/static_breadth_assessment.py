@@ -57,6 +57,7 @@ def classify_static_breadth_backfill(
     as_of_date: date,
     eligible_stocks_by_date: Mapping[date, int],
     scanned_by_date: Mapping[date, int],
+    required_scanned_by_date: Mapping[date, int] | None = None,
 ) -> StaticBreadthBackfillAssessment:
     ordered_dates = tuple(sorted(set(dates)))
     eligible = {
@@ -65,6 +66,16 @@ def classify_static_breadth_backfill(
     }
     scanned = {
         calculation_date: int(scanned_by_date.get(calculation_date, 0) or 0)
+        for calculation_date in ordered_dates
+    }
+    required_scanned = {
+        calculation_date: int(
+            (required_scanned_by_date or eligible_stocks_by_date).get(
+                calculation_date,
+                0,
+            )
+            or 0
+        )
         for calculation_date in ordered_dates
     }
     error_dates = _static_breadth_error_dates(stats)
@@ -86,7 +97,7 @@ def classify_static_breadth_backfill(
             continue
         if static_breadth_row_has_accepted_coverage(
             scanned[calculation_date],
-            eligible_stocks=eligible[calculation_date],
+            eligible_stocks=required_scanned[calculation_date],
         ):
             has_seen_valid_history = True
         elif calculation_date == as_of_date or has_seen_valid_history:

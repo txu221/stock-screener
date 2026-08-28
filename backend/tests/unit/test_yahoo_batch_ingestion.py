@@ -1396,7 +1396,41 @@ def test_get_many_from_database_chunks_large_symbol_sets(monkeypatch):
     result = service._get_many_from_database(symbols, "2y")
 
     assert [symbol for symbol, (df, _) in result.items() if df is not None] == symbols
+    assert all(
+        frame["Adj Close"].tolist() == [10.5] * 60
+        for frame, _ in result.values()
+    )
     assert len(select_statements) == 3
+
+
+def test_get_from_database_includes_persisted_adjusted_close():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    testing_session = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    service = PriceCacheService(redis_client=None, session_factory=testing_session)
+    end_day = date.today()
+
+    db = testing_session()
+    for offset in range(60):
+        db.add(
+            StockPrice(
+                symbol="AAA",
+                date=end_day - timedelta(days=59 - offset),
+                open=10.0,
+                high=11.0,
+                low=9.0,
+                close=10.5,
+                adj_close=9.5,
+                volume=1_000,
+            )
+        )
+    db.commit()
+    db.close()
+
+    frame, _ = service._get_from_database("AAA", "2y")
+
+    assert frame is not None
+    assert frame["Adj Close"].tolist() == [9.5] * 60
 
 
 def test_track_symbol_failures_skips_corrupt_symbol_updates_and_commits_others(monkeypatch):

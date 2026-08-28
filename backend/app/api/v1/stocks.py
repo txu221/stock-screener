@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 """Stock data API endpoints"""
-from datetime import UTC, datetime
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, case, func, or_
@@ -26,11 +26,12 @@ from ...schemas.stock import (
     StockSearchResult,
     StockTechnicals,
 )
+from ...schemas.validation import StockValidationResponse
+from ...services.breadth.query import latest_breadth
+from ...services.price_history_symbols import require_valid_price_history_symbol
 from ...services.stock_event_context_service import StockEventContextService
 from ...services.strategy_profile_service import DEFAULT_PROFILE, StrategyProfileService
-from ...services.price_history_symbols import require_valid_price_history_symbol
 from ...services.symbol_format import require_valid_symbol
-from ...schemas.validation import StockValidationResponse
 from ...services.validation_service import ValidationService
 from ...use_cases.scanning.explain_stock import ExplainStockUseCase
 from ...wiring.bootstrap import (
@@ -549,9 +550,9 @@ async def get_stock_industry(
     Returns:
         Industry classification (sector, industry, ibd_industry_group)
     """
+    from ...models.stock_universe import StockUniverse
     from ...services.ibd_industry_service import IBDIndustryService
     from ...services.market_taxonomy_service import get_market_taxonomy_service
-    from ...models.stock_universe import StockUniverse
 
     normalized_symbol = symbol.upper()
     universe_row = (
@@ -678,12 +679,7 @@ async def get_stock_decision_dashboard(
             if feature_item is None or feature_row is None:
                 degraded_reasons.append("symbol_missing_from_feature_run")
 
-        breadth = (
-            db.query(MarketBreadth)
-            .filter(MarketBreadth.market == "US")
-            .order_by(MarketBreadth.date.desc())
-            .first()
-        )
+        breadth = latest_breadth(db, market="US")
         if breadth is None:
             degraded_reasons.append("missing_breadth")
 

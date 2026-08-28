@@ -9,24 +9,23 @@ IBD group assignment fall into the synthetic "No Group" bucket.
 from __future__ import annotations
 
 import logging
-import math
+from collections.abc import Iterable, Mapping
 from datetime import date
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 import pandas as pd
+
+from app.services.breadth.formulas import prepare_feature_frame, signal_flags_at
+from app.services.breadth.types import BreadthFormulaPolicy
 
 logger = logging.getLogger(__name__)
 
 
 NO_GROUP_LABEL = "No Group"
-MOVER_THRESHOLD_PCT = 4.0
 
 
 class BreadthAttributionService:
     """Compute per-date IBD-group attribution for ±4% daily movers."""
-
-    def __init__(self, *, threshold_pct: float = MOVER_THRESHOLD_PCT) -> None:
-        self._threshold_pct = float(threshold_pct)
 
     def compute(
         self,
@@ -34,6 +33,10 @@ class BreadthAttributionService:
         symbols_meta: Iterable[Mapping[str, Any]],
         price_data: Mapping[str, pd.DataFrame | None],
         target_dates: Iterable[date],
+        currencies_by_symbol: Mapping[str, str] | None = None,
+        fx_by_currency: Mapping[str, pd.Series] | None = None,
+        symbols_by_date: Mapping[date, Iterable[str]] | None = None,
+        policy: BreadthFormulaPolicy | None = None,
     ) -> list[dict[str, Any]]:
         """Return attribution rows ordered oldest → newest.
 
@@ -77,50 +80,89 @@ class BreadthAttributionService:
         if not ordered_dates or not meta_by_symbol:
             return []
 
-        date_index = pd.Index(ordered_dates)
+        formula_policy = policy or BreadthFormulaPolicy()
         per_date: dict[date, dict[str, dict[str, Any]]] = {d: {} for d in ordered_dates}
+        normalized_symbols_by_date = (
+            {
+                calculation_date: frozenset(
+                    str(symbol).upper() for symbol in symbols
+                )
+                for calculation_date, symbols in symbols_by_date.items()
+            }
+            if symbols_by_date is not None
+            else None
+        )
 
         for symbol, meta in meta_by_symbol.items():
             history = price_data.get(symbol)
             if history is None or getattr(history, "empty", True):
                 continue
-            if "Close" not in history.columns:
-                continue
-
-            close_series = pd.Series(
-                history["Close"].to_numpy(),
-                index=[ts.date() for ts in pd.to_datetime(history.index)],
+            currency = str((currencies_by_symbol or {}).get(symbol) or "USD").upper()
+            fx = (fx_by_currency or {}).get(currency)
+            if fx is None:
+                if currency != "USD":
+                    raise ValueError(f"Missing historical FX series for {currency}")
+                fx = pd.Series(1.0, index=history.index)
+            rates_by_date = {
+                pd.Timestamp(value).date(): float(rate)
+                for value, rate in fx.items()
+            }
+            aligned_fx = pd.Series(
+                (
+                    rates_by_date.get(pd.Timestamp(value).date())
+                    for value in history.index
+                ),
+                index=history.index,
+                dtype=float,
             )
-            close_series = close_series[~close_series.index.duplicated(keep="last")].sort_index()
-            if close_series.empty:
+            if aligned_fx.isna().any():
+                missing_date = pd.Timestamp(
+                    aligned_fx[aligned_fx.isna()].index[0]
+                ).date()
+                raise ValueError(
+                    f"Missing historical {currency}->USD FX for "
+                    f"{missing_date.isoformat()}"
+                )
+            try:
+                features = prepare_feature_frame(
+                    history,
+                    aligned_fx,
+                    atr_period=formula_policy.atr_period,
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "Skipping malformed breadth attribution prices for %s: %s",
+                    symbol,
+                    exc,
+                )
                 continue
-
-            pct_1d = ((close_series / close_series.shift(1)) - 1.0) * 100.0
-            close_aligned = close_series.reindex(date_index)
-            pct_aligned = pct_1d.reindex(date_index)
 
             group = self._resolve_group(meta.get("ibd_industry_group"))
             name = meta.get("company_name") or meta.get("name")
 
-            for idx, d in enumerate(ordered_dates):
-                close_val = close_aligned.iloc[idx]
-                pct_val = pct_aligned.iloc[idx]
-                if pd.isna(close_val) or pd.isna(pct_val):
+            for d in ordered_dates:
+                if (
+                    normalized_symbols_by_date is not None
+                    and symbol not in normalized_symbols_by_date.get(d, frozenset())
+                ):
                     continue
-                pct_val = float(pct_val)
-                if not math.isfinite(pct_val):
-                    continue
-
-                direction = self._classify(pct_val)
+                flags = signal_flags_at(features, d, formula_policy)
+                direction = (
+                    "up"
+                    if flags.up_4pct
+                    else "down"
+                    if flags.down_4pct
+                    else None
+                )
                 if direction is None:
                     continue
-
-                close_float = float(close_val) if math.isfinite(float(close_val)) else None
+                row = features.loc[pd.Timestamp(d)]
+                pct_val = float(row.daily_return) * 100.0
                 stock_entry = {
                     "symbol": symbol,
                     "name": name,
                     "pct_change": round(pct_val, 2),
-                    "close": round(close_float, 2) if close_float is not None else None,
+                    "close": round(float(row.raw_close), 2),
                 }
 
                 bucket = per_date[d].setdefault(
@@ -178,13 +220,6 @@ class BreadthAttributionService:
             )
 
         return results
-
-    def _classify(self, pct_change: float) -> str | None:
-        if pct_change >= self._threshold_pct:
-            return "up"
-        if pct_change <= -self._threshold_pct:
-            return "down"
-        return None
 
     @staticmethod
     def _resolve_group(raw_group: Any) -> str:

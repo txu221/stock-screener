@@ -22,6 +22,7 @@ from app.services.fx_service import (
     currency_for_market,
     default_currency_for_market,
 )
+from app.models.fx_rate import FXRate
 
 
 # --- currency_for_market ---------------------------------------------------
@@ -461,3 +462,41 @@ class TestPrefetch:
         svc._rate_fetcher = lambda c: (calls.append(c), 999)[1]
         svc.get_usd_rate("HKD")
         assert calls == []
+
+
+class TestHistoricalRates:
+    def test_reads_backward_only_database_rates_without_live_fetch(self, db_session):
+        db_session.add_all(
+            [
+                FXRate(
+                    from_currency="HKD",
+                    to_currency="USD",
+                    as_of_date=date(2026, 8, 14),
+                    rate=0.127,
+                    source="test",
+                ),
+                FXRate(
+                    from_currency="HKD",
+                    to_currency="USD",
+                    as_of_date=date(2026, 8, 21),
+                    rate=0.128,
+                    source="test",
+                ),
+            ]
+        )
+        db_session.commit()
+        fetcher = MagicMock()
+        service = FXService(
+            rate_fetcher=fetcher,
+            session_factory=lambda: db_session,
+            redis_client=None,
+        )
+
+        result = service.get_historical_usd_rates(
+            ("HKD", "USD"),
+            (date(2026, 8, 20), date(2026, 8, 21)),
+        )
+
+        assert result["HKD"].tolist() == pytest.approx([0.127, 0.128])
+        assert result["USD"].tolist() == [1.0, 1.0]
+        fetcher.assert_not_called()

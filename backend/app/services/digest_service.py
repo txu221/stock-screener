@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
-import logging
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import case, func
@@ -32,7 +32,11 @@ from app.schemas.digest import (
     DigestWatchlistHighlight,
 )
 from app.schemas.validation import ValidationHorizonSummary, ValidationSourceKind
-from app.services.strategy_profile_service import DEFAULT_PROFILE, StrategyProfileService
+from app.services.breadth.query import breadth_query, latest_breadth
+from app.services.strategy_profile_service import (
+    DEFAULT_PROFILE,
+    StrategyProfileService,
+)
 from app.services.validation_service import ValidationService
 from app.use_cases.scanning.explain_stock import ExplainStockUseCase
 from app.utils.market_hours import eastern_day_bounds_utc, to_eastern_date
@@ -245,8 +249,8 @@ class DigestService:
         if latest_feature_date is not None:
             candidates.append(latest_feature_date)
 
-        latest_breadth_date = db.query(func.max(MarketBreadth.date)).filter(
-            MarketBreadth.market == "US",
+        latest_breadth_date = breadth_query(db, market="US").with_entities(
+            func.max(MarketBreadth.date)
         ).scalar()
         if latest_breadth_date is not None:
             candidates.append(latest_breadth_date)
@@ -283,15 +287,7 @@ class DigestService:
 
     def _load_latest_breadth(self, db: Session, as_of_date: date) -> MarketBreadth | None:
         # Digest is US-scoped today.
-        return (
-            db.query(MarketBreadth)
-            .filter(
-                MarketBreadth.date <= as_of_date,
-                MarketBreadth.market == "US",
-            )
-            .order_by(MarketBreadth.date.desc())
-            .first()
-        )
+        return latest_breadth(db, market="US", as_of_date=as_of_date)
 
     def _load_latest_theme_alert_at(self, db: Session, as_of_date: date) -> datetime | None:
         _, alerts_until = eastern_day_bounds_utc(as_of_date)

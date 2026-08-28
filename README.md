@@ -21,7 +21,7 @@ See the **[Static Site Guide](docs/STATIC_SITE.md)** for exactly what works in s
 - **12-market coverage** -  exchange calendars, independent data and scans.
 - **Multiple screening methodologies** - Minervini, CANSLIM, IPO, Volume Breakthrough, etc. with composite scoring.
 - **Market Health and Exposure** - Market-regime overlay for position sizing and risk posture.
-- **Market Breadth** - StockBee-style advance/decline analysis with a benchmark overlay, daily movers (±4%), and quarterly / monthly / 34-day trend windows.
+- **Market Breadth** - StockBee-style daily movers and trend windows, advance/decline and new-high/new-low health bars, T2108, a benchmark overlay, and a significance heatmap built from one shared calculation layer.
 - **Industry groups with Relative Rotation Graph** - groups ranked by relative strength with movers (1W/1M/3M/6M) and constituent analysis, plus RRG charts plotting RS-Ratio vs RS-Momentum through (Leading → Weakening → Lagging → Improving).
 - **Watchlists and Themes** - RS and price sparklines, multi-period change bars, drag-and-drop folders, and full-screen chart navigation.
 - **Theme discovery** - AI theme identification from RSS, Twitter/X, and news feeds; tracks trending vs. emerging themes and alerts on momentum shifts.
@@ -37,6 +37,12 @@ See the **[Static Site Guide](docs/STATIC_SITE.md)** for exactly what works in s
 
 ![Relative Rotation Graph — sector rotation with direction-arrowed weekly tails](docs/screenshots/rrg-rotation.png)
 *RRG: sector rotation with direction-arrowed weekly tails; full 197-group scope available from the same view*
+
+*Market Breadth combines advance/decline and new-high/new-low health bars with an SPY overlay and a color-coded history table for primary, secondary, and context indicators.*
+
+![Market Breadth overview with health bars and SPY overlay](docs/screenshots/breadth-chart.jpg)
+
+![Market Breadth recent-history heatmap](docs/screenshots/breadth-history.jpg)
 
 **Typical flow:** sign in → bootstrap markets → review the Daily dashboard → run a Scan → drill into a stock → monitor Operations → validate outcomes on Backtest. For the full page-by-page tour, see the **[Live App Guide](docs/LIVE_APP_GUIDE.md)**.
 

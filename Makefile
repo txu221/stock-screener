@@ -57,10 +57,14 @@ GATE_3 = \
   tests/unit/test_setup_engine_feature_flag.py \
   tests/integration/test_setup_engine_query_integration.py \
   tests/integration/test_opportunity_state_surface_parity.py \
+  tests/integration/test_breadth_revision_cutover.py \
+  tests/integration/test_shared_breadth_metrics_migration.py \
+  tests/integration/test_common_stock_classification_migration.py \
   tests/unit/test_backfill_setup_engine.py \
   tests/parity/test_canonical_market_rs_parity.py \
   tests/parity/test_scan_parity.py \
-  tests/unit/test_scan_path_parity.py
+  tests/unit/test_scan_path_parity.py \
+  tests/unit/test_breadth_workflow_parity.py
 
 # ── Gate 4: Performance Baselines ───────────────────────────────────
 # Runtime budget regression (blocking in CI).

@@ -197,6 +197,7 @@ def _seed_dashboard_data(session):
             ratio_5day=1.6,
             ratio_10day=1.3,
             total_stocks_scanned=4800,
+            calculation_revision=2,
         )
     )
     theme = ThemeCluster(
@@ -768,6 +769,7 @@ async def test_decision_dashboard_uses_market_specific_latest_run_pointer_for_no
             ratio_5day=1.6,
             ratio_10day=1.3,
             total_stocks_scanned=4800,
+            calculation_revision=2,
         )
     )
     session.commit()

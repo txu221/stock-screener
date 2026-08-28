@@ -71,7 +71,33 @@ def _breadth_row(market: str, day: date, *, up: int, down: int) -> MarketBreadth
         stocks_down_13pct_34days=down + 3,
         total_stocks_scanned=up + down,
         calculation_duration_seconds=1.25,
+        calculation_revision=2,
     )
+
+
+def _revision_2_values() -> dict:
+    return {
+        "advancing_count": 120,
+        "declining_count": 80,
+        "unchanged_count": 5,
+        "new_high_52week_count": 12,
+        "new_low_52week_count": 3,
+        "t2108_count": 150,
+        "t2108_pct": 75.0,
+        "atr_10x_extension_count": 7,
+        "broad_universe_count": 205,
+        "advance_decline_eligible_count": 205,
+        "stockbee_daily_eligible_count": 190,
+        "stockbee_month_eligible_count": 180,
+        "stockbee_34day_eligible_count": 175,
+        "stockbee_quarter_eligible_count": 160,
+        "t2108_eligible_count": 200,
+        "high_low_52week_eligible_count": 150,
+        "atr_extension_eligible_count": 195,
+        "eligibility_signature": "a" * 64,
+        "stockbee_eligibility_signature": "b" * 64,
+        "calculation_revision": 2,
+    }
 
 
 def test_market_query_description_excludes_unsupported_singapore_breadth():
@@ -99,6 +125,86 @@ async def test_current_breadth_filters_by_market(client, session):
     assert payload["market"] == "HK"
     assert payload["stocks_up_4pct"] == 22
     assert payload["stocks_down_4pct"] == 8
+    assert payload["broad_universe_count"] is None
+    assert payload["calculation_revision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_current_breadth_ignores_newer_legacy_row(client, session):
+    app.dependency_overrides[get_db] = _override_db(session)
+    corrected = _breadth_row("US", date(2026, 8, 20), up=12, down=3)
+    stale = _breadth_row("US", date(2026, 8, 21), up=99, down=1)
+    stale.calculation_revision = None
+    session.add_all([corrected, stale])
+    session.commit()
+
+    response = await client.get("/api/v1/breadth/current", params={"market": "US"})
+
+    assert response.status_code == 200
+    assert response.json()["date"] == "2026-08-20"
+    assert response.json()["stocks_up_4pct"] == 12
+
+
+@pytest.mark.asyncio
+async def test_current_breadth_returns_not_found_when_only_legacy_rows_exist(
+    client, session
+):
+    app.dependency_overrides[get_db] = _override_db(session)
+    stale = _breadth_row("US", date(2026, 8, 21), up=99, down=1)
+    stale.calculation_revision = None
+    session.add(stale)
+    session.commit()
+
+    response = await client.get("/api/v1/breadth/current", params={"market": "US"})
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_revision_2_fields_are_flat_and_legacy_fields_are_unchanged(client, session):
+    app.dependency_overrides[get_db] = _override_db(session)
+    row = _breadth_row("US", date(2026, 8, 21), up=10, down=4)
+    for name, value in _revision_2_values().items():
+        setattr(row, name, value)
+    session.add(row)
+    session.commit()
+
+    response = await client.get("/api/v1/breadth/current", params={"market": "US"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["stocks_up_4pct"] == 10
+    assert payload["total_stocks_scanned"] == 14
+    assert payload["t2108_pct"] == pytest.approx(75.0)
+    assert payload["stockbee_daily_eligible_count"] == 190
+    assert payload["stockbee_eligibility_signature"] == "b" * 64
+    assert payload["calculation_revision"] == 2
+    assert "stockbee" not in payload
+    assert "context" not in payload
+
+
+@pytest.mark.asyncio
+async def test_trend_accepts_revision_2_indicators_and_denominators(client, session):
+    app.dependency_overrides[get_db] = _override_db(session)
+    row = _breadth_row("US", date.today(), up=10, down=4)
+    for name, value in _revision_2_values().items():
+        setattr(row, name, value)
+    session.add(row)
+    session.commit()
+
+    t2108 = await client.get(
+        "/api/v1/breadth/trend/t2108_pct",
+        params={"days": 1, "market": "US"},
+    )
+    coverage = await client.get(
+        "/api/v1/breadth/trend/t2108_eligible_count",
+        params={"days": 1, "market": "US"},
+    )
+
+    assert t2108.status_code == 200
+    assert t2108.json()["data"][0]["value"] == pytest.approx(75.0)
+    assert coverage.status_code == 200
+    assert coverage.json()["data"][0]["value"] == 200
 
 
 @pytest.mark.asyncio

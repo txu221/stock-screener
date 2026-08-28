@@ -15,6 +15,20 @@ jobs:
   backend:
     name: Backend Quality Gates
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       DATABASE_URL: postgresql://ci:ci@localhost/ci_unused
 
@@ -49,6 +63,9 @@ jobs:
 
       - name: "Gate 3: Integration coverage"
         run: make gate-3
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+          STOCKSCANNER_TEST_ALLOW_POSTGRES: "1"
 
       - name: "Gate 4: Performance baselines"
         run: make gate-4

@@ -306,6 +306,7 @@ async def get_universe_market_audit(db: Session = Depends(get_db)):
 async def add_symbol(
     symbol: str,
     name: str = "",
+    is_common_stock: bool | None = None,
     db: Session = Depends(get_db)
 ):
     """
@@ -314,6 +315,8 @@ async def add_symbol(
     Args:
         symbol: Stock symbol
         name: Company name (optional)
+        is_common_stock: Optional explicit classification. Omitted values are
+            fail-closed for new rows and preserve existing classifications.
         db: Database session
 
     Returns:
@@ -321,7 +324,12 @@ async def add_symbol(
     """
     try:
         stock_universe_service = get_stock_universe_service()
-        success = stock_universe_service.add_manual_symbol(db, symbol, name)
+        success = stock_universe_service.add_manual_symbol(
+            db,
+            symbol,
+            name,
+            is_common_stock=is_common_stock,
+        )
 
         if success:
             return {"message": f"Symbol {symbol} added successfully"}

@@ -27,15 +27,15 @@ class MarketBreadth(Base):
     ratio_5day = Column(Float, nullable=True)  # Nullable for edge cases (denominator = 0)
     ratio_10day = Column(Float, nullable=True)
 
-    # Quarterly movers (63 trading days, ~25% threshold)
+    # Quarterly movers (65 trading sessions, 25% threshold)
     stocks_up_25pct_quarter = Column(Integer, default=0, nullable=False)
     stocks_down_25pct_quarter = Column(Integer, default=0, nullable=False)
 
-    # Monthly movers (21 trading days, 25% threshold)
+    # Monthly movers (exactly 20 trading sessions, 25% threshold)
     stocks_up_25pct_month = Column(Integer, default=0, nullable=False)
     stocks_down_25pct_month = Column(Integer, default=0, nullable=False)
 
-    # Monthly extreme movers (21 trading days, 50% threshold)
+    # Monthly extreme movers (exactly 20 trading sessions, 50% threshold)
     stocks_up_50pct_month = Column(Integer, default=0, nullable=False)
     stocks_down_50pct_month = Column(Integer, default=0, nullable=False)
 
@@ -43,9 +43,34 @@ class MarketBreadth(Base):
     stocks_up_13pct_34days = Column(Integer, default=0, nullable=False)
     stocks_down_13pct_34days = Column(Integer, default=0, nullable=False)
 
+    # Broad-universe context metrics (revision 2)
+    advancing_count = Column(Integer, nullable=True)
+    declining_count = Column(Integer, nullable=True)
+    unchanged_count = Column(Integer, nullable=True)
+    new_high_52week_count = Column(Integer, nullable=True)
+    new_low_52week_count = Column(Integer, nullable=True)
+    t2108_count = Column(Integer, nullable=True)
+    t2108_pct = Column(Float, nullable=True)
+    atr_10x_extension_count = Column(Integer, nullable=True)
+
+    # Explicit metric-family denominators (revision 2)
+    broad_universe_count = Column(Integer, nullable=True)
+    advance_decline_eligible_count = Column(Integer, nullable=True)
+    stockbee_daily_eligible_count = Column(Integer, nullable=True)
+    stockbee_month_eligible_count = Column(Integer, nullable=True)
+    stockbee_34day_eligible_count = Column(Integer, nullable=True)
+    stockbee_quarter_eligible_count = Column(Integer, nullable=True)
+    t2108_eligible_count = Column(Integer, nullable=True)
+    high_low_52week_eligible_count = Column(Integer, nullable=True)
+    atr_extension_eligible_count = Column(Integer, nullable=True)
+
     # Metadata
+    # Deprecated compatibility alias; revision-2 writers set this equal to
+    # broad_universe_count.
     total_stocks_scanned = Column(Integer, default=0, nullable=False)
     eligibility_signature = Column(String(64), nullable=True)
+    stockbee_eligibility_signature = Column(String(64), nullable=True)
+    calculation_revision = Column(Integer, nullable=True)
     calculation_duration_seconds = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

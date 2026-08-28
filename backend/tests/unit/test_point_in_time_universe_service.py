@@ -10,6 +10,7 @@ from app.models.stock_universe import (
     UNIVERSE_STATUS_ACTIVE,
     UNIVERSE_STATUS_INACTIVE_MANUAL,
 )
+from app.services.bounded_history_universe import CurrentActiveUniverse
 from app.services.point_in_time_universe_service import (
     PointInTimeUniverseService,
     PointInTimeUniverseUnavailable,
@@ -38,6 +39,7 @@ def _universe_row(
     first_seen_at: datetime,
     status: str = UNIVERSE_STATUS_ACTIVE,
     is_active: bool = True,
+    is_common_stock: bool = True,
 ) -> StockUniverse:
     return StockUniverse(
         symbol=symbol,
@@ -48,6 +50,7 @@ def _universe_row(
         timezone="America/New_York",
         status=status,
         is_active=is_active,
+        is_common_stock=is_common_stock,
         first_seen_at=first_seen_at,
     )
 
@@ -158,6 +161,60 @@ def test_current_resolve_uses_authoritative_active_filter_without_event_history(
     )
 
     assert snapshot.symbols == ("CURRENT",)
+
+
+def test_current_resolve_excludes_explicit_non_common_instruments(db_session):
+    db_session.add_all(
+        [
+            _universe_row(
+                "COMMON",
+                first_seen_at=datetime(2025, 1, 2, tzinfo=UTC),
+            ),
+            _universe_row(
+                "SPY",
+                first_seen_at=datetime(2025, 1, 2, tzinfo=UTC),
+                is_common_stock=False,
+            ),
+        ]
+    )
+    db_session.commit()
+    service = PointInTimeUniverseService(
+        market_calendar=_CalendarStub(latest=date(2026, 4, 10))
+    )
+
+    snapshot = service.resolve(
+        db_session, market="US", as_of_date=date(2026, 4, 10)
+    )
+
+    assert snapshot.symbols == ("COMMON",)
+    assert tuple(member.symbol for member in snapshot.members) == ("COMMON",)
+
+
+def test_current_active_fallback_excludes_explicit_non_common_instruments(
+    db_session,
+):
+    db_session.add_all(
+        [
+            _universe_row(
+                "COMMON",
+                first_seen_at=datetime(2025, 1, 2, tzinfo=UTC),
+            ),
+            _universe_row(
+                "SPY",
+                first_seen_at=datetime(2025, 1, 2, tzinfo=UTC),
+                is_common_stock=False,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    snapshot = CurrentActiveUniverse().resolve(
+        db_session,
+        market="US",
+        as_of_date=date(2026, 4, 10),
+    )
+
+    assert snapshot.symbols == ("COMMON",)
 
 
 def test_latest_completed_resolve_uses_event_cutoff_during_post_close_buffer(

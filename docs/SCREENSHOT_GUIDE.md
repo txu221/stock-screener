@@ -17,7 +17,7 @@ This guide provides detailed instructions for capturing screenshots and GIFs for
 ## Recommended Settings
 
 - **Browser width**: 1400px (shows full UI without excessive whitespace)
-- **Screenshot format**: PNG (lossless, good for UI)
+- **Screenshot format**: PNG for lossless UI captures, or high-quality JPEG for full-page dashboard views
 - **GIF settings**: 15-20 FPS, max 10 seconds, optimize for web
 - **Theme**: Dark mode (default) - provides better contrast for README
 
@@ -97,20 +97,35 @@ This guide provides detailed instructions for capturing screenshots and GIFs for
 
 ---
 
-### 4. breadth-chart.png
+### 4a. breadth-chart.jpg
 **Location**: `/breadth` page
-**What to capture**: Full breadth page showing:
-- Main chart with breadth areas (green/red stacked)
-- SPY price line overlay
-- Time range selector (3M or 6M selected)
-- Right panel with current breadth data
-- Daily movers section
+**What to capture**: Breadth overview showing:
+- Advancing/declining and new-high/new-low health bars
+- T2108, 10x ATR extension, and broad-universe context cards
+- Main chart with green/red breadth areas and benchmark line overlay
+- Time-range selector
 
 **Setup**:
 1. Navigate to Market Breadth page
-2. Select 3M or 6M time range
-3. Ensure chart shows interesting breadth patterns
-4. Capture the full page or chart + right panel
+2. Use a 1280px-or-wider desktop viewport
+3. Ensure the health bars and chart have populated data
+4. Capture the top viewport with both the context strip and chart visible
+
+---
+
+### 4b. breadth-history.jpg
+**Location**: `/breadth` page → Recent History
+**What to capture**: Full-width history table showing:
+- Amber **Primary**, green **Secondary**, and blue **Context** group bands
+- Multiline metric headings and visible group dividers
+- Dark neutral, green, and red significance levels across several dates
+- The complete table width without horizontal scrolling
+
+**Setup**:
+1. Scroll to Recent History
+2. Keep the viewport at least 1280px wide
+3. Reset the table to its newest rows and leftmost position
+4. Capture the title, group bands, headings, and at least 12 populated rows
 
 ---
 
@@ -218,7 +233,8 @@ docs/
 │   ├── market-badges.png     ← Per-row market badges in mixed-universe scans
 │   ├── scan-filters.png      ← Filter panel expanded
 │   ├── watchlist-table.png   ← Watchlist with sparklines
-│   ├── breadth-chart.png     ← Breadth chart with SPY overlay
+│   ├── breadth-chart.jpg     ← Breadth health bars and benchmark overlay
+│   ├── breadth-history.jpg   ← Grouped recent-history significance heatmap
 │   ├── group-rankings.png    ← IBD group rankings page
 │   ├── group-detail.png      ← Group detail modal
 │   ├── chatbot.png           ← AI chatbot interface
@@ -287,8 +303,10 @@ bash frontend/scripts/capture-scan-workflow.sh
 `capture-live-readme.mjs` captures the Daily Snapshot, Scan results, Market selector, Breadth, Group rankings, RRG (sector scope, labels on), and Watchlist at `deviceScaleFactor: 2`. Review the output in `.tmp/readme-shots/`, then downscale the keepers to 1440px wide (matching the existing set) before copying into `docs/screenshots/`:
 
 ```bash
-ffmpeg -y -i .tmp/readme-shots/breadth-chart.png -vf "scale=1440:-1:flags=lanczos" docs/screenshots/breadth-chart.png
+ffmpeg -y -i .tmp/readme-shots/breadth-chart.png -vf "scale=1440:-1:flags=lanczos" -q:v 2 docs/screenshots/breadth-chart.jpg
 ```
+
+The table-focused `breadth-history.jpg` is currently captured separately using the steps in **4b** so its group headers and newest rows remain the focus.
 
 **Capture `scan-results` on an Asian market (e.g. Japan).** The Themes chip-cluster column is only populated for the Asia universes in the reference deployment; a US scan leaves it blank.
 

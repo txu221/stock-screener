@@ -410,6 +410,7 @@ class UniversePersistence:
         existing.currency = row.currency
         existing.timezone = row.timezone
         existing.local_code = row.local_code or existing.local_code
+        existing.is_common_stock = True
         existing.sector = prefer_meaningful(row.sector, existing.sector)
         existing.industry = prefer_meaningful(row.industry, existing.industry)
         if row.market_cap is not None:
@@ -516,6 +517,7 @@ class UniversePersistence:
             is_active=lifecycle.is_active,
             status=lifecycle.status,
             status_reason=reason,
+            is_common_stock=True,
             source=source,
             consecutive_fetch_failures=lifecycle.consecutive_fetch_failures,
             added_at=first_seen_at,

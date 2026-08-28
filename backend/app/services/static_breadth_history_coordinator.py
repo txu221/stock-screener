@@ -11,10 +11,8 @@ from typing import Any, Protocol
 from ..models.market_breadth import MarketBreadth
 from .static_breadth_assessment import (
     classify_static_breadth_backfill,
-    static_breadth_row_has_accepted_coverage,
 )
 from .static_breadth_eligibility import StaticBreadthEligibility
-
 
 STATIC_BREADTH_RATIO_RECOMPUTE_TRADING_DAYS = 10
 
@@ -113,20 +111,12 @@ class StaticBreadthHistoryCoordinator:
                 calculation_date
                 for calculation_date in target_dates
                 if calculation_date in existing_by_date
-                and (
-                    not static_breadth_row_has_accepted_coverage(
-                        existing_by_date[calculation_date].total_stocks_scanned,
-                        eligible_stocks=eligibility.eligible_counts_by_date[
-                            calculation_date
-                        ],
-                    )
-                    or getattr(
-                        existing_by_date[calculation_date],
-                        "eligibility_signature",
-                        None,
-                    )
-                    != eligibility.eligibility_signatures_by_date[calculation_date]
+                and getattr(
+                    existing_by_date[calculation_date],
+                    "eligibility_signature",
+                    None,
                 )
+                != eligibility.eligibility_signatures_by_date[calculation_date]
             ]
             repair_dates = sorted(
                 set(missing_dates + incomplete_existing_dates)
@@ -201,12 +191,30 @@ class StaticBreadthHistoryCoordinator:
                     ).items()
                 }
             )
+            required_scanned_by_date = {
+                row.date: int(
+                    getattr(row, "advance_decline_eligible_count", 0) or 0
+                )
+                for row in existing_rows
+            }
+            computed_required = (
+                stats.get("advance_decline_eligible_stocks_by_date")
+                or stats.get("scanned_stocks_by_date")
+                or {}
+            )
+            required_scanned_by_date.update(
+                {
+                    date.fromisoformat(raw_date): int(count or 0)
+                    for raw_date, count in computed_required.items()
+                }
+            )
             assessment = classify_static_breadth_backfill(
                 stats=stats,
                 dates=target_dates,
                 as_of_date=request.as_of_date,
                 eligible_stocks_by_date=eligibility.eligible_counts_by_date,
                 scanned_by_date=scanned_by_date,
+                required_scanned_by_date=required_scanned_by_date,
             )
             stats.update(assessment.diagnostics())
             stats.update(

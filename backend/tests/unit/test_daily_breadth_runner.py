@@ -4,7 +4,11 @@ from datetime import date, datetime
 from unittest.mock import MagicMock
 
 import pytest
-
+from app.services.breadth.types import (
+    BreadthDailyResult,
+    BreadthEligibilityCounts,
+    BreadthIndicatorValues,
+)
 from app.services.breadth_coverage import (
     BreadthCalculationResult,
     BreadthCoverageReport,
@@ -20,7 +24,6 @@ from app.services.daily_breadth_runner import (
 from app.services.derived_data_execution_policy import (
     resolve_derived_data_execution_policy,
 )
-
 
 CALCULATION_DATE = date(2026, 3, 20)
 
@@ -47,8 +50,7 @@ def _calculation(
 ) -> BreadthCalculationResult:
     candidates = scanned + skipped
     insufficient = max(skipped - misses - errors, 0)
-    return BreadthCalculationResult(
-        indicators={
+    indicators = {
             "stocks_up_4pct": 10,
             "stocks_down_4pct": 4,
             "ratio_5day": 1.5,
@@ -61,7 +63,27 @@ def _calculation(
             "stocks_down_50pct_month": 0,
             "stocks_up_13pct_34days": 5,
             "stocks_down_13pct_34days": 2,
-        },
+            "total_stocks_scanned": candidates,
+            "broad_universe_count": candidates,
+            "calculation_revision": 2,
+        }
+    daily_result = BreadthDailyResult(
+        market="US",
+        calculation_date=CALCULATION_DATE,
+        values=BreadthIndicatorValues(
+            **{
+                key: value
+                for key, value in indicators.items()
+                if key in BreadthIndicatorValues.__dataclass_fields__
+            }
+        ),
+        eligibility=BreadthEligibilityCounts(),
+        broad_universe_count=candidates,
+        eligibility_signature="a" * 64,
+        stockbee_eligibility_signature="b" * 64,
+    )
+    return BreadthCalculationResult(
+        indicators=indicators,
         coverage=BreadthCoverageReport.from_parts(
             BreadthPriceCoverage(
                 candidate_stocks=candidates,
@@ -81,6 +103,7 @@ def _calculation(
                 errors=errors,
             ),
         ),
+        daily_result=daily_result,
     )
 
 
@@ -111,12 +134,13 @@ def test_runner_persists_and_serializes_compatible_success():
         calculation_date=CALCULATION_DATE,
         policy=policy,
     )
-    calculator.store_daily_breadth.assert_called_once()
+    calculator.store_daily_result.assert_called_once()
+    calculator.store_daily_breadth.assert_not_called()
     dependencies.publish_snapshot.assert_called_once_with("US")
     result = outcome.to_task_result(policy)
     assert result["date"] == "2026-03-20"
     assert result["indicators"]["stocks_up_4pct"] == 10
-    assert result["total_stocks_scanned"] == 90
+    assert result["total_stocks_scanned"] == 100
     assert result["cache_only"] is True
     assert result["cache_policy"] == "refresh_guarded"
     assert result["cache_diagnostics"]["cache_miss_stocks"] == 10
@@ -141,7 +165,7 @@ def test_refresh_guarded_allows_partial_cache_coverage_with_usable_stocks():
     )
 
     assert outcome.coverage.total_stocks_scanned == 60
-    calculator.store_daily_breadth.assert_called_once()
+    calculator.store_daily_result.assert_called_once()
 
 
 def test_refresh_guarded_rejects_zero_usable_stocks_before_persistence():
@@ -168,6 +192,7 @@ def test_refresh_guarded_rejects_zero_usable_stocks_before_persistence():
         )
 
     assert caught.value.coverage.total_stocks_scanned == 0
+    calculator.store_daily_result.assert_not_called()
     calculator.store_daily_breadth.assert_not_called()
     dependencies.publish_snapshot.assert_not_called()
 
@@ -191,6 +216,7 @@ def test_strict_cache_only_rejects_miss_ratio_above_tolerance():
             _dependencies(calculator),
         )
 
+    calculator.store_daily_result.assert_not_called()
     calculator.store_daily_breadth.assert_not_called()
 
 
@@ -217,6 +243,7 @@ def test_strict_cache_only_rejects_zero_usable_stocks():
             dependencies,
         )
 
+    calculator.store_daily_result.assert_not_called()
     calculator.store_daily_breadth.assert_not_called()
     dependencies.publish_snapshot.assert_not_called()
 
@@ -243,6 +270,7 @@ def test_same_day_auto_requires_complete_warmup_metadata():
             _dependencies(calculator),
         )
 
+    calculator.store_daily_result.assert_not_called()
     calculator.store_daily_breadth.assert_not_called()
 
 
@@ -273,4 +301,4 @@ def test_snapshot_failure_is_best_effort():
     )
 
     assert outcome.calculation_date == CALCULATION_DATE
-    calculator.store_daily_breadth.assert_called_once()
+    calculator.store_daily_result.assert_called_once()

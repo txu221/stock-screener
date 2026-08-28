@@ -160,6 +160,7 @@ def _seed_digest_data(session):
             stocks_up_13pct_34days=0,
             stocks_down_13pct_34days=0,
             total_stocks_scanned=4200,
+            calculation_revision=2,
         )
     )
     session.add_all(

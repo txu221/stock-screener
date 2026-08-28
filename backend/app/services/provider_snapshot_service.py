@@ -1898,6 +1898,7 @@ class ProviderSnapshotService:
             "is_active": row.is_active,
             "status": row.status,
             "status_reason": row.status_reason,
+            "is_common_stock": row.is_common_stock,
             "is_sp500": row.is_sp500,
             "source": row.source,
             "added_at": _serialize_datetime(row.added_at),
@@ -1912,6 +1913,7 @@ class ProviderSnapshotService:
 
     @staticmethod
     def _deserialize_universe_row(row: Dict[str, Any]) -> Dict[str, Any]:
+        source = row.get("source", "finviz")
         identity = security_master_resolver.resolve_identity(
             symbol=str(row.get("symbol") or ""),
             market=row.get("market"),
@@ -1935,8 +1937,12 @@ class ProviderSnapshotService:
             "is_active": row.get("is_active", True),
             "status": row.get("status", UNIVERSE_STATUS_ACTIVE),
             "status_reason": row.get("status_reason"),
+            "is_common_stock": row.get(
+                "is_common_stock",
+                source != "manual",
+            ),
             "is_sp500": row.get("is_sp500", False),
-            "source": row.get("source", "finviz"),
+            "source": source,
             "added_at": _deserialize_datetime(row.get("added_at")),
             "first_seen_at": _deserialize_datetime(row.get("first_seen_at")),
             "last_seen_in_source_at": _deserialize_datetime(row.get("last_seen_in_source_at")),

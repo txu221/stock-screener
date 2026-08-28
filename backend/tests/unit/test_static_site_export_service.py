@@ -7,13 +7,9 @@ from datetime import date, datetime
 from inspect import Parameter, getsource, signature
 from types import SimpleNamespace
 
+import app.services.static_site_export_service as export_module
 import pandas as pd
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import sessionmaker
-
-import app.services.static_site_export_service as export_module
 from app.database import Base
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
@@ -28,10 +24,14 @@ from app.models.industry import IBDGroupRank
 from app.models.market_exposure import MarketExposure
 from app.models.stock import StockPrice
 from app.models.stock_universe import StockUniverse
+from app.services.breadth.universe import breadth_eligibility_signature
 from app.services.group_ranking_history import select_market_run_series
 from app.services.key_market_history import build_key_market_entries
 from app.services.static_artifact_combiner import StaticArtifactFormulaError
-from app.services.static_breadth_section_builder import StaticBreadthSectionBuilder
+from app.services.static_breadth_section_builder import (
+    StaticBreadthEngineInputFactory,
+    StaticBreadthSectionBuilder,
+)
 from app.services.static_chart_bundle_exporter import StaticChartBundleConfig
 from app.services.static_groups_rrg_export import (
     StaticGroupsRRGPayloadBuilder,
@@ -46,6 +46,9 @@ from app.services.static_site_export_service import (
     StaticSiteExportService,
     StaticSiteSectionUnavailableError,
 )
+from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture
@@ -98,6 +101,15 @@ def _insert_runs(
         db.commit()
 
 
+def _insert_common_stock_universe(session_factory, *, market, symbols):
+    with session_factory() as db:
+        db.add_all(
+            StockUniverse(symbol=symbol, name=symbol, market=market)
+            for symbol in symbols
+        )
+        db.commit()
+
+
 class _FakePriceCache:
     def __init__(self, get_many_cached_only):
         self._get_many_cached_only = get_many_cached_only
@@ -118,6 +130,13 @@ class _FakeBenchmarkCache:
 
     def get_benchmark_symbol(self, market):
         return self._symbol
+
+
+class _FakeHistoricalFx:
+    def get_historical_usd_rates(self, currencies, dates, *, max_age_days=7):
+        del max_age_days
+        index = pd.DatetimeIndex(sorted(dates))
+        return {currency: pd.Series(0.13, index=index) for currency in currencies}
 
 
 def _service_with_static_caches(
@@ -1983,6 +2002,11 @@ def test_build_breadth_payload_serialized_rows_emit_market_benchmark_overlay(
     service_and_session_factory,
 ):
     _service, session_factory = service_and_session_factory
+    _insert_common_stock_universe(
+        session_factory,
+        market="HK",
+        symbols=("0700.HK",),
+    )
     idx = pd.date_range("2026-03-01", "2026-04-24", freq="D")
 
     def history_frame(start_price: float) -> pd.DataFrame:
@@ -1993,6 +2017,7 @@ def test_build_breadth_payload_serialized_rows_emit_market_benchmark_overlay(
                 "High": [value + 1 for value in closes],
                 "Low": [value - 1 for value in closes],
                 "Close": closes,
+                "Adj Close": closes,
                 "Volume": [1000] * len(idx),
             },
             index=idx,
@@ -2011,6 +2036,9 @@ def test_build_breadth_payload_serialized_rows_emit_market_benchmark_overlay(
         ),
         fundamentals_cache=object(),
         benchmark_cache=_FakeBenchmarkCache("^HSI"),
+        breadth_engine_input_factory=StaticBreadthEngineInputFactory(
+            fx_service=_FakeHistoricalFx()
+        ),
     )
 
     payload = service._build_breadth_payload(  # noqa: SLF001 - intentional unit coverage
@@ -2030,10 +2058,75 @@ def test_build_breadth_payload_serialized_rows_emit_market_benchmark_overlay(
     assert breadth_payload["group_attribution"]["available"] is False
 
 
+def test_build_breadth_payload_uses_full_common_stock_universe_not_scan_rows(
+    service_and_session_factory,
+):
+    _service, session_factory = service_and_session_factory
+    idx = pd.date_range("2026-03-01", "2026-04-24", freq="D")
+    close = pd.Series(100.0, index=idx)
+    history = pd.DataFrame(
+        {
+            "Open": close,
+            "High": close + 1.0,
+            "Low": close - 1.0,
+            "Close": close,
+            "Adj Close": close,
+            "Volume": 100_000,
+        },
+        index=idx,
+    )
+    with session_factory() as db:
+        db.add_all(
+            [
+                StockUniverse(symbol="AAA", name="AAA", market="US"),
+                StockUniverse(symbol="BBB", name="BBB", market="US"),
+                StockUniverse(
+                    symbol="ETF",
+                    name="ETF",
+                    market="US",
+                    is_common_stock=False,
+                ),
+            ]
+        )
+        db.commit()
+
+    requested_periods = []
+
+    def cached_histories(symbols, *, period):
+        requested_periods.append((tuple(symbols), period))
+        return {symbol: history for symbol in symbols}
+
+    service = StaticSiteExportService(
+        session_factory,
+        price_cache=_FakePriceCache(cached_histories),
+        fundamentals_cache=object(),
+        benchmark_cache=_FakeBenchmarkCache(),
+    )
+
+    payload = service._build_breadth_payload(  # noqa: SLF001 - regression coverage
+        generated_at="2026-04-24T22:00:00Z",
+        expected_as_of_date=date(2026, 4, 24),
+        market="US",
+        serialized_rows=[{"symbol": "AAA"}],
+    )
+
+    current = payload["payload"]["current"]
+    assert current["broad_universe_count"] == 2
+    assert current["eligibility_signature"] == breadth_eligibility_signature(
+        ("AAA", "BBB")
+    )
+    assert (("AAA", "BBB"), "2y") in requested_periods
+
+
 def test_build_breadth_payload_uses_builder_cache_dependencies_without_rebinding(
     service_and_session_factory,
 ):
     service, _session_factory = service_and_session_factory
+    _insert_common_stock_universe(
+        _session_factory,
+        market="HK",
+        symbols=("0700.HK",),
+    )
     idx = pd.date_range("2026-03-01", "2026-04-24", freq="D")
 
     def history_frame(start_price: float) -> pd.DataFrame:
@@ -2044,6 +2137,7 @@ def test_build_breadth_payload_uses_builder_cache_dependencies_without_rebinding
                 "High": [value + 1 for value in closes],
                 "Low": [value - 1 for value in closes],
                 "Close": closes,
+                "Adj Close": closes,
                 "Volume": [1000] * len(idx),
             },
             index=idx,
@@ -2064,6 +2158,9 @@ def test_build_breadth_payload_uses_builder_cache_dependencies_without_rebinding
             get_benchmark_candidates=lambda market: ("^HSI",),
             get_benchmark_symbol=lambda market: "^HSI",
         ),
+        engine_input_factory=StaticBreadthEngineInputFactory(
+            fx_service=_FakeHistoricalFx()
+        ),
     )
 
     payload = service._build_breadth_payload(  # noqa: SLF001 - regression coverage
@@ -2080,7 +2177,14 @@ def test_build_breadth_payload_includes_us_group_attribution(
     service_and_session_factory,
 ):
     _service, session_factory = service_and_session_factory
-    idx = pd.date_range("2026-03-01", "2026-04-24", freq="D")
+    _insert_common_stock_universe(
+        session_factory,
+        market="US",
+        symbols=("AAPL", "BANK", "FLAT", "NOGRP", "PLTR"),
+    )
+    # Mirror a normal two-year cache with rows older than the canonical
+    # calculation window and its feature warm-up.
+    idx = pd.date_range(end="2026-04-24", periods=400, freq="D")
 
     def flat_frame(price: float) -> pd.DataFrame:
         closes = [price] * len(idx)
@@ -2090,7 +2194,8 @@ def test_build_breadth_payload_includes_us_group_attribution(
                 "High": [value + 1 for value in closes],
                 "Low": [value - 1 for value in closes],
                 "Close": closes,
-                "Volume": [1000] * len(idx),
+                "Adj Close": closes,
+                "Volume": [100_000] * len(idx),
             },
             index=idx,
         )
@@ -2100,13 +2205,16 @@ def test_build_breadth_payload_includes_us_group_attribution(
         # final session so only 2026-04-24 produces a mover.
         closes = [100.0] * len(idx)
         closes[-1] = 110.0 if direction == "up" else 90.0
+        volume = [100_000] * len(idx)
+        volume[-1] = 200_000
         return pd.DataFrame(
             {
                 "Open": closes,
                 "High": [value + 1 for value in closes],
                 "Low": [value - 1 for value in closes],
                 "Close": closes,
-                "Volume": [1000] * len(idx),
+                "Adj Close": closes,
+                "Volume": volume,
             },
             index=idx,
         )
@@ -2196,6 +2304,11 @@ def test_build_breadth_payload_marks_attribution_unavailable_when_no_movers(
 ):
     """History rows can be present yet all-zero — that must still flag unavailable."""
     _service, session_factory = service_and_session_factory
+    _insert_common_stock_universe(
+        session_factory,
+        market="US",
+        symbols=("FLAT1", "FLAT2"),
+    )
     idx = pd.date_range("2026-03-01", "2026-04-24", freq="D")
 
     def flat_frame(price: float) -> pd.DataFrame:
@@ -2206,7 +2319,8 @@ def test_build_breadth_payload_marks_attribution_unavailable_when_no_movers(
                 "High": [value + 1 for value in closes],
                 "Low": [value - 1 for value in closes],
                 "Close": closes,
-                "Volume": [1000] * len(idx),
+                "Adj Close": closes,
+                "Volume": [100_000] * len(idx),
             },
             index=idx,
         )
@@ -2376,8 +2490,19 @@ def test_compute_breadth_metrics_uses_full_history_for_shifted_ranges(service_an
     all_dates = pd.date_range("2025-10-01", periods=200, freq="D")
     canonical_dates = [ts.date() for ts in all_dates[-120:]]
     closes = [100.0 * (1.02 ** index) for index, _ in enumerate(all_dates)]
+    close = pd.Series(closes, index=all_dates)
     price_data = {
-        "AAA": pd.DataFrame({"Close": closes}, index=all_dates),
+        "AAA": pd.DataFrame(
+            {
+                "Open": close,
+                "High": close + 1.0,
+                "Low": close - 1.0,
+                "Close": close,
+                "Adj Close": close,
+                "Volume": 100_000,
+            },
+            index=all_dates,
+        ),
     }
 
     builder = StaticBreadthSectionBuilder(

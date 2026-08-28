@@ -22,11 +22,15 @@ from app.models.stock_universe import StockUniverse
 from app.models.theme import ThemeAlert, ThemeCluster, ThemeConstituent, ThemeMetrics
 from app.models.user_watchlist import UserWatchlist, WatchlistItem
 from app.schemas.scanning import ExplainResponse
+from app.services.breadth.query import breadth_query, latest_breadth
 from app.services.task_registry_service import SCHEDULED_TASKS
 from app.tasks.market_queues import SUPPORTED_MARKETS
-from app.wiring.bootstrap import get_group_rank_service, get_task_registry_service
-from app.use_cases.feature_store.compare_runs import CompareFeatureRunsUseCase, CompareRunsQuery
+from app.use_cases.feature_store.compare_runs import (
+    CompareFeatureRunsUseCase,
+    CompareRunsQuery,
+)
 from app.use_cases.scanning.explain_stock import ExplainStockUseCase
+from app.wiring.bootstrap import get_group_rank_service, get_task_registry_service
 
 from .models import (
     BreadthSnapshotArgs,
@@ -37,8 +41,8 @@ from .models import (
     FindCandidatesArgs,
     GroupRankingsArgs,
     MarketOverviewArgs,
-    StockSnapshotArgs,
     StockLookupArgs,
+    StockSnapshotArgs,
     TaskStatusArgs,
     ThemeStateArgs,
     ToolCitation,
@@ -1131,8 +1135,7 @@ class MarketCopilotService:
     def _breadth_snapshot(self, args: BreadthSnapshotArgs) -> ToolEnvelope:
         with self._session_scope() as db:
             rows = (
-                db.query(MarketBreadth)
-                .filter(MarketBreadth.market == "US")
+                breadth_query(db, market="US")
                 .order_by(desc(MarketBreadth.date))
                 .limit(args.days)
                 .all()
@@ -1390,10 +1393,7 @@ class MarketCopilotService:
 
     def _latest_breadth(self, db: Session, as_of_date: date | None) -> MarketBreadth | None:
         # Market copilot is US-scoped today.
-        query = db.query(MarketBreadth).filter(MarketBreadth.market == "US")
-        if as_of_date is not None:
-            query = query.filter(MarketBreadth.date <= as_of_date)
-        return query.order_by(MarketBreadth.date.desc()).first()
+        return latest_breadth(db, market="US", as_of_date=as_of_date)
 
     def _recent_alerts(self, db: Session, limit: int) -> list[dict[str, Any]]:
         rows = (

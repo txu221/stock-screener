@@ -28,6 +28,7 @@ from ..models.market_breadth import MarketBreadth
 from ..models.market_exposure import MarketExposure
 from ..models.stock import StockPrice
 from .benchmark_cache_service import BenchmarkFallbackPolicy
+from .breadth.query import breadth_query
 
 # --- Distribution day detection -------------------------------------------
 DISTRIBUTION_LOOKBACK = 25       # rolling sessions
@@ -274,7 +275,7 @@ def _net_4pct_on_date(db: Session, market: str, as_of_date: date) -> Optional[in
     matching breadth backfill stamps every historical row with today's breadth.
     """
     row = (
-        db.query(MarketBreadth)
+        breadth_query(db, market=market)
         .filter(MarketBreadth.market == market, MarketBreadth.date == as_of_date)
         .first()
     )

@@ -2620,6 +2620,18 @@ def test_deserialize_universe_row_infers_hk_from_xhkg_exchange():
     assert row["local_code"] == "0700"
 
 
+def test_deserialize_legacy_manual_universe_row_defaults_non_common():
+    manual = ProviderSnapshotService._deserialize_universe_row(
+        {"symbol": "SPY", "market": "US", "source": "manual"}
+    )
+    official = ProviderSnapshotService._deserialize_universe_row(
+        {"symbol": "AAPL", "market": "US", "source": "finviz"}
+    )
+
+    assert manual["is_common_stock"] is False
+    assert official["is_common_stock"] is True
+
+
 def test_deserialize_universe_row_normalizes_tpex_symbol_to_two_suffix():
     row = ProviderSnapshotService._deserialize_universe_row(
         {

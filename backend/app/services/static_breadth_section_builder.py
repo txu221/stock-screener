@@ -1,12 +1,30 @@
 """Static breadth payload assembly extracted from the main exporter."""
 
-from datetime import date, datetime, timedelta
 import math
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
+from sqlalchemy.orm import Session
 
+from app.services.bounded_history_universe import (
+    CurrentActiveFallbackUniverseResolver,
+)
+from app.services.breadth.engine import BreadthEngine, BreadthEngineRequest
+from app.services.breadth.formulas import prices_for_feature_window
+from app.services.breadth.types import (
+    CURRENT_BREADTH_CALCULATION_REVISION,
+    BreadthUniverseMember,
+    BreadthUniverseSnapshot,
+)
+from app.services.breadth.universe import build_breadth_universe_snapshots
 from app.services.breadth_attribution_service import BreadthAttributionService
+from app.services.fx_service import default_currency_for_market, get_fx_service
+from app.services.point_in_time_universe_service import (
+    hash_point_in_time_universe_symbols,
+)
 from app.services.static_market_artifact_contract import STATIC_SITE_SCHEMA_VERSION
 from app.services.static_site_errors import StaticSiteSectionUnavailableError
 
@@ -15,6 +33,102 @@ STATIC_BREADTH_ATTRIBUTION_LOOKBACK_DAYS = 10
 STATIC_BREADTH_ATTRIBUTION_MARKETS = ("US",)
 STATIC_DEFAULT_MARKET = "US"
 STATIC_CHART_LOOKUP_BATCH_SIZE = 250
+
+
+@dataclass(frozen=True, slots=True)
+class StaticBreadthEngineInputs:
+    request: BreadthEngineRequest
+    currencies_by_symbol: Mapping[str, str]
+
+
+class StaticBreadthEngineInputFactory:
+    """Build cache-only canonical inputs for static breadth generation."""
+
+    def __init__(self, *, fx_service=None) -> None:
+        self._fx_service = fx_service
+
+    def build(
+        self,
+        *,
+        market: str,
+        canonical_dates: list[date],
+        price_data: Mapping[str, pd.DataFrame | None],
+        currencies_by_symbol: Mapping[str, str] | None = None,
+        universes_by_date: Mapping[date, BreadthUniverseSnapshot] | None = None,
+    ) -> StaticBreadthEngineInputs:
+        normalized_market = market.upper()
+        default_currency = default_currency_for_market(normalized_market)
+        symbols = tuple(sorted(str(symbol).upper() for symbol in price_data))
+        currency_map = {
+            symbol: str(
+                (currencies_by_symbol or {}).get(symbol) or default_currency
+            ).upper()
+            for symbol in symbols
+        }
+        if universes_by_date is None:
+            members = tuple(
+                BreadthUniverseMember(symbol=symbol, currency=currency_map[symbol])
+                for symbol in symbols
+            )
+            signature = hash_point_in_time_universe_symbols(symbols)
+            universes = {
+                calculation_date: BreadthUniverseSnapshot(
+                    calculation_date=calculation_date,
+                    members=members,
+                    broad_signature=signature,
+                )
+                for calculation_date in canonical_dates
+            }
+        else:
+            missing_dates = set(canonical_dates) - set(universes_by_date)
+            if missing_dates:
+                missing = ", ".join(
+                    value.isoformat() for value in sorted(missing_dates)
+                )
+                raise ValueError(f"Static breadth universes missing for: {missing}")
+            universes = {
+                calculation_date: universes_by_date[calculation_date]
+                for calculation_date in canonical_dates
+            }
+        usable_prices = prices_for_feature_window(
+            {
+                symbol: history
+                for symbol, history in price_data.items()
+                if history is not None and not history.empty
+            },
+            tuple(canonical_dates),
+        )
+        dates_by_currency: dict[str, set[date]] = {}
+        for symbol, history in usable_prices.items():
+            currency = currency_map[str(symbol).upper()]
+            dates_by_currency.setdefault(currency, set()).update(
+                pd.Timestamp(value).date() for value in history.index
+            )
+        fx_by_currency: dict[str, pd.Series] = {}
+        for currency, required_dates in dates_by_currency.items():
+            if currency == "USD":
+                fx_by_currency[currency] = pd.Series(
+                    1.0,
+                    index=pd.DatetimeIndex(sorted(required_dates)),
+                )
+                continue
+            fx_service = self._fx_service or get_fx_service()
+            fx_by_currency.update(
+                fx_service.get_historical_usd_rates(
+                    (currency,),
+                    required_dates,
+                )
+            )
+        return StaticBreadthEngineInputs(
+            request=BreadthEngineRequest(
+                market=normalized_market,
+                dates=tuple(canonical_dates),
+                universes_by_date=universes,
+                prices_by_symbol=usable_prices,
+                fx_by_currency=fx_by_currency,
+            ),
+            currencies_by_symbol=currency_map,
+        )
 
 
 def _coerce_datetime(value: Any) -> str | None:
@@ -26,10 +140,26 @@ def _coerce_datetime(value: Any) -> str | None:
 
 
 class StaticBreadthSectionBuilder:
-    def __init__(self, *, ui_snapshot_service, price_cache, benchmark_cache) -> None:
+    def __init__(
+        self,
+        *,
+        ui_snapshot_service,
+        price_cache,
+        benchmark_cache,
+        engine: BreadthEngine | None = None,
+        engine_input_factory: StaticBreadthEngineInputFactory | None = None,
+        universe_resolver=None,
+    ) -> None:
         self._ui_snapshot_service = ui_snapshot_service
         self._price_cache = price_cache
         self._benchmark_cache = benchmark_cache
+        self._engine = engine or BreadthEngine()
+        self._engine_input_factory = (
+            engine_input_factory or StaticBreadthEngineInputFactory()
+        )
+        self._universe_resolver = (
+            universe_resolver or CurrentActiveFallbackUniverseResolver()
+        )
 
     def build(self, **kwargs):
         return self._build_breadth_payload(**kwargs)
@@ -41,6 +171,7 @@ class StaticBreadthSectionBuilder:
         expected_as_of_date: date,
         market: str = STATIC_DEFAULT_MARKET,
         serialized_rows: list[dict[str, Any]] | None = None,
+        db: Session | None = None,
     ) -> dict[str, Any]:
         if serialized_rows is None:
             snapshot = self._ui_snapshot_service.publish_breadth_bootstrap(market=market).to_dict()
@@ -63,11 +194,32 @@ class StaticBreadthSectionBuilder:
                 "payload": payload,
             }
 
-        symbols = [row["symbol"] for row in serialized_rows if row.get("symbol")]
+        scan_symbols = [
+            str(row["symbol"]).upper()
+            for row in serialized_rows
+            if row.get("symbol")
+        ]
+        currencies_by_symbol: dict[str, str] = {}
+        universes_by_date: dict[date, BreadthUniverseSnapshot] | None = None
+        symbols = scan_symbols
+        if db is not None:
+            universe = self._universe_resolver.resolve(
+                db,
+                market=market,
+                as_of_date=expected_as_of_date,
+            )
+            symbols = list(universe.symbols)
+            currencies_by_symbol = {
+                member.symbol: member.currency
+                for member in universe.members
+            }
         if not symbols:
             raise StaticSiteSectionUnavailableError(
                 section="breadth",
-                reason=f"No scan rows are available for market {market} on {expected_as_of_date.isoformat()}.",
+                reason=(
+                    f"No common-stock universe is available for market {market} "
+                    f"on {expected_as_of_date.isoformat()}."
+                ),
             )
 
         benchmark_symbol, benchmark = self._get_market_benchmark_history(market, period="1y")
@@ -92,8 +244,41 @@ class StaticBreadthSectionBuilder:
             )
 
         canonical_dates = canonical_dates[-max(STATIC_BREADTH_HISTORY_LOOKBACK_DAYS + 15, 120):]
-        price_data = self._get_cached_price_histories(symbols, period="1y")
-        metrics_by_date = self._compute_breadth_metrics_by_date(canonical_dates, price_data)
+        if db is not None:
+            universes_by_date = dict(
+                build_breadth_universe_snapshots(
+                    db,
+                    market,
+                    canonical_dates,
+                    universe_service=self._universe_resolver,
+                )
+            )
+            symbols = sorted(
+                {
+                    member.symbol
+                    for universe in universes_by_date.values()
+                    for member in universe.members
+                }
+            )
+            currencies_by_symbol = {
+                member.symbol: member.currency
+                for universe in universes_by_date.values()
+                for member in universe.members
+            }
+        price_data = self._get_cached_price_histories(symbols, period="2y")
+        engine_inputs = self._engine_input_factory.build(
+            market=market,
+            canonical_dates=canonical_dates,
+            price_data=price_data,
+            currencies_by_symbol=currencies_by_symbol,
+            universes_by_date=universes_by_date,
+        )
+        metrics_by_date = self._compute_breadth_metrics_by_date(
+            canonical_dates,
+            price_data,
+            market=market,
+            engine_inputs=engine_inputs,
+        )
         current = metrics_by_date.get(expected_as_of_date)
         if current is None:
             raise StaticSiteSectionUnavailableError(
@@ -116,15 +301,18 @@ class StaticBreadthSectionBuilder:
         group_attribution = self._build_group_attribution(
             market=market,
             serialized_rows=serialized_rows,
-            price_data=price_data,
             ordered_dates=ordered_dates,
+            engine_inputs=engine_inputs,
         )
         return {
             "schema_version": STATIC_SITE_SCHEMA_VERSION,
             "generated_at": generated_at,
             "available": True,
             "published_at": _coerce_datetime(datetime.utcnow()),
-            "source_revision": f"feature-run:{market}:{expected_as_of_date.isoformat()}",
+            "source_revision": (
+                f"feature-run:{market}:{expected_as_of_date.isoformat()}"
+                f"|breadth-r{CURRENT_BREADTH_CALCULATION_REVISION}"
+            ),
             "market": market,
             "payload": {
                 "current": current,
@@ -150,8 +338,8 @@ class StaticBreadthSectionBuilder:
         *,
         market: str,
         serialized_rows: list[dict[str, Any]],
-        price_data: dict[str, pd.DataFrame | None],
         ordered_dates: list[date],
+        engine_inputs: StaticBreadthEngineInputs,
     ) -> dict[str, Any]:
         """Attribute ±4% movers to IBD industry groups for the most recent sessions.
 
@@ -172,20 +360,36 @@ class StaticBreadthSectionBuilder:
             }
 
         attribution_dates = ordered_dates[-STATIC_BREADTH_ATTRIBUTION_LOOKBACK_DAYS:]
-        symbols_meta = [
-            {
-                "symbol": row.get("symbol"),
+        metadata_by_symbol = {
+            str(row["symbol"]).upper(): {
+                "symbol": str(row["symbol"]).upper(),
                 "company_name": row.get("company_name"),
                 "ibd_industry_group": row.get("ibd_industry_group"),
             }
             for row in serialized_rows
             if row.get("symbol")
+        }
+        price_data = engine_inputs.request.prices_by_symbol
+        symbols_meta = [
+            metadata_by_symbol.get(symbol, {"symbol": symbol})
+            for symbol in price_data
         ]
         service = BreadthAttributionService()
         history = service.compute(
             symbols_meta=symbols_meta,
             price_data=price_data,
             target_dates=attribution_dates,
+            currencies_by_symbol=engine_inputs.currencies_by_symbol,
+            fx_by_currency=engine_inputs.request.fx_by_currency,
+            symbols_by_date={
+                calculation_date: frozenset(
+                    member.symbol
+                    for member in universe.members
+                )
+                for calculation_date, universe in (
+                    engine_inputs.request.universes_by_date.items()
+                )
+            },
         )
         has_any_mover = any(
             (day.get("stocks_up_4pct", 0) + day.get("stocks_down_4pct", 0)) > 0
@@ -213,7 +417,9 @@ class StaticBreadthSectionBuilder:
         *,
         period: str,
     ) -> dict[str, pd.DataFrame | None]:
-        results: dict[str, pd.DataFrame | None] = {}
+        results: dict[str, pd.DataFrame | None] = {
+            str(symbol).upper(): None for symbol in symbols
+        }
         for start in range(0, len(symbols), STATIC_CHART_LOOKUP_BATCH_SIZE):
             batch = symbols[start:start + STATIC_CHART_LOOKUP_BATCH_SIZE]
             results.update(self._price_cache.get_many_cached_only(batch, period=period))
@@ -236,99 +442,25 @@ class StaticBreadthSectionBuilder:
         self,
         canonical_dates: list[date],
         price_data: dict[str, pd.DataFrame | None],
+        *,
+        market: str = STATIC_DEFAULT_MARKET,
+        engine_inputs: StaticBreadthEngineInputs | None = None,
     ) -> dict[date, dict[str, Any]]:
         if not canonical_dates:
             return {}
-
-        date_index = pd.Index(canonical_dates)
-        def empty() -> list[int]:
-            return [0] * len(canonical_dates)
-
-        aggregates = {
-            "stocks_up_4pct": empty(),
-            "stocks_down_4pct": empty(),
-            "stocks_up_25pct_quarter": empty(),
-            "stocks_down_25pct_quarter": empty(),
-            "stocks_up_25pct_month": empty(),
-            "stocks_down_25pct_month": empty(),
-            "stocks_up_50pct_month": empty(),
-            "stocks_down_50pct_month": empty(),
-            "stocks_up_13pct_34days": empty(),
-            "stocks_down_13pct_34days": empty(),
-            "total_stocks_scanned": empty(),
-        }
-
-        for history in price_data.values():
-            if history is None or history.empty or "Close" not in history.columns:
-                continue
-            close_series = pd.Series(
-                history["Close"].to_numpy(),
-                index=[ts.date() for ts in pd.to_datetime(history.index)],
-            )
-            close_series = close_series[~close_series.index.duplicated(keep="last")].sort_index()
-            pct_1d = ((close_series / close_series.shift(1)) - 1.0) * 100.0
-            pct_21d = ((close_series / close_series.shift(21)) - 1.0) * 100.0
-            pct_34d = ((close_series / close_series.shift(34)) - 1.0) * 100.0
-            pct_63d = ((close_series / close_series.shift(63)) - 1.0) * 100.0
-
-            close_series = close_series.reindex(date_index)
-            pct_1d = pct_1d.reindex(date_index)
-            pct_21d = pct_21d.reindex(date_index)
-            pct_34d = pct_34d.reindex(date_index)
-            pct_63d = pct_63d.reindex(date_index)
-            valid = close_series.notna().to_numpy()
-
-            for index, is_valid in enumerate(valid):
-                if is_valid:
-                    aggregates["total_stocks_scanned"][index] += 1
-
-            for key, series in (
-                ("stocks_up_4pct", pct_1d >= 4.0),
-                ("stocks_down_4pct", pct_1d <= -4.0),
-                ("stocks_up_25pct_month", pct_21d >= 25.0),
-                ("stocks_down_25pct_month", pct_21d <= -25.0),
-                ("stocks_up_50pct_month", pct_21d >= 50.0),
-                ("stocks_down_50pct_month", pct_21d <= -50.0),
-                ("stocks_up_13pct_34days", pct_34d >= 13.0),
-                ("stocks_down_13pct_34days", pct_34d <= -13.0),
-                ("stocks_up_25pct_quarter", pct_63d >= 25.0),
-                ("stocks_down_25pct_quarter", pct_63d <= -25.0),
-            ):
-                flags = series.fillna(False).to_numpy()
-                for index, flag in enumerate(flags):
-                    if flag and valid[index]:
-                        aggregates[key][index] += 1
-
-        results: dict[date, dict[str, Any]] = {}
-        for index, item_date in enumerate(canonical_dates):
-            ratio_5day = None
-            ratio_10day = None
-            if index >= 5:
-                up_5 = sum(aggregates["stocks_up_4pct"][max(index - 5, 0):index])
-                down_5 = sum(aggregates["stocks_down_4pct"][max(index - 5, 0):index])
-                ratio_5day = round(up_5 / down_5, 2) if down_5 > 0 else None
-            if index >= 10:
-                up_10 = sum(aggregates["stocks_up_4pct"][index - 10:index])
-                down_10 = sum(aggregates["stocks_down_4pct"][index - 10:index])
-                ratio_10day = round(up_10 / down_10, 2) if down_10 > 0 else None
-
-            results[item_date] = {
+        inputs = engine_inputs or self._engine_input_factory.build(
+            market=market,
+            canonical_dates=canonical_dates,
+            price_data=price_data,
+        )
+        calculated = self._engine.calculate(inputs.request)
+        return {
+            item_date: {
+                **result.to_record_mapping(),
                 "date": item_date.isoformat(),
-                "stocks_up_4pct": int(aggregates["stocks_up_4pct"][index]),
-                "stocks_down_4pct": int(aggregates["stocks_down_4pct"][index]),
-                "ratio_5day": ratio_5day,
-                "ratio_10day": ratio_10day,
-                "stocks_up_25pct_quarter": int(aggregates["stocks_up_25pct_quarter"][index]),
-                "stocks_down_25pct_quarter": int(aggregates["stocks_down_25pct_quarter"][index]),
-                "stocks_up_25pct_month": int(aggregates["stocks_up_25pct_month"][index]),
-                "stocks_down_25pct_month": int(aggregates["stocks_down_25pct_month"][index]),
-                "stocks_up_50pct_month": int(aggregates["stocks_up_50pct_month"][index]),
-                "stocks_down_50pct_month": int(aggregates["stocks_down_50pct_month"][index]),
-                "stocks_up_13pct_34days": int(aggregates["stocks_up_13pct_34days"][index]),
-                "stocks_down_13pct_34days": int(aggregates["stocks_down_13pct_34days"][index]),
-                "total_stocks_scanned": int(aggregates["total_stocks_scanned"][index]),
             }
-        return results
+            for item_date, result in calculated.items()
+        }
 
     @staticmethod
     def _serialize_close_history(data: pd.DataFrame | None, *, days: int) -> list[dict[str, Any]]:
