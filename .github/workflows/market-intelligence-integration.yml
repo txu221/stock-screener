@@ -227,16 +227,18 @@ jobs:
           python -m pytest tests/integration/market_intelligence/test_redis_celery_runtime.py \
             -k "real_redis_connectivity" -q 2>&1 | tee "$RUNNER_TEMP/phase2-redis.log"
 
-      - name: Run Phase 1 deterministic suite
+      - name: Run Market Intelligence deterministic suite
         working-directory: backend
         run: |
           set -o pipefail
           python -m pytest \
             tests/unit/market_intelligence \
             tests/unit/repositories/test_market_intelligence_repo.py \
+            tests/unit/services/test_market_intelligence_read_service.py \
             tests/unit/use_cases/test_build_sector_intelligence_snapshot.py \
             tests/unit/test_market_intelligence_tasks.py \
             tests/unit/test_market_intelligence_endpoints.py \
+            tests/unit/test_market_intelligence_mvp_endpoints.py \
             tests/unit/test_market_intelligence_migration.py \
             -q 2>&1 | tee "$RUNNER_TEMP/phase1.log"
 
