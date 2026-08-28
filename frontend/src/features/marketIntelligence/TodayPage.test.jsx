@@ -57,7 +57,7 @@ describe('TodayPage', () => {
     expect(screen.queryByText('VIX')).not.toBeInTheDocument();
     expect(screen.getByText('Raw completed-session pulse')).toBeInTheDocument();
     expect(screen.getByText(/As of 2026-08-26/)).toBeInTheDocument();
-    expect(screen.getByText('Technology')).toBeInTheDocument();
+    expect(await screen.findByText('Technology')).toBeInTheDocument();
   });
 
   it('shows a bounded loading state', () => {
@@ -77,4 +77,3 @@ describe('TodayPage', () => {
     expect(screen.queryByText(/As of 2026-08-26/)).not.toBeInTheDocument();
   });
 });
-
