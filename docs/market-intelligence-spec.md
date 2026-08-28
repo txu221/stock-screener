@@ -1,6 +1,6 @@
 # Market Intelligence / Money Flow Architecture Specification
 
-Status: Phase 1 implemented and verified
+Status: Phase 1 and Phase 2 verified; Market Intelligence MVP v1 implemented
 
 Date: 2026-08-26 (America/New_York)
 
@@ -8,7 +8,7 @@ Selected base: `xang1234/stock-screener` at `e65d1fc67db4b468471376aa29741fdce37
 
 ## 1. Purpose and non-goals
 
-This document defines how the selected upstream evolves into a US-equity Market Intelligence platform while preserving its working architecture. Sections 1–15 retain the Phase 0 architecture contract; sections 16–17 record the implemented Phase 1 vertical slice.
+This document defines how the selected upstream evolves into a US-equity Market Intelligence platform while preserving its working architecture. Sections 1–15 retain the Phase 0 architecture contract; sections 16–17 record the implemented Phase 1 vertical slice; section 18 records the Market Intelligence MVP v1 read and presentation contract.
 
 The product should answer four questions from one reproducible daily state:
 
@@ -537,4 +537,83 @@ The stable read contract is:
 - `GET /api/v1/market-intelligence/sectors/history`: published history filterable by date, symbol, and metric version, using the newest published revision per session;
 - `GET /api/v1/market-intelligence/sectors/health`: latest attempt plus independent latest published state and audit counters.
 
-Phase 1 adds no frontend and no second static JSON publisher. PostgreSQL migration execution, true concurrent pointer/unique-conflict behavior, Redis, and a real Celery worker remain integration checks blocked by the approved native-Windows environment.
+Phase 1 added no frontend and no second static JSON publisher. At its native-Windows checkpoint, PostgreSQL migration execution, true concurrent pointer/unique-conflict behavior, Redis, and a real Celery worker were explicitly blocked; Phase 2 subsequently resolved those gates in Linux CI as recorded below.
+
+## 18. Market Intelligence MVP v1 implemented contract
+
+Phase 2 cleared the native-Windows service gap through the feature-branch GitHub Actions workflow. Real PostgreSQL, Redis, Celery, migration, transaction, concurrency, pointer, API, and live-provider gates are recorded in `docs/phase2-integration-report.md`. MVP v1 adds read-only product surfaces over those contracts; it does not create a parallel ingestion pipeline or modify Phase 1 financial semantics.
+
+### 18.1 Routes, read sources, and freshness
+
+The primary React destination is `/market-intelligence`, with child routes `/movers`, `/sectors`, `/etfs`, and `/health`. Every page displays `As of`, `Last updated`, `Provider`, and metric version when data exists. A failed or partial latest attempt is shown separately from the prior stable published sector snapshot. Missing values render unavailable, never zero.
+
+The MVP read service has no provider calls. Market Pulse and ETF Radar use the existing `latest_published_market:US` feature run as their date/publication boundary and read cached daily `stock_prices` only through that date. Movers reads the same pointer, its `StockFeatureDaily` rows, active `StockUniverse` metadata, and matching cached daily prices. Phase 1 sector and Data Health endpoints remain authoritative for sector pages. Overview, Movers, and ETF responses expose expected completed session, freshness status, `price_basis=cached_adjusted_close`, and `price_history_quality=not_corporate_action_reconciled`. The latter prevents a false claim that the existing cache is a revision-consistent split/dividend total-return series.
+
+The API namespace and contracts are:
+
+- `GET /api/v1/market-intelligence/overview` — completed-session SPY, QQQ, DIA, and IWM pulse;
+- `GET /api/v1/market-intelligence/movers` — eligible S&P 500 gainers, losers, unusual volume, and sector breadth;
+- `GET /api/v1/market-intelligence/etfs` — fixed-universe ETF metrics, score components, and ranks;
+- the existing `/sectors/latest`, `/sectors/history`, and `/sectors/health` endpoints described in section 17.6.
+
+MVP read models use `metric_version = market_intelligence_mvp_v1`; ETF scoring separately uses `score_version = etf_strength_v1`. Their displayed source label is `existing_stock_prices`, while Phase 1 sector snapshots retain their own recorded Yahoo lineage.
+
+### 18.2 Movers universe and ordering
+
+Movers are restricted to active US S&P 500 members in the latest published US feature run. Default eligibility requires adjusted price strictly above USD 5 and existing average daily dollar volume of at least USD 100 million. A row with missing/non-finite price, return, or liquidity evidence is excluded. Optional server filters are ticker/company search, exact sector, direction, minimum price, minimum RVOL20, and existing market-cap group.
+
+Top gainers sort by descending 1D adjusted return and then symbol; top losers sort by ascending 1D adjusted return and then symbol; unusual volume sorts by descending RVOL20 and then symbol. Each list is capped by the requested limit, default 20. Sector breadth counts the complete eligible filtered set before the top-list caps. React preserves server order and does not calculate return or RVOL.
+
+### 18.3 ETF universe and metric semantics
+
+ETF Radar contains 28 unique unleveraged symbols in fixed categories:
+
+- broad market: SPY, QQQ, IWM, DIA;
+- sector: XLC, XLY, XLP, XLE, XLF, XLV, XLI, XLB, XLRE, XLK, XLU;
+- semiconductor: SMH, SOXX, XSD;
+- software: IGV;
+- biotech: XBI, IBB;
+- defense: ITA, PPA;
+- energy: XLE, XOP;
+- metals: GDX, GDXJ, COPX;
+- uranium: URA.
+
+There are no leveraged or inverse ETFs. Metrics use cached `adj_close` over the published feature-run session boundary:
+
+```text
+return_N = adjusted_close_today / adjusted_close_N_sessions_ago - 1
+relative_strength_N = ETF_return_N - SPY_return_N
+RVOL20 = volume_today / mean(previous 20 completed-session volumes)
+drawdown_60d = adjusted_close_today
+               / max(adjusted_close over today plus previous 60 sessions) - 1
+```
+
+The current session is excluded from the RVOL denominator. Any insufficient history, missing/zero volume denominator, missing benchmark, non-finite input, or incomplete score component produces unavailable output. Because the existing cache does not reconcile every historical row after corporate-action adjustment changes, these values are descriptive best-effort price metrics, not guaranteed total-return metrics; API and UI expose that limitation.
+
+### 18.4 ETF Strength Score v1
+
+`etf_strength_v1` is a descriptive 0–100 cross-sectional strength score, not a forecast, expected return, signal, or recommendation. For every complete ETF, each raw component is transformed to an inclusive empirical percentile over the complete fixed ETF universe:
+
+```text
+percentile(x) = 100 * count(population_value <= x) / population_size
+
+volume_confirmation = clamp(RVOL20, 0, 3) - 1
+volume_confirmation = volume_confirmation      when return_20d > 0
+volume_confirmation = -volume_confirmation     when return_20d < 0
+volume_confirmation = 0                        when return_20d == 0
+
+ETF Strength Score =
+    0.30 * percentile(relative_strength_20d)
+  + 0.25 * percentile(relative_strength_60d)
+  + 0.20 * percentile(return_20d)
+  + 0.15 * percentile(volume_confirmation)
+  + 0.10 * percentile(drawdown_60d)
+```
+
+A shallower drawdown has the higher raw value and therefore the stronger percentile. Missing any component leaves the score and ranks unavailable. Overall and per-category ranks are ordinal: descending score, then ascending symbol for deterministic ties. The API returns the score version, weights, percentile method, volume transform, language classification, component percentiles, overall rank, and all applicable category ranks.
+
+### 18.5 Presentation and non-goals
+
+The Today page displays raw completed-session pulse values and sector leadership; it does not invent a Market Status classification without approved deterministic breadth rules. Sectors render exactly the 11 ranked ETFs and keep SPY benchmark-only. Rank movement always combines number, arrow, and `IMPROVED`/`DECLINED`/`UNCHANGED` text. Flow Pressure uses the exact disclosure: `OHLCV-derived pressure proxy. Not measured institutional or exchange net flow.`
+
+MVP v1 does not add AI, news, options flow, institutional flow, actual ETF fund flow, predictions, recommendations, alerts, backtesting, OTC coverage, new authentication, or a second application/API. No dependency was added for the MVP.
