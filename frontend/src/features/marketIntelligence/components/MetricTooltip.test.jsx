@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
 import { renderWithProviders } from '../../../test/renderWithProviders';
-import MetricTooltip, { METRIC_HELP } from './MetricTooltip';
+import MetricTooltip from './MetricTooltip';
+import { METRIC_HELP } from './metricHelp';
 
 
 describe('MetricTooltip', () => {
@@ -21,4 +22,3 @@ describe('MetricTooltip', () => {
     expect(METRIC_HELP.rankChange).toMatch(/smaller rank number is stronger/i);
   });
 });
-
