@@ -238,6 +238,37 @@ def test_overview_and_etf_radar_use_completed_adjusted_sessions(session):
     assert radar.score_version == "etf_strength_v1"
 
 
+def test_overview_and_etf_radar_ignore_unfinished_daily_price_row(session):
+    session.add_all(
+        _prices(
+            "SPY",
+            _etf_closes(start=60, d20=80, d5=90, d1=100, today=105),
+        )
+    )
+    session.add(
+        StockPrice(
+            symbol="SPY",
+            date=AS_OF + timedelta(days=1),
+            open=999,
+            high=999,
+            low=999,
+            close=999,
+            adj_close=999,
+            volume=9_999_999,
+        )
+    )
+    session.commit()
+
+    service = MarketIntelligenceReadService(session, completed_session=AS_OF)
+    overview = service.get_overview()
+    radar = service.get_etf_radar(category="broad_market")
+
+    assert overview.as_of == AS_OF
+    assert overview.pulse[0].price == pytest.approx(105)
+    assert radar.as_of == AS_OF
+    assert radar.items[0].price == pytest.approx(105)
+
+
 def test_rvol_zero_baseline_is_null_not_infinity(session):
     run = _published_run(session)
     session.add(_universe("ZERO"))

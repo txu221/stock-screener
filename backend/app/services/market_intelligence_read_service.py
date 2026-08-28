@@ -35,6 +35,7 @@ from app.infra.db.models.feature_store import (
 )
 from app.models.stock import StockPrice
 from app.models.stock_universe import StockUniverse
+from app.services.market_calendar_service import MarketCalendarService
 
 
 PRICE_SOURCE = "existing_stock_prices"
@@ -64,8 +65,14 @@ def _finite_number(value: object) -> float | None:
 class MarketIntelligenceReadService:
     """Build deterministic read models exclusively from existing local tables."""
 
-    def __init__(self, session: Session):
+    def __init__(
+        self,
+        session: Session,
+        *,
+        completed_session: date | None = None,
+    ):
         self._session = session
+        self._completed_session = completed_session
 
     def _price_rows(
         self,
@@ -93,9 +100,15 @@ class MarketIntelligenceReadService:
         return dict(grouped)
 
     def _spy_as_of(self) -> date | None:
+        completed_session = self._completed_session
+        if completed_session is None:
+            completed_session = MarketCalendarService().last_completed_trading_day("US")
         return (
             self._session.query(func.max(StockPrice.date))
-            .filter(StockPrice.symbol == "SPY")
+            .filter(
+                StockPrice.symbol == "SPY",
+                StockPrice.date <= completed_session,
+            )
             .scalar()
         )
 
@@ -443,4 +456,3 @@ class MarketIntelligenceReadService:
                 symbol for symbol in selected_symbols if not scored[symbol].available
             ),
         )
-
