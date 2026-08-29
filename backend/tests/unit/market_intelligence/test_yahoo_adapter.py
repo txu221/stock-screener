@@ -283,6 +283,58 @@ def test_valid_naive_or_timezone_aware_timestamp_indexes_are_accepted(tz: str | 
     assert len(result.rows) == len(MARKET_INTELLIGENCE_UNIVERSE)
 
 
+def test_timezone_normalization_uses_utc_date_but_preserves_raw_index_provenance() -> None:
+    raw_index = pd.Timestamp("2026-05-14 23:30:00", tz="America/New_York")
+    frame = _frame().set_axis(pd.DatetimeIndex([raw_index]), axis="index")
+    fetcher = Mock()
+    fetcher.fetch_batch_prices.return_value = {
+        symbol: _success(symbol, frame=frame)
+        for symbol in MARKET_INTELLIGENCE_UNIVERSE
+    }
+
+    result = YahooMarketIntelligenceProvider(
+        fetcher, clock=lambda: NOW
+    ).fetch(MARKET_INTELLIGENCE_UNIVERSE, AS_OF)
+
+    xlk = next(row for row in result.rows if row.symbol == "XLK")
+    assert result.request_failure is None
+    assert xlk.raw_trading_date == raw_index
+    assert xlk.trading_date == AS_OF
+
+
+@pytest.mark.parametrize(
+    "column",
+    (
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Adj Close",
+        "Volume",
+        "Dividends",
+        "Stock Splits",
+    ),
+)
+def test_boolean_required_numeric_column_is_request_level_schema_drift(
+    column: str,
+) -> None:
+    frame = _frame()
+    frame[column] = True
+    payload = _all_success()
+    payload["XLK"] = _success("XLK", frame=frame)
+    fetcher = Mock()
+    fetcher.fetch_batch_prices.return_value = payload
+
+    result = YahooMarketIntelligenceProvider(
+        fetcher, clock=lambda: NOW
+    ).fetch(MARKET_INTELLIGENCE_UNIVERSE, AS_OF)
+
+    assert result.request_failure is not None
+    assert result.request_failure.code == "PROVIDER_SCHEMA_DRIFT"
+    assert result.rows == ()
+    assert result.symbol_failures == ()
+
+
 def test_adapter_never_imports_shared_price_row_normalization(monkeypatch) -> None:
     fetcher = Mock()
     fetcher.fetch_batch_prices.return_value = _all_success()

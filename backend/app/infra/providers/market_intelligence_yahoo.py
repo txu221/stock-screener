@@ -34,6 +34,14 @@ def _schema_drift(message: str) -> RequestFailure:
     return RequestFailure(code="PROVIDER_SCHEMA_DRIFT", message=message)
 
 
+def _utc_normalized_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    return (
+        index.tz_localize("UTC")
+        if index.tz is None
+        else index.tz_convert("UTC")
+    )
+
+
 def _frame_schema_error(symbol: str, frame: Any) -> str | None:
     if not isinstance(frame, pd.DataFrame):
         return f"{symbol}: price_data is not a pandas DataFrame"
@@ -45,11 +53,7 @@ def _frame_schema_error(symbol: str, frame: Any) -> str | None:
     if not isinstance(frame.index, pd.DatetimeIndex):
         return f"{symbol}: price frame index is not a DatetimeIndex"
     try:
-        normalized_index = (
-            frame.index.tz_localize("UTC")
-            if frame.index.tz is None
-            else frame.index.tz_convert("UTC")
-        )
+        normalized_index = _utc_normalized_index(frame.index)
     except (TypeError, ValueError) as exc:
         return f"{symbol}: price frame timezone cannot be normalized: {exc}"
     if normalized_index.hasnans:
@@ -61,7 +65,10 @@ def _frame_schema_error(symbol: str, frame: Any) -> str | None:
     non_numeric = sorted(
         column
         for column in _REQUIRED_COLUMNS
-        if not pd.api.types.is_numeric_dtype(frame[column])
+        if (
+            pd.api.types.is_bool_dtype(frame[column])
+            or not pd.api.types.is_numeric_dtype(frame[column])
+        )
     )
     if non_numeric:
         return f"{symbol}: price frame has non-numeric columns: {', '.join(non_numeric)}"
@@ -258,11 +265,14 @@ class YahooMarketIntelligenceProvider:
             frame = entry["price_data"]
             assert isinstance(frame, pd.DataFrame)
             frame_rows = tuple(frame.iterrows())
+            normalized_index = _utc_normalized_index(frame.index)
 
             source_timestamp = _source_timestamp(entry)
             emitted = 0
-            for raw_index, values in frame_rows:
-                trading_date = _normalized_date(raw_index)
+            for (raw_index, values), normalized_timestamp in zip(
+                frame_rows, normalized_index, strict=True
+            ):
+                trading_date = _normalized_date(normalized_timestamp)
                 if trading_date is not None and trading_date > as_of:
                     continue
                 rows.append(
