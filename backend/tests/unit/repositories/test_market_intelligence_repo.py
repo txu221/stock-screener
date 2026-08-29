@@ -75,7 +75,14 @@ def _audit(
     )
 
 
-def _bar(*, symbol: str = "SPY", trading_date: date = AS_OF) -> CanonicalBar:
+def _bar(
+    *,
+    symbol: str = "SPY",
+    trading_date: date = AS_OF,
+    dividend_cash: float | None = None,
+    split_ratio: float | None = None,
+    normalization_version: str = NORMALIZATION_VERSION,
+) -> CanonicalBar:
     return CanonicalBar(
         provider="yahoo",
         provider_symbol=symbol,
@@ -96,7 +103,9 @@ def _bar(*, symbol: str = "SPY", trading_date: date = AS_OF) -> CanonicalBar:
         source_timestamp=NOW,
         ingestion_timestamp=NOW,
         price_basis=PRICE_BASIS,
-        normalization_version=NORMALIZATION_VERSION,
+        normalization_version=normalization_version,
+        dividend_cash=dividend_cash,
+        split_ratio=split_ratio,
     )
 
 
@@ -225,6 +234,42 @@ def test_persisted_bundle_round_trips_lineage_rejection_audit_and_snapshot(engin
     assert bundle.rejections == (rejection,)
     assert bundle.snapshots == (_snapshot(),)
     assert bundle.lifecycle_status == "running"
+
+
+def test_persisted_canonical_bar_round_trips_yahoo_action_provenance(engine) -> None:
+    factory = sessionmaker(bind=engine)
+    bar = _bar(dividend_cash=1.25, split_ratio=2.0)
+    with SqlUnitOfWork(factory) as uow:
+        run = _start(uow)
+        uow.market_intelligence.persist_candidate(
+            run.id, _audit(), (bar,), (), (_snapshot(),)
+        )
+        uow.commit()
+
+    with SqlUnitOfWork(factory) as uow:
+        bundle = uow.market_intelligence.find_exact("a" * 64)
+
+    assert bundle is not None
+    assert bundle.canonical_bars == (bar,)
+
+
+def test_legacy_v1_persisted_bar_deserializes_with_null_action_provenance(engine) -> None:
+    factory = sessionmaker(bind=engine)
+    bar = _bar(normalization_version="market_intelligence_adjusted_ohlcv_v1")
+    with SqlUnitOfWork(factory) as uow:
+        run = _start(uow)
+        uow.market_intelligence.persist_candidate(
+            run.id, _audit(), (bar,), (), (_snapshot(),)
+        )
+        uow.commit()
+
+    with SqlUnitOfWork(factory) as uow:
+        bundle = uow.market_intelligence.find_exact("a" * 64)
+
+    assert bundle is not None
+    assert bundle.canonical_bars[0].normalization_version == "market_intelligence_adjusted_ohlcv_v1"
+    assert bundle.canonical_bars[0].dividend_cash is None
+    assert bundle.canonical_bars[0].split_ratio is None
 
 
 def test_rollback_removes_all_market_intelligence_rows(engine) -> None:

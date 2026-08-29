@@ -352,6 +352,8 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             adjusted_low=bar.adjusted_low,
             adjusted_close=bar.adjusted_close,
             provider_volume=bar.provider_volume,
+            dividend_cash=bar.dividend_cash,
+            split_ratio=bar.split_ratio,
             source_timestamp=bar.source_timestamp,
             ingestion_timestamp=bar.ingestion_timestamp,
             price_basis=bar.price_basis,
@@ -448,6 +450,12 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             adjusted_low=float(row.adjusted_low),
             adjusted_close=float(row.adjusted_close),
             provider_volume=float(row.provider_volume),
+            dividend_cash=(
+                None if row.dividend_cash is None else float(row.dividend_cash)
+            ),
+            split_ratio=(
+                None if row.split_ratio is None else float(row.split_ratio)
+            ),
             source_timestamp=_aware(row.source_timestamp),
             ingestion_timestamp=_aware(row.ingestion_timestamp),
             price_basis=row.price_basis,

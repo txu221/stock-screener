@@ -39,7 +39,7 @@ SECTOR_NAMES = MappingProxyType(
 
 PIPELINE_NAME = "market_intelligence_sectors_us"
 METRIC_VERSION = "market_intelligence_v1"
-NORMALIZATION_VERSION = "market_intelligence_adjusted_ohlcv_v1"
+NORMALIZATION_VERSION = "market_intelligence_adjusted_ohlcv_v2"
 PRICE_BASIS = "yahoo_adjusted_ohlc_provider_volume"
 METRIC_SEMANTICS = "ohlcv_derived_proxy"
 LATEST_POINTER_KEY = "latest_market_intelligence_sectors_us"

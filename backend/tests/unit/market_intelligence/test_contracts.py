@@ -58,7 +58,7 @@ def test_phase1_universe_is_exact_and_spy_is_not_ranked() -> None:
 def test_phase1_versions_pointer_and_semantics_are_frozen() -> None:
     assert PIPELINE_NAME == "market_intelligence_sectors_us"
     assert METRIC_VERSION == "market_intelligence_v1"
-    assert NORMALIZATION_VERSION == "market_intelligence_adjusted_ohlcv_v1"
+    assert NORMALIZATION_VERSION == "market_intelligence_adjusted_ohlcv_v2"
     assert PRICE_BASIS == "yahoo_adjusted_ohlc_provider_volume"
     assert METRIC_SEMANTICS == "ohlcv_derived_proxy"
     assert LATEST_POINTER_KEY == "latest_market_intelligence_sectors_us"
@@ -106,6 +106,8 @@ def test_raw_and_canonical_contracts_preserve_adjustment_evidence() -> None:
         adjusted_close=103.95,
         volume=12_000_000.0,
         source_timestamp=source_timestamp,
+        dividend_cash=1.25,
+        split_ratio=2.0,
     )
     canonical = CanonicalBar(
         provider=raw.provider,
@@ -128,6 +130,8 @@ def test_raw_and_canonical_contracts_preserve_adjustment_evidence() -> None:
         ingestion_timestamp=source_timestamp,
         price_basis=PRICE_BASIS,
         normalization_version=NORMALIZATION_VERSION,
+        dividend_cash=raw.dividend_cash,
+        split_ratio=raw.split_ratio,
     )
 
     assert canonical.raw_close == 105.0
@@ -135,6 +139,8 @@ def test_raw_and_canonical_contracts_preserve_adjustment_evidence() -> None:
     assert canonical.adjustment_factor == 0.99
     assert canonical.adjusted_high == 108.9
     assert canonical.provider_volume == 12_000_000.0
+    assert canonical.dividend_cash == 1.25
+    assert canonical.split_ratio == 2.0
     assert canonical.raw_trading_date == raw.raw_trading_date
 
 

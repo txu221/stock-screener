@@ -48,6 +48,8 @@ class RawBar:
     adjusted_close: Any
     volume: Any
     source_timestamp: datetime | None
+    dividend_cash: Any = None
+    split_ratio: Any = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,8 @@ class CanonicalBar:
     ingestion_timestamp: datetime
     price_basis: str
     normalization_version: str
+    dividend_cash: float | None = None
+    split_ratio: float | None = None
 
 
 @dataclass(frozen=True)

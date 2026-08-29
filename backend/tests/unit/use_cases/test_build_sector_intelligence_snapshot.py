@@ -37,6 +37,7 @@ from app.infra.db.uow import SqlUnitOfWork
 from app.use_cases.market_intelligence.build_sector_snapshot import (
     BuildSectorSnapshotCommand,
     BuildSectorSnapshotUseCase,
+    _hash_payload,
 )
 
 SCENARIO_PATH = (
@@ -111,6 +112,18 @@ def _batch(
         symbol_failures=(),
         request_failure=request_failure,
     )
+
+
+def test_input_hash_changes_when_yahoo_action_provenance_changes() -> None:
+    baseline = _batch(date(2026, 5, 15))
+    changed_rows = list(baseline.rows)
+    changed_rows[0] = replace(
+        changed_rows[0], dividend_cash=1.25, split_ratio=2.0
+    )
+    changed = replace(baseline, rows=tuple(changed_rows))
+    sessions = _sessions(date(2026, 5, 15))
+
+    assert _hash_payload(baseline, sessions) != _hash_payload(changed, sessions)
 
 
 class _StaticProvider:

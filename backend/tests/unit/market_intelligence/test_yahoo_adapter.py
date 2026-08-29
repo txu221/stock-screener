@@ -22,7 +22,7 @@ AS_OF = date(2026, 5, 15)
 NOW = datetime(2026, 5, 15, 21, 6, tzinfo=timezone.utc)
 
 
-def _frame(*, include_adjusted: bool = True) -> pd.DataFrame:
+def _frame(*, include_adjusted: bool = True, include_actions: bool = True) -> pd.DataFrame:
     data = {
         "Open": [100.0],
         "High": [103.0],
@@ -32,6 +32,9 @@ def _frame(*, include_adjusted: bool = True) -> pd.DataFrame:
     }
     if include_adjusted:
         data["Adj Close"] = [101.49]
+    if include_actions:
+        data["Dividends"] = [0.0]
+        data["Stock Splits"] = [0.0]
     return pd.DataFrame(data, index=[pd.Timestamp(AS_OF, tz="UTC")])
 
 
@@ -80,6 +83,8 @@ def test_dataframe_fields_are_mapped_raw_without_adjustment_or_repair() -> None:
     assert (row.open, row.high, row.low, row.close) == (100.0, 103.0, 99.0, 102.0)
     assert row.adjusted_close == 101.49
     assert row.volume == 1_250_000.0
+    assert row.dividend_cash == 0.0
+    assert row.split_ratio == 0.0
     assert row.source_timestamp == NOW
 
 
@@ -150,16 +155,9 @@ def test_bulk_fetcher_wrapped_batch_failure_is_restored_to_request_failure() -> 
     assert result.symbol_failures == ()
 
 
-def test_missing_symbol_response_and_provider_error_are_symbol_failures() -> None:
+def test_missing_symbol_response_is_request_level_schema_drift() -> None:
     payload = _all_success()
     payload.pop("XLU")
-    payload["XLK"] = {
-        "symbol": "XLK",
-        "price_data": None,
-        "has_error": True,
-        "error": "rate limited",
-        "error_kind": "rate_limited",
-    }
     fetcher = Mock()
     fetcher.fetch_batch_prices.return_value = payload
 
@@ -167,14 +165,13 @@ def test_missing_symbol_response_and_provider_error_are_symbol_failures() -> Non
         fetcher, clock=lambda: NOW
     ).fetch(MARKET_INTELLIGENCE_UNIVERSE, AS_OF)
 
-    failures = {failure.symbol: failure for failure in result.symbol_failures}
-    assert result.request_failure is None
-    assert failures["XLU"].code == "MISSING_SYMBOL_RESPONSE"
-    assert failures["XLK"].code == "RATE_LIMITED"
-    assert {row.symbol for row in result.rows}.isdisjoint({"XLU", "XLK"})
+    assert result.request_failure is not None
+    assert result.request_failure.code == "PROVIDER_SCHEMA_DRIFT"
+    assert result.rows == ()
+    assert result.symbol_failures == ()
 
 
-def test_malformed_frame_is_symbol_failure_and_does_not_emit_rows() -> None:
+def test_missing_required_columns_are_request_level_schema_drift() -> None:
     payload = _all_success()
     payload["XLE"] = _success("XLE", frame=_frame(include_adjusted=False))
     fetcher = Mock()
@@ -184,9 +181,106 @@ def test_malformed_frame_is_symbol_failure_and_does_not_emit_rows() -> None:
         fetcher, clock=lambda: NOW
     ).fetch(MARKET_INTELLIGENCE_UNIVERSE, AS_OF)
 
-    failure = next(item for item in result.symbol_failures if item.symbol == "XLE")
-    assert failure.code == "MALFORMED_FRAME"
-    assert not any(row.symbol == "XLE" for row in result.rows)
+    assert result.request_failure is not None
+    assert result.request_failure.code == "PROVIDER_SCHEMA_DRIFT"
+    assert result.rows == ()
+    assert result.symbol_failures == ()
+
+
+@pytest.mark.parametrize(
+    "invalid_frame",
+    (
+        _frame(include_actions=False),
+        pd.DataFrame(columns=_frame().columns),
+        _frame().assign(Close="not numeric"),
+        pd.concat((_frame(), _frame())),
+        pd.concat(
+            (
+                _frame().set_axis(pd.DatetimeIndex([AS_OF]), axis="index"),
+                _frame().set_axis(
+                    pd.DatetimeIndex([AS_OF - timedelta(days=1)]), axis="index"
+                ),
+            )
+        ),
+        _frame().set_axis(pd.Index(["not-a-timestamp"]), axis="index"),
+    ),
+)
+def test_schema_contract_failures_are_batch_level_schema_drift(
+    invalid_frame: pd.DataFrame,
+) -> None:
+    payload = _all_success()
+    payload["XLK"] = _success("XLK", frame=invalid_frame)
+    fetcher = Mock()
+    fetcher.fetch_batch_prices.return_value = payload
+
+    result = YahooMarketIntelligenceProvider(
+        fetcher, clock=lambda: NOW
+    ).fetch(MARKET_INTELLIGENCE_UNIVERSE, AS_OF)
+
+    assert result.request_failure is not None
+    assert result.request_failure.code == "PROVIDER_SCHEMA_DRIFT"
+    assert result.rows == ()
+    assert result.symbol_failures == ()
+
+
+def test_unexpected_symbol_coverage_is_request_level_schema_drift() -> None:
+    payload = _all_success()
+    payload["QQQ"] = _success("QQQ")
+    fetcher = Mock()
+    fetcher.fetch_batch_prices.return_value = payload
+
+    result = YahooMarketIntelligenceProvider(
+        fetcher, clock=lambda: NOW
+    ).fetch(MARKET_INTELLIGENCE_UNIVERSE, AS_OF)
+
+    assert result.request_failure is not None
+    assert result.request_failure.code == "PROVIDER_SCHEMA_DRIFT"
+    assert result.rows == ()
+    assert result.symbol_failures == ()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        ["not-a-symbol-mapping"],
+        {symbol: _success(symbol) for symbol in MARKET_INTELLIGENCE_UNIVERSE[:-1]},
+        {
+            **_all_success(),
+            "XLK": "not-a-symbol-entry-mapping",
+        },
+    ),
+)
+def test_malformed_response_mapping_shape_is_request_level_schema_drift(
+    payload: object,
+) -> None:
+    fetcher = Mock()
+    fetcher.fetch_batch_prices.return_value = payload
+
+    result = YahooMarketIntelligenceProvider(
+        fetcher, clock=lambda: NOW
+    ).fetch(MARKET_INTELLIGENCE_UNIVERSE, AS_OF)
+
+    assert result.request_failure is not None
+    assert result.request_failure.code == "PROVIDER_SCHEMA_DRIFT"
+    assert result.rows == ()
+    assert result.symbol_failures == ()
+
+
+@pytest.mark.parametrize("tz", (None, "UTC", "America/New_York"))
+def test_valid_naive_or_timezone_aware_timestamp_indexes_are_accepted(tz: str | None) -> None:
+    frame = _frame().set_axis(pd.DatetimeIndex([AS_OF], tz=tz), axis="index")
+    fetcher = Mock()
+    fetcher.fetch_batch_prices.return_value = {
+        symbol: _success(symbol, frame=frame)
+        for symbol in MARKET_INTELLIGENCE_UNIVERSE
+    }
+
+    result = YahooMarketIntelligenceProvider(
+        fetcher, clock=lambda: NOW
+    ).fetch(MARKET_INTELLIGENCE_UNIVERSE, AS_OF)
+
+    assert result.request_failure is None
+    assert len(result.rows) == len(MARKET_INTELLIGENCE_UNIVERSE)
 
 
 def test_adapter_never_imports_shared_price_row_normalization(monkeypatch) -> None:

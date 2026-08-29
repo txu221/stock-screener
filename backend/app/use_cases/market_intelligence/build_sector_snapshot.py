@@ -124,6 +124,8 @@ def _raw_payload(row: RawBar) -> dict[str, Any]:
             "close",
             "adjusted_close",
             "volume",
+            "dividend_cash",
+            "split_ratio",
             "source_timestamp",
         )
     }

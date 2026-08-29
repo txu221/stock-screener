@@ -34,6 +34,8 @@ def valid_raw_bar() -> RawBar:
         adjusted_close=103.95,
         volume=12_000_000.0,
         source_timestamp=SOURCE_AT,
+        dividend_cash=1.25,
+        split_ratio=2.0,
     )
 
 
@@ -62,6 +64,8 @@ def test_valid_row_preserves_raw_evidence_and_adjusts_all_ohlc(
     assert bar.adjusted_low == pytest.approx(89.1)
     assert bar.adjusted_close == pytest.approx(103.95)
     assert bar.provider_volume == 12_000_000.0
+    assert bar.dividend_cash == 1.25
+    assert bar.split_ratio == 2.0
     assert bar.source_timestamp == SOURCE_AT
     assert bar.ingestion_timestamp == INGESTED_AT
     assert bar.price_basis == PRICE_BASIS

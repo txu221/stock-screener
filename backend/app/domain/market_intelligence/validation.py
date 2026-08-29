@@ -56,6 +56,8 @@ def _raw_evidence(row: RawBar) -> dict[str, Any]:
         "close": _json_safe_value(row.close),
         "adjusted_close": _json_safe_value(row.adjusted_close),
         "volume": _json_safe_value(row.volume),
+        "dividend_cash": _json_safe_value(row.dividend_cash),
+        "split_ratio": _json_safe_value(row.split_ratio),
         "source_timestamp": _json_safe_value(row.source_timestamp),
     }
 
@@ -186,6 +188,8 @@ def _canonical_bar(row: RawBar, *, ingestion_timestamp: datetime) -> CanonicalBa
         ingestion_timestamp=ingestion_timestamp,
         price_basis=PRICE_BASIS,
         normalization_version=NORMALIZATION_VERSION,
+        dividend_cash=_finite_number(row.dividend_cash),
+        split_ratio=_finite_number(row.split_ratio),
     )
 
 

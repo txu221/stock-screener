@@ -7,6 +7,8 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
 from typing import Any
 
+import pandas as pd
+
 from app.domain.market_intelligence.models import (
     ProviderBatchResult,
     ProviderSymbolFailure,
@@ -15,8 +17,86 @@ from app.domain.market_intelligence.models import (
 )
 
 _REQUIRED_COLUMNS = frozenset(
-    {"Open", "High", "Low", "Close", "Adj Close", "Volume"}
+    {
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Adj Close",
+        "Volume",
+        "Dividends",
+        "Stock Splits",
+    }
 )
+
+
+def _schema_drift(message: str) -> RequestFailure:
+    return RequestFailure(code="PROVIDER_SCHEMA_DRIFT", message=message)
+
+
+def _frame_schema_error(symbol: str, frame: Any) -> str | None:
+    if not isinstance(frame, pd.DataFrame):
+        return f"{symbol}: price_data is not a pandas DataFrame"
+    if frame.empty:
+        return f"{symbol}: price frame contains no rows"
+    missing = sorted(_REQUIRED_COLUMNS.difference(frame.columns))
+    if missing:
+        return f"{symbol}: price frame is missing required columns: {', '.join(missing)}"
+    if not isinstance(frame.index, pd.DatetimeIndex):
+        return f"{symbol}: price frame index is not a DatetimeIndex"
+    try:
+        normalized_index = (
+            frame.index.tz_localize("UTC")
+            if frame.index.tz is None
+            else frame.index.tz_convert("UTC")
+        )
+    except (TypeError, ValueError) as exc:
+        return f"{symbol}: price frame timezone cannot be normalized: {exc}"
+    if normalized_index.hasnans:
+        return f"{symbol}: price frame index contains invalid timestamps"
+    if not normalized_index.is_monotonic_increasing:
+        return f"{symbol}: price frame index is not monotonic increasing"
+    if not normalized_index.is_unique:
+        return f"{symbol}: price frame index contains duplicate timestamps"
+    non_numeric = sorted(
+        column
+        for column in _REQUIRED_COLUMNS
+        if not pd.api.types.is_numeric_dtype(frame[column])
+    )
+    if non_numeric:
+        return f"{symbol}: price frame has non-numeric columns: {', '.join(non_numeric)}"
+    return None
+
+
+def _batch_schema_error(
+    results: Mapping[str, Any],
+    requested: Sequence[str],
+) -> str | None:
+    result_symbols = set(results)
+    requested_symbols = set(requested)
+    if result_symbols != requested_symbols:
+        missing = sorted(requested_symbols.difference(result_symbols))
+        unexpected = sorted(result_symbols.difference(requested_symbols))
+        details = []
+        if missing:
+            details.append(f"missing symbols: {', '.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected symbols: {', '.join(unexpected)}")
+        return f"Yahoo bulk response symbol coverage differs from request ({'; '.join(details)})"
+    for symbol in requested:
+        entry = results[symbol]
+        if not isinstance(entry, Mapping):
+            return f"{symbol}: symbol response is not a mapping"
+        if entry.get("symbol") != symbol:
+            return f"{symbol}: symbol response identity does not match requested symbol"
+        if not isinstance(entry.get("has_error"), bool):
+            return f"{symbol}: symbol response has invalid has_error flag"
+        if bool(entry["has_error"]):
+            continue
+        error = _frame_schema_error(symbol, entry.get("price_data"))
+        if error is not None:
+            return error
+    return None
 
 
 def _failure_code(value: Any) -> str:
@@ -136,9 +216,8 @@ class YahooMarketIntelligenceProvider:
                 response_timestamp=response_timestamp,
                 rows=(),
                 symbol_failures=(),
-                request_failure=RequestFailure(
-                    code="PROVIDER_BAD_RESPONSE",
-                    message="bulk price response is not a symbol mapping",
+                request_failure=_schema_drift(
+                    "bulk price response is not a symbol mapping"
                 ),
             )
         wrapped_failure = _wrapped_batch_failure(results, requested)
@@ -151,28 +230,21 @@ class YahooMarketIntelligenceProvider:
                 request_failure=wrapped_failure,
             )
 
+        schema_error = _batch_schema_error(results, requested)
+        if schema_error is not None:
+            return ProviderBatchResult(
+                provider="yahoo",
+                response_timestamp=response_timestamp,
+                rows=(),
+                symbol_failures=(),
+                request_failure=_schema_drift(schema_error),
+            )
+
         rows: list[RawBar] = []
         failures: list[ProviderSymbolFailure] = []
         for symbol in requested:
             entry = results.get(symbol)
-            if entry is None:
-                failures.append(
-                    ProviderSymbolFailure(
-                        symbol=symbol,
-                        code="MISSING_SYMBOL_RESPONSE",
-                        message="symbol is absent from Yahoo bulk response",
-                    )
-                )
-                continue
-            if not isinstance(entry, Mapping):
-                failures.append(
-                    ProviderSymbolFailure(
-                        symbol=symbol,
-                        code="MALFORMED_SYMBOL_RESPONSE",
-                        message="symbol response is not a mapping",
-                    )
-                )
-                continue
+            assert isinstance(entry, Mapping)
             if bool(entry.get("has_error")):
                 failures.append(
                     ProviderSymbolFailure(
@@ -183,37 +255,9 @@ class YahooMarketIntelligenceProvider:
                 )
                 continue
 
-            frame = entry.get("price_data")
-            columns = getattr(frame, "columns", ())
-            if frame is None or not _REQUIRED_COLUMNS.issubset(set(columns)):
-                failures.append(
-                    ProviderSymbolFailure(
-                        symbol=symbol,
-                        code="MALFORMED_FRAME",
-                        message="price frame is missing required raw OHLCV/Adj Close columns",
-                    )
-                )
-                continue
-            try:
-                frame_rows = tuple(frame.iterrows())
-            except Exception as exc:
-                failures.append(
-                    ProviderSymbolFailure(
-                        symbol=symbol,
-                        code="MALFORMED_FRAME",
-                        message=f"price frame cannot be iterated: {exc}",
-                    )
-                )
-                continue
-            if not frame_rows:
-                failures.append(
-                    ProviderSymbolFailure(
-                        symbol=symbol,
-                        code="EMPTY_FRAME",
-                        message="price frame contains no rows",
-                    )
-                )
-                continue
+            frame = entry["price_data"]
+            assert isinstance(frame, pd.DataFrame)
+            frame_rows = tuple(frame.iterrows())
 
             source_timestamp = _source_timestamp(entry)
             emitted = 0
@@ -235,6 +279,8 @@ class YahooMarketIntelligenceProvider:
                         adjusted_close=values["Adj Close"],
                         volume=values["Volume"],
                         source_timestamp=source_timestamp,
+                        dividend_cash=values["Dividends"],
+                        split_ratio=values["Stock Splits"],
                     )
                 )
                 emitted += 1

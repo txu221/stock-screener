@@ -9,7 +9,7 @@ from app.domain.market_intelligence.metrics import (
     calculate_symbol_metrics,
     with_relative_returns,
 )
-from app.domain.market_intelligence.models import CanonicalBar, SectorMetrics
+from app.domain.market_intelligence.models import CanonicalBar, RawBar, SectorMetrics
 from app.domain.market_intelligence.validation import validate_provider_rows
 
 NOW = datetime(2026, 5, 15, 21, 10, tzinfo=timezone.utc)
@@ -288,3 +288,104 @@ def test_missing_spy_return_keeps_relative_metric_unavailable() -> None:
     result = with_relative_returns(sector, spy)
 
     assert result.relative_return_vs_spy_20d is None
+
+
+@pytest.mark.parametrize(
+    ("pre_split_close", "post_split_close", "pre_adjusted_close", "split_ratio"),
+    (
+        (100.0, 50.0, 50.0, 2.0),
+        (90.0, 30.0, 30.0, 3.0),
+        (10.0, 100.0, 100.0, 0.1),
+    ),
+)
+def test_adjusted_return_has_no_artificial_split_jump(
+    pre_split_close: float,
+    post_split_close: float,
+    pre_adjusted_close: float,
+    split_ratio: float,
+) -> None:
+    sessions = (date(2026, 5, 14), date(2026, 5, 15))
+    raw_bars = (
+        RawBar(
+            provider="yahoo",
+            provider_symbol="XLK",
+            symbol="XLK",
+            raw_trading_date=sessions[0].isoformat(),
+            trading_date=sessions[0],
+            open=pre_split_close,
+            high=pre_split_close,
+            low=pre_split_close,
+            close=pre_split_close,
+            adjusted_close=pre_adjusted_close,
+            volume=100.0,
+            source_timestamp=NOW,
+            dividend_cash=0.0,
+            split_ratio=0.0,
+        ),
+        RawBar(
+            provider="yahoo",
+            provider_symbol="XLK",
+            symbol="XLK",
+            raw_trading_date=sessions[1].isoformat(),
+            trading_date=sessions[1],
+            open=post_split_close,
+            high=post_split_close,
+            low=post_split_close,
+            close=post_split_close,
+            adjusted_close=post_split_close,
+            volume=100.0,
+            source_timestamp=NOW,
+            dividend_cash=0.0,
+            split_ratio=split_ratio,
+        ),
+    )
+
+    validation = validate_provider_rows(raw_bars, sessions, NOW)
+    metrics = calculate_symbol_metrics(validation.canonical_bars, sessions)
+
+    assert validation.rejections == ()
+    assert metrics.return_1d == pytest.approx(0.0)
+
+
+def test_adjusted_return_includes_cash_dividend_without_price_drop_artifact() -> None:
+    sessions = (date(2026, 5, 14), date(2026, 5, 15))
+    raw_bars = (
+        RawBar(
+            provider="yahoo",
+            provider_symbol="XLK",
+            symbol="XLK",
+            raw_trading_date=sessions[0].isoformat(),
+            trading_date=sessions[0],
+            open=100.0,
+            high=100.0,
+            low=100.0,
+            close=100.0,
+            adjusted_close=99.0,
+            volume=100.0,
+            source_timestamp=NOW,
+            dividend_cash=0.0,
+            split_ratio=0.0,
+        ),
+        RawBar(
+            provider="yahoo",
+            provider_symbol="XLK",
+            symbol="XLK",
+            raw_trading_date=sessions[1].isoformat(),
+            trading_date=sessions[1],
+            open=99.0,
+            high=99.0,
+            low=99.0,
+            close=99.0,
+            adjusted_close=99.0,
+            volume=100.0,
+            source_timestamp=NOW,
+            dividend_cash=1.0,
+            split_ratio=0.0,
+        ),
+    )
+
+    validation = validate_provider_rows(raw_bars, sessions, NOW)
+    metrics = calculate_symbol_metrics(validation.canonical_bars, sessions)
+
+    assert validation.rejections == ()
+    assert metrics.return_1d == pytest.approx(0.0)
