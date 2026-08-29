@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import date
+import json
+from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from app.services.price_row_normalization import (
     drop_non_finite_close_rows,
@@ -10,6 +13,12 @@ from app.services.price_row_normalization import (
     normalize_price_frame,
     stock_price_row_from_ohlcv,
 )
+
+
+FIXTURE_PATH = (
+    Path(__file__).parents[1] / "fixtures" / "market_intelligence" / "corporate_actions.json"
+)
+CORPORATE_ACTION_FIXTURE = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
 def _ohlcv_frame(closes: list[float], days: list[date]) -> pd.DataFrame:
@@ -116,3 +125,78 @@ def test_normalize_price_batch_filters_symbols_with_insufficient_clean_rows():
 
     assert list(cleaned) == ["AAPL"]
     assert cleaned["AAPL"]["Close"].tolist() == [101.0, 102.0]
+
+
+@pytest.mark.parametrize("case", CORPORATE_ACTION_FIXTURE["cases"], ids=lambda case: case["name"])
+def test_stock_price_row_from_ohlcv_preserves_corporate_action_evidence(case):
+    normalized = stock_price_row_from_ohlcv(
+        symbol=case["symbol"],
+        row_date=date.fromisoformat(case["date"]),
+        row=case["row"],
+        provider=CORPORATE_ACTION_FIXTURE["provider"],
+        source_timestamp=CORPORATE_ACTION_FIXTURE["source_timestamp"],
+        normalization_version=CORPORATE_ACTION_FIXTURE["normalization_version"],
+    )
+
+    assert normalized is not None
+    assert normalized["open"] == case["row"]["Open"]
+    assert normalized["close"] == case["row"]["Close"]
+    assert normalized["adj_close"] == case["row"]["Adj Close"]
+    assert normalized["volume"] == case["row"]["Volume"]
+    assert normalized["adjustment_factor"] == pytest.approx(case["expected_factor"])
+    assert normalized["split_ratio"] == case["expected_split_ratio"]
+    assert normalized["dividend_cash"] == case["expected_dividend_cash"]
+    assert normalized["normalization_version"] == "canonical_price_adjustment_v2"
+    assert normalized["price_basis"] == "yahoo_adjusted_close_provider_volume"
+    assert normalized["reconciled_at"] is not None
+
+
+def test_stock_price_row_from_ohlcv_marks_missing_adjusted_close_unreconciled():
+    normalized = stock_price_row_from_ohlcv(
+        symbol="NOADJ",
+        row_date=date(2026, 6, 24),
+        row={"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Volume": 1_000_000},
+        provider="yahoo",
+        source_timestamp="2026-08-28T16:00:00+00:00",
+        normalization_version="canonical_price_adjustment_v2",
+    )
+
+    assert normalized is not None
+    assert normalized["adj_close"] is None
+    assert normalized["adjustment_factor"] is None
+    assert normalized["price_basis"] == "raw_ohlcv_unreconciled"
+    assert normalized["reconciled_at"] is None
+
+
+def test_stock_price_row_from_ohlcv_requires_a_non_blank_provider_for_reconciliation():
+    normalized = stock_price_row_from_ohlcv(
+        symbol="NOPROVIDER",
+        row_date=date(2026, 6, 24),
+        row={"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Adj Close": 99.5, "Volume": 1_000_000},
+        provider=" ",
+        source_timestamp="2026-08-28T16:00:00+00:00",
+        normalization_version="canonical_price_adjustment_v2",
+    )
+
+    assert normalized is not None
+    assert normalized["price_basis"] == "raw_ohlcv_unreconciled"
+    assert normalized["reconciled_at"] is None
+
+
+def test_stock_price_row_from_ohlcv_hash_is_deterministic_for_identical_evidence():
+    arguments = {
+        "symbol": "HASH",
+        "row_date": date(2026, 6, 24),
+        "row": {"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Adj Close": 99.5, "Volume": 1_000_000, "Dividends": 0.5, "Stock Splits": 0.0},
+        "provider": "yahoo",
+        "source_timestamp": "2026-08-28T16:00:00+00:00",
+        "normalization_version": "canonical_price_adjustment_v2",
+    }
+
+    first = stock_price_row_from_ohlcv(**arguments)
+    second = stock_price_row_from_ohlcv(**arguments)
+
+    assert first is not None
+    assert second is not None
+    assert first["content_hash"] == second["content_hash"]
+    assert len(first["content_hash"]) == 64

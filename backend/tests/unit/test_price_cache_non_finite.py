@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from app.models.stock import StockPrice
 from app.services.price_cache_service import PriceCacheService
 
 
@@ -86,11 +87,12 @@ def test_store_batch_in_cache_skips_non_finite_close_rows():
         def query(self, *_args):
             return FakeQuery()
 
-        def bulk_insert_mappings(self, _model, rows):
-            captured_rows.extend(rows)
+        def add(self, row):
+            if isinstance(row, StockPrice):
+                captured_rows.append(row)
 
-        def bulk_update_mappings(self, _model, _rows):
-            raise AssertionError("No existing rows should be updated")
+        def flush(self):
+            pass
 
         def commit(self):
             pass
@@ -109,9 +111,11 @@ def test_store_batch_in_cache_skips_non_finite_close_rows():
 
     service.store_batch_in_cache({"SPY": payload}, also_store_db=True)
 
-    assert [(row["symbol"], row["date"], row["close"]) for row in captured_rows] == [
+    assert [(row.symbol, row.date, row.close) for row in captured_rows] == [
         ("SPY", date(2026, 6, 25), 101.0)
     ]
+    assert captured_rows[0].provider == "yahoo"
+    assert captured_rows[0].normalization_version == "canonical_price_adjustment_v2"
 
 
 def test_fetch_full_and_cache_uses_cleaned_price_frame_for_redis_db_and_return():

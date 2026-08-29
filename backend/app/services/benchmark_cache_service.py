@@ -8,7 +8,7 @@ import logging
 import pickle
 import time
 from typing import Any, Optional, Callable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 from sqlalchemy.orm import Session
 
@@ -34,7 +34,12 @@ from .benchmark_resolution import (
     benchmark_data_meets_required_date,
 )
 from .cache.market_cache_policy import MarketAwareCachePolicy, market_cache_policy
-from .price_row_normalization import normalize_price_frame, stock_price_row_from_ohlcv
+from .price_row_normalization import (
+    CANONICAL_PRICE_NORMALIZATION_VERSION,
+    normalize_price_frame,
+    stock_price_row_from_ohlcv,
+)
+from .stock_price_persistence import persist_stock_price_mappings
 from ..utils.market_hours import get_eastern_now, get_last_trading_day, is_market_open, is_trading_day
 
 logger = logging.getLogger(__name__)
@@ -613,14 +618,8 @@ class BenchmarkCacheService:
                 return
             df = data.reset_index()
 
-            # Fetch all existing dates for benchmark upfront (avoid N+1 queries)
-            existing_dates_query = db.query(StockPrice.date).filter(
-                StockPrice.symbol == benchmark_symbol
-            )
-            existing_dates = set([row[0] for row in existing_dates_query.all()])
-
-            # Prepare bulk insert data - only for dates that don't exist
-            rows_to_insert = []
+            price_rows: list[dict[str, Any]] = []
+            source_timestamp = datetime.now(timezone.utc)
 
             for _, row in df.iterrows():
                 row_date = row['Date']
@@ -631,30 +630,33 @@ class BenchmarkCacheService:
                 elif isinstance(row_date, datetime):
                     row_date = row_date.date()
 
-                # Skip if already exists
-                if row_date in existing_dates:
-                    continue
-
-                # Prepare row for bulk insert
                 try:
                     price_dict = stock_price_row_from_ohlcv(
                         symbol=benchmark_symbol,
                         row_date=row_date,
                         row=row,
+                        provider="yahoo",
+                        source_timestamp=source_timestamp,
+                        normalization_version=CANONICAL_PRICE_NORMALIZATION_VERSION,
                     )
                     if price_dict is None:
                         continue
-                    rows_to_insert.append(price_dict)
+                    price_rows.append(price_dict)
 
                 except Exception as e:
                     logger.warning("Error preparing benchmark %s row for %s: %s", benchmark_symbol, row.get("Date"), e)
                     continue
 
-            # Bulk insert all new rows in one operation
-            if rows_to_insert:
-                db.bulk_insert_mappings(StockPrice, rows_to_insert)
+            result = persist_stock_price_mappings(db, {benchmark_symbol: price_rows})
+            if result["inserted"] or result["updated"]:
                 db.commit()
-                logger.info("Bulk inserted %s new benchmark %s rows to database", len(rows_to_insert), benchmark_symbol)
+                logger.info(
+                    "Persisted %s benchmark %s rows (%s inserts, %s revisions)",
+                    result["inserted"] + result["updated"],
+                    benchmark_symbol,
+                    result["inserted"],
+                    result["updated"],
+                )
             else:
                 logger.debug("No new benchmark %s rows to persist", benchmark_symbol)
 

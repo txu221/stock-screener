@@ -7,9 +7,8 @@ from typing import Any, Mapping, Sequence
 
 from sqlalchemy.orm import Session
 
-from app.models.stock import StockPrice
-from app.services.price_row_normalization import finite_ohlc_values
-from app.services.price_value_policy import is_usable_adjusted_close
+from app.models.stock import StockPrice, StockPriceRevision
+from app.services.price_row_normalization import price_row_content_hash
 
 
 def persist_stock_price_mappings(
@@ -18,104 +17,109 @@ def persist_stock_price_mappings(
     *,
     chunk_size: int = 100,
 ) -> dict[str, int]:
-    """Persist StockPrice mapping rows using the canonical latest-row update policy."""
-    normalized_rows: dict[str, list[dict[str, Any]]] = {}
-    symbol_dates: dict[str, set[date]] = {}
-    latest_dates: dict[str, date] = {}
-
-    for symbol, rows in price_rows_by_symbol.items():
-        symbol_rows: list[dict[str, Any]] = []
-        for row in rows:
-            row_date = row.get("date")
-            if isinstance(row_date, date):
-                normalized = dict(row)
-                symbol_rows.append(normalized)
-                symbol_dates.setdefault(symbol, set()).add(row_date)
-                latest = latest_dates.get(symbol)
-                latest_dates[symbol] = row_date if latest is None or row_date > latest else latest
-        if symbol_rows:
-            normalized_rows[symbol] = symbol_rows
-
-    if not normalized_rows:
+    """Persist current price rows while retaining every distinct provider revision."""
+    del chunk_size
+    candidates = [
+        dict(row)
+        for rows in price_rows_by_symbol.values()
+        for row in rows
+        if isinstance(row.get("date"), date)
+    ]
+    if not candidates:
         return {"inserted": 0, "updated": 0}
 
-    symbols = list(normalized_rows)
-    all_dates = [row_date for dates in symbol_dates.values() for row_date in dates]
-    min_date = min(all_dates)
-    max_date = max(all_dates)
-    existing_pairs: dict[
-        tuple[str, date],
-        tuple[int, object, object, object, object, object],
-    ] = {}
-    for chunk_start in range(0, len(symbols), chunk_size):
-        chunk_symbols = symbols[chunk_start:chunk_start + chunk_size]
-        rows = (
-            db.query(
-                StockPrice.id,
-                StockPrice.symbol,
-                StockPrice.date,
-                StockPrice.adj_close,
-                StockPrice.open,
-                StockPrice.high,
-                StockPrice.low,
-                StockPrice.close,
-            )
-            .filter(
-                StockPrice.symbol.in_(chunk_symbols),
-                StockPrice.date >= min_date,
-                StockPrice.date <= max_date,
-            )
-            .all()
-        )
-        for (
-            record_id,
-            record_symbol,
-            record_date,
-            adj_close,
-            open_,
-            high,
-            low,
-            close,
-        ) in rows:
-            target_dates = symbol_dates.get(record_symbol)
-            if target_dates and record_date in target_dates:
-                existing_pairs[(record_symbol, record_date)] = (
-                    record_id,
-                    adj_close,
-                    open_,
-                    high,
-                    low,
-                    close,
-                )
+    pairs = {(row["symbol"], row["date"]) for row in candidates}
+    symbols = {symbol for symbol, _ in pairs}
+    dates = {row_date for _, row_date in pairs}
+    existing_rows = (
+        db.query(StockPrice)
+        .filter(StockPrice.symbol.in_(symbols), StockPrice.date.in_(dates))
+        .all()
+    )
+    current_by_pair = {(row.symbol, row.date): row for row in existing_rows}
+    existing_revisions = (
+        db.query(StockPriceRevision)
+        .filter(StockPriceRevision.symbol.in_(symbols), StockPriceRevision.date.in_(dates))
+        .all()
+    )
+    revisions_by_pair: dict[tuple[str, date], list[StockPriceRevision]] = {}
+    for revision in existing_revisions:
+        revisions_by_pair.setdefault((revision.symbol, revision.date), []).append(revision)
 
-    rows_to_insert: list[dict[str, Any]] = []
-    rows_to_update: list[dict[str, Any]] = []
-    for symbol, price_rows in normalized_rows.items():
-        for price_row in price_rows:
-            row_date = price_row["date"]
-            existing = existing_pairs.get((symbol, row_date))
-            if existing is None:
-                rows_to_insert.append(price_row)
-                continue
+    inserted = 0
+    updated = 0
+    for incoming in candidates:
+        pair = (incoming["symbol"], incoming["date"])
+        incoming["content_hash"] = incoming.get("content_hash") or price_row_content_hash(incoming)
+        current = current_by_pair.get(pair)
+        prior_revisions = revisions_by_pair.setdefault(pair, [])
+        known_hashes = {revision.content_hash for revision in prior_revisions if revision.content_hash}
+        if current is not None and current.content_hash:
+            known_hashes.add(current.content_hash)
+        if incoming["content_hash"] in known_hashes:
+            continue
 
-            existing_id, existing_adj_close, open_, high, low, close = existing
-            if (
-                row_date == latest_dates.get(symbol)
-                or not is_usable_adjusted_close(existing_adj_close)
-                or finite_ohlc_values(open_, high, low, close) is None
-            ):
-                price_row["id"] = existing_id
-                rows_to_update.append(price_row)
+        if current is None:
+            revision_number = 0
+            incoming["revision_number"] = revision_number
+            current = StockPrice(**incoming)
+            db.add(current)
+            db.flush()
+            current_by_pair[pair] = current
+            inserted += 1
+        else:
+            if not prior_revisions and not current.content_hash:
+                legacy = _legacy_revision_mapping(current)
+                legacy["stock_price_id"] = current.id
+                legacy_revision = StockPriceRevision(**legacy)
+                db.add(legacy_revision)
+                prior_revisions.append(legacy_revision)
+                revision_number = 1
+            else:
+                revision_number = max(
+                    [revision.revision_number for revision in prior_revisions]
+                    + ([current.revision_number] if current.revision_number is not None else [-1])
+                ) + 1
+            incoming["revision_number"] = revision_number
+            for field, value in incoming.items():
+                setattr(current, field, value)
+            updated += 1
 
-    for chunk_start in range(0, len(rows_to_insert), chunk_size):
-        db.bulk_insert_mappings(
-            StockPrice,
-            rows_to_insert[chunk_start:chunk_start + chunk_size],
-        )
-    for chunk_start in range(0, len(rows_to_update), chunk_size):
-        db.bulk_update_mappings(
-            StockPrice,
-            rows_to_update[chunk_start:chunk_start + chunk_size],
-        )
+        revision = _revision_mapping(incoming, stock_price_id=current.id)
+        db.add(StockPriceRevision(**revision))
+        prior_revisions.append(StockPriceRevision(**revision))
+
     db.flush()
-    return {"inserted": len(rows_to_insert), "updated": len(rows_to_update)}
+    return {"inserted": inserted, "updated": updated}
+
+
+def _revision_mapping(row: Mapping[str, Any], *, stock_price_id: int | None) -> dict[str, Any]:
+    fields = (
+        "symbol", "date", "revision_number", "open", "high", "low", "close", "volume",
+        "adj_close", "adjustment_factor", "dividend_cash", "split_ratio", "provider",
+        "source_timestamp", "normalization_version", "price_basis", "content_hash",
+    )
+    return {"stock_price_id": stock_price_id, **{field: row.get(field) for field in fields}}
+
+
+def _legacy_revision_mapping(current: StockPrice) -> dict[str, Any]:
+    legacy = {
+        "symbol": current.symbol,
+        "date": current.date,
+        "revision_number": 0,
+        "open": current.open,
+        "high": current.high,
+        "low": current.low,
+        "close": current.close,
+        "volume": current.volume,
+        "adj_close": current.adj_close,
+        "adjustment_factor": current.adjustment_factor,
+        "dividend_cash": current.dividend_cash,
+        "split_ratio": current.split_ratio,
+        "provider": current.provider,
+        "source_timestamp": current.source_timestamp,
+        "normalization_version": "legacy_unversioned",
+        "price_basis": current.price_basis or "legacy_unversioned",
+    }
+    legacy["content_hash"] = price_row_content_hash(legacy)
+    return legacy
