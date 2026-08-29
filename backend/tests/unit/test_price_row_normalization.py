@@ -231,3 +231,40 @@ def test_stock_price_row_from_ohlcv_hash_changes_when_only_source_timestamp_chan
     assert first is not None
     assert second is not None
     assert first["content_hash"] != second["content_hash"]
+
+
+@pytest.mark.parametrize("provider", ["cn_market_data", "krx"])
+def test_stock_price_row_from_ohlcv_keeps_native_adj_close_alias_unreconciled(provider):
+    normalized = stock_price_row_from_ohlcv(
+        symbol="000001.SS" if provider == "cn_market_data" else "005930.KS",
+        row_date=date(2026, 6, 24),
+        row={"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Adj Close": 100.0, "Volume": 1_000_000},
+        provider=provider,
+        source_timestamp="2026-06-24T00:00:00+00:00",
+        normalization_version="canonical_price_adjustment_v2",
+        reconciled_at=RECONCILED_AT,
+    )
+
+    assert normalized is not None
+    assert normalized["adj_close"] is None
+    assert normalized["adjustment_factor"] is None
+    assert normalized["price_basis"] == "raw_ohlcv_unreconciled"
+    assert normalized["reconciled_at"] is None
+
+
+def test_stock_price_row_from_ohlcv_reconciles_yahoo_fallback_with_real_adjusted_close():
+    normalized = stock_price_row_from_ohlcv(
+        symbol="000001.SS",
+        row_date=date(2026, 6, 24),
+        row={"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Adj Close": 99.0, "Volume": 1_000_000},
+        provider="yahoo",
+        source_timestamp="2026-06-24T00:00:00+00:00",
+        normalization_version="canonical_price_adjustment_v2",
+        reconciled_at=RECONCILED_AT,
+    )
+
+    assert normalized is not None
+    assert normalized["adj_close"] == 99.0
+    assert normalized["adjustment_factor"] == pytest.approx(0.99)
+    assert normalized["price_basis"] == "yahoo_adjusted_close_provider_volume"
+    assert normalized["reconciled_at"] == RECONCILED_AT

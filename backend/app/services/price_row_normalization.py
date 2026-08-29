@@ -152,8 +152,12 @@ def stock_price_row_from_ohlcv(
     if ohlc is None:
         return None
     open_, high, low, close = ohlc
-    adj_close = finite_float_or_none(row.get("Adj Close"))
     provider_name = (str(provider).strip() or None) if provider is not None else None
+    adj_close = (
+        finite_float_or_none(row.get("Adj Close"))
+        if provider_name == "yahoo"
+        else None
+    )
     timestamp = _timestamp_or_none(source_timestamp)
     observed_at = _timestamp_or_none(reconciled_at)
     dividend_cash = _finite_or_none(row.get("Dividends"))
