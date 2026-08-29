@@ -244,3 +244,101 @@ def test_real_postgresql_upgrade_downgrade_reupgrade_preserves_predecessor(
         assert connection.execute(
             sa.text("SELECT count(*) FROM feature_runs")
         ).scalar_one() == 1
+
+
+def test_real_postgresql_v2_price_provenance_migration_preserves_legacy_rows(
+    phase2_postgresql_engine,
+) -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[3]
+        / "alembic"
+        / "versions"
+        / "20260828_0034_market_intelligence_production_hardening_v2.py"
+    )
+    assert migration_path.exists(), "production-hardening v2 migration is missing"
+    spec = importlib.util.spec_from_file_location(migration_path.stem, migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    with phase2_postgresql_engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                """
+                CREATE TABLE stock_prices (
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(20) NOT NULL,
+                    date DATE NOT NULL,
+                    open DOUBLE PRECISION,
+                    high DOUBLE PRECISION,
+                    low DOUBLE PRECISION,
+                    close DOUBLE PRECISION,
+                    volume BIGINT,
+                    adj_close DOUBLE PRECISION,
+                    created_at TIMESTAMPTZ DEFAULT now(),
+                    CONSTRAINT uix_symbol_date UNIQUE (symbol, date)
+                )
+                """
+            )
+        )
+        connection.execute(
+            sa.text(
+                """
+                CREATE TABLE market_intelligence_canonical_bars (
+                    run_id INTEGER NOT NULL,
+                    symbol VARCHAR(8) NOT NULL,
+                    trading_date DATE NOT NULL,
+                    PRIMARY KEY (run_id, symbol, trading_date)
+                )
+                """
+            )
+        )
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO stock_prices (symbol, date, close, adj_close)
+                VALUES ('AAPL', '2026-08-27', 201.0, 200.5)
+                """
+            )
+        )
+
+        _run(migration, connection, "upgrade")
+        inspector = sa.inspect(connection)
+        columns = {
+            column["name"]: column
+            for column in inspector.get_columns("stock_prices")
+        }
+        expected_v2_columns = {
+            "provider", "source_timestamp", "normalization_version", "content_hash",
+            "revision_number", "adjustment_factor", "dividend_cash", "split_ratio",
+        }
+        assert expected_v2_columns <= set(columns)
+        assert all(columns[name]["nullable"] for name in expected_v2_columns)
+        assert connection.execute(
+            sa.text(
+                "SELECT symbol, close, adj_close, provider, revision_number "
+                "FROM stock_prices WHERE symbol = 'AAPL'"
+            )
+        ).one() == ("AAPL", 201.0, 200.5, None, None)
+
+        revision_indexes = {
+            index["name"]
+            for index in inspector.get_indexes("stock_price_revisions")
+        }
+        assert "ix_stock_price_revisions_symbol_date" in revision_indexes
+        revision_constraints = {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints("stock_price_revisions")
+        }
+        assert "uq_stock_price_revision_symbol_date_revision" in revision_constraints
+        canonical_columns = {
+            column["name"]
+            for column in inspector.get_columns("market_intelligence_canonical_bars")
+        }
+        assert {"dividend_cash", "split_ratio"} <= canonical_columns
+
+        _run(migration, connection, "downgrade")
+        assert "stock_price_revisions" not in sa.inspect(connection).get_table_names()
+        assert connection.execute(
+            sa.text("SELECT symbol, close, adj_close FROM stock_prices WHERE symbol = 'AAPL'")
+        ).one() == ("AAPL", 201.0, 200.5)

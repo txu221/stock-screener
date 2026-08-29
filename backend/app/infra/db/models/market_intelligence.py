@@ -93,6 +93,8 @@ class MarketIntelligenceCanonicalBar(Base):
     adjusted_low = Column(Numeric(24, 10), nullable=False)
     adjusted_close = Column(Numeric(24, 10), nullable=False)
     provider_volume = Column(Numeric(24, 10), nullable=False)
+    dividend_cash = Column(Numeric(24, 10), nullable=True)
+    split_ratio = Column(Numeric(24, 10), nullable=True)
     source_timestamp = Column(DateTime(timezone=True), nullable=True)
     ingestion_timestamp = Column(DateTime(timezone=True), nullable=False)
     price_basis = Column(String(64), nullable=False)
