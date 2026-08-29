@@ -7,7 +7,6 @@ from sqlalchemy import (
     DateTime,
     event,
     Float,
-    ForeignKey,
     Index,
     Integer,
     String,
@@ -60,7 +59,6 @@ class StockPriceRevision(Base):
     id = Column(Integer, primary_key=True)
     stock_price_id = Column(
         Integer,
-        ForeignKey("stock_prices.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )

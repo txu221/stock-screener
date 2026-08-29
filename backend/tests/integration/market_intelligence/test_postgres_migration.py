@@ -378,6 +378,7 @@ def test_real_postgresql_v2_price_provenance_migration_preserves_legacy_rows(
             for constraint in inspector.get_unique_constraints("stock_price_revisions")
         }
         assert "uq_stock_price_revision_symbol_date_revision" in revision_constraints
+        assert inspector.get_foreign_keys("stock_price_revisions") == []
         canonical_columns = {
             column["name"]
             for column in inspector.get_columns("market_intelligence_canonical_bars")
@@ -455,23 +456,39 @@ def test_real_postgresql_v2_price_provenance_migration_preserves_legacy_rows(
         connection.execute(
             sa.text(
                 """
-                INSERT INTO stock_price_revisions (symbol, date, revision_number)
-                VALUES ('AAPL', '2026-08-27', 1)
+                INSERT INTO stock_prices (id, symbol, date, close, adj_close)
+                VALUES (2, 'MSFT', '2026-08-27', 500.0, 500.0)
                 """
             )
         )
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO stock_price_revisions (
+                    stock_price_id, symbol, date, revision_number
+                ) VALUES (2, 'MSFT', '2026-08-27', 1)
+                """
+            )
+        )
+        connection.execute(sa.text("DELETE FROM stock_prices WHERE id = 2"))
+        assert connection.execute(
+            sa.text(
+                "SELECT stock_price_id, count(*) FROM stock_price_revisions "
+                "WHERE symbol = 'MSFT' GROUP BY stock_price_id"
+            )
+        ).one() == (2, 1)
         with pytest.raises(sa.exc.DatabaseError, match="append-only"):
             with connection.begin_nested():
                 connection.execute(
                     sa.text(
                         "UPDATE stock_price_revisions SET content_hash = 'changed' "
-                        "WHERE symbol = 'AAPL'"
+                        "WHERE symbol = 'MSFT'"
                     )
                 )
         with pytest.raises(sa.exc.DatabaseError, match="append-only"):
             with connection.begin_nested():
                 connection.execute(
-                    sa.text("DELETE FROM stock_price_revisions WHERE symbol = 'AAPL'")
+                    sa.text("DELETE FROM stock_price_revisions WHERE symbol = 'MSFT'")
                 )
 
         _run(migration, connection, "downgrade")

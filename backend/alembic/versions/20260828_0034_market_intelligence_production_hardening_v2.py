@@ -45,7 +45,6 @@ def upgrade() -> None:
         sa.Column(
             "stock_price_id",
             sa.Integer(),
-            sa.ForeignKey("stock_prices.id", ondelete="SET NULL"),
             nullable=True,
         ),
         sa.Column("symbol", sa.String(length=20), nullable=False),

@@ -229,6 +229,7 @@ def test_v2_price_provenance_migration_is_additive_and_reversible() -> None:
             "normalization_version",
             "created_at",
         } <= revision_columns
+        assert inspector.get_foreign_keys(REVISION_TABLE) == []
 
         indexes = {
             index["name"]
@@ -240,6 +241,31 @@ def test_v2_price_provenance_migration_is_additive_and_reversible() -> None:
             for constraint in inspector.get_unique_constraints(REVISION_TABLE)
         }
         assert "uq_stock_price_revision_symbol_date_revision" in uniqueness
+
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO stock_prices (id, symbol, date, close, adj_close)
+                VALUES (2, 'MSFT', '2026-08-27', 500.0, 500.0)
+                """
+            )
+        )
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO stock_price_revisions (
+                    stock_price_id, symbol, date, revision_number, content_hash
+                ) VALUES (2, 'MSFT', '2026-08-27', 1, 'legacy-evidence')
+                """
+            )
+        )
+        connection.execute(sa.text("DELETE FROM stock_prices WHERE id = 2"))
+        assert connection.execute(
+            sa.text(
+                "SELECT stock_price_id, content_hash FROM stock_price_revisions "
+                "WHERE symbol = 'MSFT'"
+            )
+        ).one() == (2, "legacy-evidence")
 
         _run(migration, connection, "downgrade")
         downgraded_columns = {
@@ -288,3 +314,4 @@ def test_stock_price_revision_primary_key_does_not_create_a_redundant_index() ->
     indexes = {index.name for index in StockPriceRevision.__table__.indexes}
 
     assert "ix_stock_price_revisions_id" not in indexes
+    assert not StockPriceRevision.__table__.foreign_keys
