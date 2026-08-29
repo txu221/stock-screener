@@ -117,11 +117,19 @@ def price_row_content_hash(evidence: Mapping[str, Any]) -> str:
         "dividend_cash": evidence.get("dividend_cash"),
         "split_ratio": evidence.get("split_ratio"),
         "provider": evidence.get("provider"),
+        "source_timestamp": _timestamp_as_utc_iso(evidence.get("source_timestamp")),
         "normalization_version": evidence.get("normalization_version"),
     }
     return sha256(
         json.dumps(content, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     ).hexdigest()
+
+
+def _timestamp_as_utc_iso(value: Any) -> str | None:
+    timestamp = _timestamp_or_none(value)
+    if timestamp is None:
+        return None
+    return timestamp.astimezone(timezone.utc).isoformat()
 
 
 def stock_price_row_from_ohlcv(
@@ -132,6 +140,7 @@ def stock_price_row_from_ohlcv(
     provider: str | None = None,
     source_timestamp: datetime | str | None = None,
     normalization_version: str | None = None,
+    reconciled_at: datetime | str | None = None,
 ) -> dict[str, Any] | None:
     """Build a StockPrice mapping, skipping rows without complete finite OHLC."""
     ohlc = finite_ohlc_values(
@@ -146,6 +155,7 @@ def stock_price_row_from_ohlcv(
     adj_close = finite_float_or_none(row.get("Adj Close"))
     provider_name = (str(provider).strip() or None) if provider is not None else None
     timestamp = _timestamp_or_none(source_timestamp)
+    observed_at = _timestamp_or_none(reconciled_at)
     dividend_cash = _finite_or_none(row.get("Dividends"))
     split_ratio = _finite_or_none(row.get("Stock Splits"))
     adjustment_factor = (
@@ -158,6 +168,7 @@ def stock_price_row_from_ohlcv(
         and provider_name is not None
         and timestamp is not None
         and normalization_version == CANONICAL_PRICE_NORMALIZATION_VERSION
+        and observed_at is not None
     )
     normalized = {
         "symbol": symbol,
@@ -175,7 +186,7 @@ def stock_price_row_from_ohlcv(
         "source_timestamp": timestamp,
         "normalization_version": normalization_version,
         "price_basis": RECONCILED_PRICE_BASIS if reconciled else UNRECONCILED_PRICE_BASIS,
-        "reconciled_at": datetime.now(timezone.utc) if reconciled else None,
+        "reconciled_at": observed_at if reconciled else None,
     }
     normalized["content_hash"] = price_row_content_hash(normalized)
     return normalized

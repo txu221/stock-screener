@@ -21,7 +21,11 @@ def _session():
     return sessionmaker(bind=engine, autocommit=False, autoflush=False)()
 
 
-def _mapping(*, adjusted_close: float = 50.0):
+def _mapping(
+    *,
+    adjusted_close: float = 50.0,
+    source_timestamp: datetime = SOURCE_TIMESTAMP,
+):
     result = stock_price_row_from_ohlcv(
         symbol="SPLT",
         row_date=DAY,
@@ -36,8 +40,9 @@ def _mapping(*, adjusted_close: float = 50.0):
             "Stock Splits": 2.0,
         },
         provider="yahoo",
-        source_timestamp=SOURCE_TIMESTAMP,
+        source_timestamp=source_timestamp,
         normalization_version="canonical_price_adjustment_v2",
+        reconciled_at=source_timestamp,
     )
     assert result is not None
     return result
@@ -95,3 +100,20 @@ def test_changed_provider_history_appends_revision_and_updates_current_materiali
     assert current.revision_number == 1
     assert [revision.revision_number for revision in revisions] == [0, 1]
     assert revisions[0].content_hash != revisions[1].content_hash
+
+
+def test_changed_source_timestamp_appends_revision_and_updates_current_materialization():
+    db = _session()
+    first = _mapping()
+    second = _mapping(source_timestamp=datetime(2026, 8, 29, 16, tzinfo=timezone.utc))
+    persist_stock_price_mappings(db, {"SPLT": [first]})
+    db.commit()
+
+    result = persist_stock_price_mappings(db, {"SPLT": [second]})
+    db.commit()
+
+    current = db.query(StockPrice).one()
+    assert result == {"inserted": 0, "updated": 1}
+    assert current.revision_number == 1
+    assert current.source_timestamp == second["source_timestamp"].replace(tzinfo=None)
+    assert db.query(StockPriceRevision).count() == 2

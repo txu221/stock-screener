@@ -18,7 +18,6 @@ def persist_stock_price_mappings(
     chunk_size: int = 100,
 ) -> dict[str, int]:
     """Persist current price rows while retaining every distinct provider revision."""
-    del chunk_size
     candidates = [
         dict(row)
         for rows in price_rows_by_symbol.values()
@@ -27,27 +26,48 @@ def persist_stock_price_mappings(
     ]
     if not candidates:
         return {"inserted": 0, "updated": 0}
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be positive")
 
     pairs = {(row["symbol"], row["date"]) for row in candidates}
-    symbols = {symbol for symbol, _ in pairs}
-    dates = {row_date for _, row_date in pairs}
-    existing_rows = (
-        db.query(StockPrice)
-        .filter(StockPrice.symbol.in_(symbols), StockPrice.date.in_(dates))
-        .all()
-    )
-    current_by_pair = {(row.symbol, row.date): row for row in existing_rows}
-    existing_revisions = (
-        db.query(StockPriceRevision)
-        .filter(StockPriceRevision.symbol.in_(symbols), StockPriceRevision.date.in_(dates))
-        .all()
-    )
+    symbols = sorted({symbol for symbol, _ in pairs})
+    current_by_pair: dict[tuple[str, date], StockPrice] = {}
     revisions_by_pair: dict[tuple[str, date], list[StockPriceRevision]] = {}
-    for revision in existing_revisions:
-        revisions_by_pair.setdefault((revision.symbol, revision.date), []).append(revision)
+    for chunk_start in range(0, len(symbols), chunk_size):
+        chunk_symbols = symbols[chunk_start:chunk_start + chunk_size]
+        chunk_pairs = {pair for pair in pairs if pair[0] in chunk_symbols}
+        min_date = min(row_date for _, row_date in chunk_pairs)
+        max_date = max(row_date for _, row_date in chunk_pairs)
+        existing_rows = (
+            db.query(StockPrice)
+            .filter(
+                StockPrice.symbol.in_(chunk_symbols),
+                StockPrice.date >= min_date,
+                StockPrice.date <= max_date,
+            )
+            .all()
+        )
+        for row in existing_rows:
+            pair = (row.symbol, row.date)
+            if pair in chunk_pairs:
+                current_by_pair[pair] = row
+        existing_revisions = (
+            db.query(StockPriceRevision)
+            .filter(
+                StockPriceRevision.symbol.in_(chunk_symbols),
+                StockPriceRevision.date >= min_date,
+                StockPriceRevision.date <= max_date,
+            )
+            .all()
+        )
+        for revision in existing_revisions:
+            pair = (revision.symbol, revision.date)
+            if pair in chunk_pairs:
+                revisions_by_pair.setdefault(pair, []).append(revision)
 
     inserted = 0
     updated = 0
+    pending_revision_rows: list[tuple[StockPriceRevision, StockPrice]] = []
     for incoming in candidates:
         pair = (incoming["symbol"], incoming["date"])
         incoming["content_hash"] = incoming.get("content_hash") or price_row_content_hash(incoming)
@@ -64,7 +84,6 @@ def persist_stock_price_mappings(
             incoming["revision_number"] = revision_number
             current = StockPrice(**incoming)
             db.add(current)
-            db.flush()
             current_by_pair[pair] = current
             inserted += 1
         else:
@@ -85,10 +104,16 @@ def persist_stock_price_mappings(
                 setattr(current, field, value)
             updated += 1
 
-        revision = _revision_mapping(incoming, stock_price_id=current.id)
-        db.add(StockPriceRevision(**revision))
-        prior_revisions.append(StockPriceRevision(**revision))
+        revision = StockPriceRevision(
+            **_revision_mapping(incoming, stock_price_id=current.id)
+        )
+        prior_revisions.append(revision)
+        pending_revision_rows.append((revision, current))
 
+    db.flush()
+    for revision, current in pending_revision_rows:
+        revision.stock_price_id = current.id
+        db.add(revision)
     db.flush()
     return {"inserted": inserted, "updated": updated}
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 
@@ -19,6 +20,7 @@ FIXTURE_PATH = (
     Path(__file__).parents[1] / "fixtures" / "market_intelligence" / "corporate_actions.json"
 )
 CORPORATE_ACTION_FIXTURE = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+RECONCILED_AT = datetime(2026, 8, 28, 16, 5, tzinfo=timezone.utc)
 
 
 def _ohlcv_frame(closes: list[float], days: list[date]) -> pd.DataFrame:
@@ -136,6 +138,7 @@ def test_stock_price_row_from_ohlcv_preserves_corporate_action_evidence(case):
         provider=CORPORATE_ACTION_FIXTURE["provider"],
         source_timestamp=CORPORATE_ACTION_FIXTURE["source_timestamp"],
         normalization_version=CORPORATE_ACTION_FIXTURE["normalization_version"],
+        reconciled_at=RECONCILED_AT,
     )
 
     assert normalized is not None
@@ -159,6 +162,7 @@ def test_stock_price_row_from_ohlcv_marks_missing_adjusted_close_unreconciled():
         provider="yahoo",
         source_timestamp="2026-08-28T16:00:00+00:00",
         normalization_version="canonical_price_adjustment_v2",
+        reconciled_at=RECONCILED_AT,
     )
 
     assert normalized is not None
@@ -176,6 +180,7 @@ def test_stock_price_row_from_ohlcv_requires_a_non_blank_provider_for_reconcilia
         provider=" ",
         source_timestamp="2026-08-28T16:00:00+00:00",
         normalization_version="canonical_price_adjustment_v2",
+        reconciled_at=RECONCILED_AT,
     )
 
     assert normalized is not None
@@ -191,6 +196,7 @@ def test_stock_price_row_from_ohlcv_hash_is_deterministic_for_identical_evidence
         "provider": "yahoo",
         "source_timestamp": "2026-08-28T16:00:00+00:00",
         "normalization_version": "canonical_price_adjustment_v2",
+        "reconciled_at": RECONCILED_AT,
     }
 
     first = stock_price_row_from_ohlcv(**arguments)
@@ -200,3 +206,28 @@ def test_stock_price_row_from_ohlcv_hash_is_deterministic_for_identical_evidence
     assert second is not None
     assert first["content_hash"] == second["content_hash"]
     assert len(first["content_hash"]) == 64
+    assert first == second
+
+
+def test_stock_price_row_from_ohlcv_hash_changes_when_only_source_timestamp_changes():
+    arguments = {
+        "symbol": "HASH",
+        "row_date": date(2026, 6, 24),
+        "row": {"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Adj Close": 99.5, "Volume": 1_000_000},
+        "provider": "yahoo",
+        "normalization_version": "canonical_price_adjustment_v2",
+        "reconciled_at": RECONCILED_AT,
+    }
+
+    first = stock_price_row_from_ohlcv(
+        **arguments,
+        source_timestamp="2026-06-24T00:00:00+00:00",
+    )
+    second = stock_price_row_from_ohlcv(
+        **arguments,
+        source_timestamp="2026-06-25T00:00:00+00:00",
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first["content_hash"] != second["content_hash"]

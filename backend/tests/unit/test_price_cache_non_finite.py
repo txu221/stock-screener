@@ -114,8 +114,24 @@ def test_store_batch_in_cache_skips_non_finite_close_rows():
     assert [(row.symbol, row.date, row.close) for row in captured_rows] == [
         ("SPY", date(2026, 6, 25), 101.0)
     ]
-    assert captured_rows[0].provider == "yahoo"
-    assert captured_rows[0].normalization_version == "canonical_price_adjustment_v2"
+    assert captured_rows[0].provider is None
+    assert captured_rows[0].price_basis == "raw_ohlcv_unreconciled"
+
+
+def test_direct_cn_and_krx_fallbacks_are_labeled_as_yahoo_only_after_yahoo_fetch():
+    service = PriceCacheService(redis_client=None, session_factory=lambda: None)
+    data = _price_frame([101.0], [date(2026, 6, 25)])
+    service._fetch_kr_historical_data = lambda symbol, *, period: None  # type: ignore[assignment]
+    service._fetch_cn_historical_data = lambda symbol, *, period: None  # type: ignore[assignment]
+    service._fetch_yahoo_historical_data = lambda symbol, *, period: data  # type: ignore[assignment]
+
+    cn_data, cn_provider = service._fetch_direct_historical_data_with_provider("000001.SS", period="2y")
+    krx_data, krx_provider = service._fetch_direct_historical_data_with_provider("005930.KS", period="2y")
+
+    assert cn_data is data
+    assert krx_data is data
+    assert cn_provider == "yahoo"
+    assert krx_provider == "yahoo"
 
 
 def test_fetch_full_and_cache_uses_cleaned_price_frame_for_redis_db_and_return():
@@ -126,9 +142,9 @@ def test_fetch_full_and_cache_uses_cleaned_price_frame_for_redis_db_and_return()
     )
     captured = {}
 
-    service._fetch_direct_historical_data = lambda symbol, period: raw  # type: ignore[assignment]
+    service._fetch_direct_historical_data_with_provider = lambda symbol, period: (raw, "yahoo")  # type: ignore[assignment]
     service._store_recent_in_redis = lambda symbol, data, market=None: captured.setdefault("redis", data)  # type: ignore[assignment]
-    service._store_in_database = lambda symbol, data: captured.setdefault("db", data)  # type: ignore[assignment]
+    service._store_in_database = lambda symbol, data, **kwargs: captured.setdefault("db", data)  # type: ignore[assignment]
 
     result = service._fetch_full_and_cache("SPY", "2y")
 
@@ -147,9 +163,9 @@ def test_incremental_merge_uses_cleaned_price_frame_for_redis_db_and_return():
     )
     captured = {}
 
-    service._fetch_direct_historical_data = lambda symbol, period: raw_incremental  # type: ignore[assignment]
+    service._fetch_direct_historical_data_with_provider = lambda symbol, period: (raw_incremental, "yahoo")  # type: ignore[assignment]
     service._store_recent_in_redis = lambda symbol, data, market=None: captured.setdefault("redis", data)  # type: ignore[assignment]
-    service._store_in_database = lambda symbol, data: captured.setdefault("db", data)  # type: ignore[assignment]
+    service._store_in_database = lambda symbol, data, **kwargs: captured.setdefault("db", data)  # type: ignore[assignment]
 
     result = service._fetch_incremental_and_merge(
         "SPY",

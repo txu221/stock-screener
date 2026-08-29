@@ -235,6 +235,7 @@ class DailyPriceBundleService:
                     provider=price.get("provider"),
                     source_timestamp=price.get("source_timestamp"),
                     normalization_version=price.get("normalization_version"),
+                    reconciled_at=price.get("reconciled_at"),
                 )
                 if price_row is None:
                     raise ValueError(
@@ -327,6 +328,7 @@ class DailyPriceBundleService:
                 provider=row.provider,
                 source_timestamp=row.source_timestamp,
                 normalization_version=row.normalization_version,
+                reconciled_at=row.reconciled_at,
             )
             if normalized_row is None:
                 continue
@@ -346,6 +348,7 @@ class DailyPriceBundleService:
                     "source_timestamp": normalized_row["source_timestamp"],
                     "normalization_version": normalized_row["normalization_version"],
                     "price_basis": normalized_row["price_basis"],
+                    "reconciled_at": normalized_row["reconciled_at"],
                 }
             )
         latest_by_symbol = {

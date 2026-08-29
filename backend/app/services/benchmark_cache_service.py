@@ -387,13 +387,13 @@ class BenchmarkCacheService:
             required_as_of_date=required_as_of_date,
         )
 
-    def _fetch_normalized_benchmark(
+    def _fetch_normalized_benchmark_with_provider(
         self,
         benchmark_symbol: str,
         period: str,
         market: str,
         required_as_of_date: date | None = None,
-    ) -> Optional[pd.DataFrame]:
+    ) -> tuple[Optional[pd.DataFrame], str | None]:
         normalized_market = self._normalize_market(market)
         if normalized_market == "CN":
             try:
@@ -428,13 +428,29 @@ class BenchmarkCacheService:
                             benchmark_symbol,
                             period,
                         )
-                        return data
+                        return data, "cn_market_data"
                 else:
                     logger.info(
                         "CN index provider returned no finite benchmark %s data; falling back to yfinance",
                         benchmark_symbol,
                     )
-        return self._fetch_normalized_from_yfinance(benchmark_symbol, period)
+        return self._fetch_normalized_from_yfinance(benchmark_symbol, period), "yahoo"
+
+    def _fetch_normalized_benchmark(
+        self,
+        benchmark_symbol: str,
+        period: str,
+        market: str,
+        required_as_of_date: date | None = None,
+    ) -> Optional[pd.DataFrame]:
+        """Compatibility wrapper for callers that do not persist provenance."""
+        data, _provider = self._fetch_normalized_benchmark_with_provider(
+            benchmark_symbol,
+            period,
+            market,
+            required_as_of_date=required_as_of_date,
+        )
+        return data
 
     def _fetch_and_cache_benchmark(
         self,
@@ -451,7 +467,7 @@ class BenchmarkCacheService:
         # No Redis means no distributed coordination is possible; fetch directly
         # and persist to DB so subsequent calls can still hit local cache.
         if not self._redis_client:
-            benchmark_data = self._fetch_normalized_benchmark(
+            benchmark_data, provider = self._fetch_normalized_benchmark_with_provider(
                 benchmark_symbol,
                 period,
                 market,
@@ -459,7 +475,12 @@ class BenchmarkCacheService:
             )
             if benchmark_data is None:
                 return None
-            self._store_in_database(benchmark_symbol=benchmark_symbol, data=benchmark_data)
+            self._store_in_database(
+                benchmark_symbol=benchmark_symbol,
+                data=benchmark_data,
+                provider=provider,
+                reconciled_at=datetime.now(timezone.utc),
+            )
             return benchmark_data
 
         lock_key = self._redis_lock_key(benchmark_symbol, period, market=market)
@@ -490,7 +511,7 @@ class BenchmarkCacheService:
             # We have the lock - fetch from the market-specific benchmark provider.
             logger.info("Fetching benchmark %s for market %s (%s)", benchmark_symbol, market, period)
 
-            benchmark_data = self._fetch_normalized_benchmark(
+            benchmark_data, provider = self._fetch_normalized_benchmark_with_provider(
                 benchmark_symbol,
                 period,
                 market,
@@ -510,7 +531,12 @@ class BenchmarkCacheService:
             )
 
             # Persist to database
-            self._store_in_database(benchmark_symbol=benchmark_symbol, data=benchmark_data)
+            self._store_in_database(
+                benchmark_symbol=benchmark_symbol,
+                data=benchmark_data,
+                provider=provider,
+                reconciled_at=datetime.now(timezone.utc),
+            )
 
             return benchmark_data
 
@@ -555,7 +581,7 @@ class BenchmarkCacheService:
 
         # Timeout - fetch directly as fallback
         logger.warning("Timeout waiting for benchmark %s %s cache - fetching directly", benchmark_symbol, period)
-        benchmark_data = self._fetch_normalized_benchmark(
+        benchmark_data, provider = self._fetch_normalized_benchmark_with_provider(
             benchmark_symbol,
             period,
             market,
@@ -564,7 +590,12 @@ class BenchmarkCacheService:
         if benchmark_data is not None:
             # Persist fallback fetch so future calls can use DB cache even when
             # lock-holder failed to populate Redis.
-            self._store_in_database(benchmark_symbol=benchmark_symbol, data=benchmark_data)
+            self._store_in_database(
+                benchmark_symbol=benchmark_symbol,
+                data=benchmark_data,
+                provider=provider,
+                reconciled_at=datetime.now(timezone.utc),
+            )
         return benchmark_data
 
     def _store_in_redis(
@@ -602,7 +633,14 @@ class BenchmarkCacheService:
         except Exception as e:
             logger.error(f"Error storing in Redis: {e}", exc_info=True)
 
-    def _store_in_database(self, benchmark_symbol: str, data: pd.DataFrame) -> None:
+    def _store_in_database(
+        self,
+        benchmark_symbol: str,
+        data: pd.DataFrame,
+        *,
+        provider: str | None = None,
+        reconciled_at: datetime | None = None,
+    ) -> None:
         """
         Store benchmark data in database (StockPrice table).
 
@@ -619,8 +657,6 @@ class BenchmarkCacheService:
             df = data.reset_index()
 
             price_rows: list[dict[str, Any]] = []
-            source_timestamp = datetime.now(timezone.utc)
-
             for _, row in df.iterrows():
                 row_date = row['Date']
 
@@ -635,9 +671,10 @@ class BenchmarkCacheService:
                         symbol=benchmark_symbol,
                         row_date=row_date,
                         row=row,
-                        provider="yahoo",
-                        source_timestamp=source_timestamp,
+                        provider=provider,
+                        source_timestamp=datetime.combine(row_date, datetime.min.time(), tzinfo=timezone.utc),
                         normalization_version=CANONICAL_PRICE_NORMALIZATION_VERSION,
+                        reconciled_at=reconciled_at,
                     )
                     if price_dict is None:
                         continue

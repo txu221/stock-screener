@@ -538,7 +538,7 @@ class PriceCacheService:
         Fetch full historical data from the market provider and cache it.
         """
         try:
-            data = self._fetch_direct_historical_data(symbol, period=period)
+            data, provider = self._fetch_direct_historical_data_with_provider(symbol, period=period)
 
             data = normalize_price_frame(data)
             if data is None:
@@ -551,7 +551,12 @@ class PriceCacheService:
             self._store_recent_in_redis(symbol, data, market=market)
 
             # Persist to database (full data)
-            self._store_in_database(symbol, data)
+            self._store_in_database(
+                symbol,
+                data,
+                provider=provider,
+                reconciled_at=datetime.now(timezone.utc),
+            )
 
             return data
 
@@ -620,23 +625,35 @@ class PriceCacheService:
             logger.warning("CN historical fetch failed for %s: %s", symbol, exc)
             return None
 
-    def _fetch_direct_historical_data(self, symbol: str, *, period: str) -> Optional[pd.DataFrame]:
+    def _fetch_direct_historical_data_with_provider(
+        self,
+        symbol: str,
+        *,
+        period: str,
+    ) -> tuple[Optional[pd.DataFrame], str | None]:
         if self._is_kr_price_symbol(symbol):
             krx_data = self._fetch_kr_historical_data(symbol, period=period)
             if krx_data is not None and not krx_data.empty:
-                return krx_data
+                return krx_data, "krx"
         if self._is_cn_price_symbol(symbol):
             cn_data = self._fetch_cn_historical_data(symbol, period=period)
             if cn_data is not None and not cn_data.empty:
-                return cn_data
+                return cn_data, "cn_market_data"
             if str(symbol or "").strip().upper().endswith(".BJ"):
-                return None
+                return None, None
 
+        return self._fetch_yahoo_historical_data(symbol, period=period), "yahoo"
+
+    def _fetch_yahoo_historical_data(self, symbol: str, *, period: str) -> Optional[pd.DataFrame]:
+        """Fetch directly from Yahoo after any market-native branch declines."""
         from .yfinance_service import YFinanceService
 
-        yfinance_service = YFinanceService()
-        # IMPORTANT: use_cache=False to avoid circular dependency
-        return yfinance_service.get_historical_data(symbol, period=period, use_cache=False)
+        return YFinanceService().get_historical_data(symbol, period=period, use_cache=False)
+
+    def _fetch_direct_historical_data(self, symbol: str, *, period: str) -> Optional[pd.DataFrame]:
+        """Compatibility wrapper for consumers that only need market data."""
+        data, _provider = self._fetch_direct_historical_data_with_provider(symbol, period=period)
+        return data
 
     def _fetch_incremental_and_merge(
         self,
@@ -675,7 +692,7 @@ class PriceCacheService:
                 logger.info(f"{symbol} is {days_missing} days old - fetching incremental update")
 
             # Fetch only recent data (last 7 days to ensure overlap)
-            new_data = self._fetch_direct_historical_data(symbol, period="7d")
+            new_data, provider = self._fetch_direct_historical_data_with_provider(symbol, period="7d")
 
             new_data = normalize_price_frame(new_data)
             if new_data is None:
@@ -733,7 +750,12 @@ class PriceCacheService:
 
             # Update cache with merged data
             self._store_recent_in_redis(symbol, merged_data, market=market)
-            self._store_in_database(symbol, new_data_filtered)  # Only persist new/updated rows
+            self._store_in_database(
+                symbol,
+                new_data_filtered,
+                provider=provider,
+                reconciled_at=datetime.now(timezone.utc),
+            )  # Only persist new/updated rows
 
             return merged_data
 
@@ -1439,7 +1461,14 @@ class PriceCacheService:
             logger.error(f"Error scanning for cached symbols: {e}", exc_info=True)
             return []
 
-    def _store_in_database(self, symbol: str, data: pd.DataFrame) -> None:
+    def _store_in_database(
+        self,
+        symbol: str,
+        data: pd.DataFrame,
+        *,
+        provider: str | None = None,
+        reconciled_at: datetime | None = None,
+    ) -> None:
         """
         Store price data in database (StockPrice table).
 
@@ -1459,7 +1488,6 @@ class PriceCacheService:
             if df.empty:
                 return
 
-            source_timestamp = datetime.now(timezone.utc)
             price_rows: list[dict[str, Any]] = []
 
             for _, row in df.iterrows():
@@ -1477,9 +1505,10 @@ class PriceCacheService:
                         symbol=symbol,
                         row_date=row_date,
                         row=row,
-                        provider=self._price_provider_for_symbol(symbol),
-                        source_timestamp=source_timestamp,
+                        provider=provider,
+                        source_timestamp=self._source_timestamp_for_row(row_date),
                         normalization_version=CANONICAL_PRICE_NORMALIZATION_VERSION,
+                        reconciled_at=reconciled_at,
                     )
                     if price_dict is None:
                         continue
@@ -1551,7 +1580,11 @@ class PriceCacheService:
 
             # Optionally store in database
             if also_store_db:
-                self._store_in_database(symbol, data)
+                self._store_in_database(
+                    symbol,
+                    data,
+                    reconciled_at=datetime.now(timezone.utc),
+                )
                 logger.debug(f"Stored {symbol} in database ({len(data)} rows)")
 
         except Exception as e:
@@ -1653,11 +1686,19 @@ class PriceCacheService:
 
         # Batch DB writes
         if also_store_db:
-            self._store_batch_in_database(batch_data)
+            self._store_batch_in_database(
+                batch_data,
+                reconciled_at=datetime.now(timezone.utc),
+            )
 
         return stored
 
-    def _store_batch_in_database(self, batch_data: Dict[str, pd.DataFrame]) -> None:
+    def _store_batch_in_database(
+        self,
+        batch_data: Dict[str, pd.DataFrame],
+        *,
+        reconciled_at: datetime | None = None,
+    ) -> None:
         """
         Store multiple symbols' price data in database in a single transaction.
 
@@ -1696,9 +1737,9 @@ class PriceCacheService:
                             symbol=symbol,
                             row_date=row_date,
                             row=row,
-                            provider=self._price_provider_for_symbol(symbol),
-                            source_timestamp=datetime.now(timezone.utc),
+                            source_timestamp=self._source_timestamp_for_row(row_date),
                             normalization_version=CANONICAL_PRICE_NORMALIZATION_VERSION,
+                            reconciled_at=reconciled_at,
                         )
                         if price_dict is None:
                             continue
@@ -1728,12 +1769,9 @@ class PriceCacheService:
         finally:
             db.close()
 
-    def _price_provider_for_symbol(self, symbol: str) -> str:
-        if self._is_kr_price_symbol(symbol):
-            return "krx"
-        if self._is_cn_price_symbol(symbol):
-            return "cn_market_data"
-        return "yahoo"
+    @staticmethod
+    def _source_timestamp_for_row(row_date: date) -> datetime:
+        return datetime.combine(row_date, time.min, tzinfo=timezone.utc)
 
     @staticmethod
     def _market_for_symbol(
