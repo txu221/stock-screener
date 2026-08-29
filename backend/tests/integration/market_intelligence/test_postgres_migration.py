@@ -7,6 +7,7 @@ explicitly supplied Phase 2 PostgreSQL database.
 from __future__ import annotations
 
 import importlib.util
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -288,6 +289,24 @@ def test_real_postgresql_v2_price_provenance_migration_preserves_legacy_rows(
                     run_id INTEGER NOT NULL,
                     symbol VARCHAR(8) NOT NULL,
                     trading_date DATE NOT NULL,
+                    provider VARCHAR(32) NOT NULL,
+                    provider_symbol VARCHAR(32) NOT NULL,
+                    raw_trading_date TEXT NOT NULL,
+                    raw_open NUMERIC(24, 10) NOT NULL,
+                    raw_high NUMERIC(24, 10) NOT NULL,
+                    raw_low NUMERIC(24, 10) NOT NULL,
+                    raw_close NUMERIC(24, 10) NOT NULL,
+                    provider_adjusted_close NUMERIC(24, 10) NOT NULL,
+                    adjustment_factor NUMERIC(24, 10) NOT NULL,
+                    adjusted_open NUMERIC(24, 10) NOT NULL,
+                    adjusted_high NUMERIC(24, 10) NOT NULL,
+                    adjusted_low NUMERIC(24, 10) NOT NULL,
+                    adjusted_close NUMERIC(24, 10) NOT NULL,
+                    provider_volume NUMERIC(24, 10) NOT NULL,
+                    source_timestamp TIMESTAMPTZ NULL,
+                    ingestion_timestamp TIMESTAMPTZ NOT NULL,
+                    price_basis VARCHAR(64) NOT NULL,
+                    normalization_version VARCHAR(64) NOT NULL,
                     PRIMARY KEY (run_id, symbol, trading_date)
                 )
                 """
@@ -301,6 +320,28 @@ def test_real_postgresql_v2_price_provenance_migration_preserves_legacy_rows(
                 """
             )
         )
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO market_intelligence_canonical_bars (
+                    run_id, symbol, trading_date, provider, provider_symbol,
+                    raw_trading_date, raw_open, raw_high, raw_low, raw_close,
+                    provider_adjusted_close, adjustment_factor, adjusted_open,
+                    adjusted_high, adjusted_low, adjusted_close, provider_volume,
+                    source_timestamp, ingestion_timestamp, price_basis,
+                    normalization_version
+                ) VALUES (
+                    17, 'XLK', '2026-08-27', 'yahoo', 'XLK',
+                    '2026-08-27T00:00:00Z', 100.0, 102.0, 99.0, 101.0,
+                    100.5, 0.9950495050, 99.5049505000, 101.4950495100,
+                    98.5099009950, 100.5, 1234567.0,
+                    '2026-08-28T01:00:00Z', '2026-08-28T02:00:00Z',
+                    'yahoo_adjusted_ohlc_provider_volume',
+                    'market_intelligence_adjusted_ohlcv_v1'
+                )
+                """
+            )
+        )
 
         _run(migration, connection, "upgrade")
         inspector = sa.inspect(connection)
@@ -310,22 +351,28 @@ def test_real_postgresql_v2_price_provenance_migration_preserves_legacy_rows(
         }
         expected_v2_columns = {
             "provider", "source_timestamp", "normalization_version", "content_hash",
-            "revision_number", "adjustment_factor", "dividend_cash", "split_ratio",
+            "revision_number", "price_basis", "reconciled_at", "adjustment_factor",
+            "dividend_cash", "split_ratio",
         }
         assert expected_v2_columns <= set(columns)
         assert all(columns[name]["nullable"] for name in expected_v2_columns)
         assert connection.execute(
             sa.text(
-                "SELECT symbol, close, adj_close, provider, revision_number "
+                "SELECT symbol, close, adj_close, provider, revision_number, "
+                "price_basis, reconciled_at "
                 "FROM stock_prices WHERE symbol = 'AAPL'"
             )
-        ).one() == ("AAPL", 201.0, 200.5, None, None)
+        ).one() == ("AAPL", 201.0, 200.5, None, None, None, None)
 
         revision_indexes = {
             index["name"]
             for index in inspector.get_indexes("stock_price_revisions")
         }
-        assert "ix_stock_price_revisions_symbol_date" in revision_indexes
+        assert {
+            "ix_stock_price_revisions_stock_price_id",
+            "ix_stock_price_revisions_symbol_date",
+            "ix_stock_price_revisions_symbol_date_hash",
+        } <= revision_indexes
         revision_constraints = {
             constraint["name"]
             for constraint in inspector.get_unique_constraints("stock_price_revisions")
@@ -336,9 +383,114 @@ def test_real_postgresql_v2_price_provenance_migration_preserves_legacy_rows(
             for column in inspector.get_columns("market_intelligence_canonical_bars")
         }
         assert {"dividend_cash", "split_ratio"} <= canonical_columns
+        legacy_bar = connection.execute(
+            sa.text(
+                """
+                SELECT run_id, symbol, trading_date, provider, provider_symbol,
+                    raw_trading_date, raw_open, raw_high, raw_low, raw_close,
+                    provider_adjusted_close, adjustment_factor, adjusted_open,
+                    adjusted_high, adjusted_low, adjusted_close, provider_volume,
+                    source_timestamp, ingestion_timestamp, price_basis,
+                    normalization_version, dividend_cash, split_ratio
+                FROM market_intelligence_canonical_bars
+                WHERE run_id = 17 AND symbol = 'XLK'
+                """
+            )
+        ).mappings().one()
+        assert {
+            name: legacy_bar[name]
+            for name in (
+                "run_id", "symbol", "trading_date", "provider", "provider_symbol",
+                "raw_trading_date", "source_timestamp", "ingestion_timestamp",
+                "price_basis", "normalization_version",
+            )
+        } == {
+            "run_id": 17,
+            "symbol": "XLK",
+            "trading_date": date(2026, 8, 27),
+            "provider": "yahoo",
+            "provider_symbol": "XLK",
+            "raw_trading_date": "2026-08-27T00:00:00Z",
+            "source_timestamp": datetime(2026, 8, 28, 1, tzinfo=timezone.utc),
+            "ingestion_timestamp": datetime(2026, 8, 28, 2, tzinfo=timezone.utc),
+            "price_basis": "yahoo_adjusted_ohlc_provider_volume",
+            "normalization_version": "market_intelligence_adjusted_ohlcv_v1",
+        }
+        assert tuple(
+            float(legacy_bar[name])
+            for name in (
+                "raw_open", "raw_high", "raw_low", "raw_close",
+                "provider_adjusted_close", "adjustment_factor", "adjusted_open",
+                "adjusted_high", "adjusted_low", "adjusted_close", "provider_volume",
+            )
+        ) == (
+            100.0, 102.0, 99.0, 101.0, 100.5, 0.9950495050, 99.5049505000,
+            101.4950495100, 98.5099009950, 100.5, 1234567.0,
+        )
+        assert legacy_bar["dividend_cash"] is None
+        assert legacy_bar["split_ratio"] is None
+
+        trigger_names = set(
+            connection.execute(
+                sa.text(
+                    """
+                    SELECT tgname FROM pg_trigger
+                    WHERE tgrelid = 'stock_price_revisions'::regclass
+                    AND NOT tgisinternal
+                    """
+                )
+            ).scalars()
+        )
+        assert trigger_names == {"trg_stock_price_revisions_append_only"}
+        trigger_definition = connection.execute(
+            sa.text(
+                """
+                SELECT pg_get_triggerdef(oid) FROM pg_trigger
+                WHERE tgname = 'trg_stock_price_revisions_append_only'
+                """
+            )
+        ).scalar_one()
+        assert "BEFORE DELETE OR UPDATE" in trigger_definition
+        assert "stock_price_revisions_reject_mutation" in trigger_definition
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO stock_price_revisions (symbol, date, revision_number)
+                VALUES ('AAPL', '2026-08-27', 1)
+                """
+            )
+        )
+        with pytest.raises(sa.exc.DatabaseError, match="append-only"):
+            with connection.begin_nested():
+                connection.execute(
+                    sa.text(
+                        "UPDATE stock_price_revisions SET content_hash = 'changed' "
+                        "WHERE symbol = 'AAPL'"
+                    )
+                )
+        with pytest.raises(sa.exc.DatabaseError, match="append-only"):
+            with connection.begin_nested():
+                connection.execute(
+                    sa.text("DELETE FROM stock_price_revisions WHERE symbol = 'AAPL'")
+                )
 
         _run(migration, connection, "downgrade")
         assert "stock_price_revisions" not in sa.inspect(connection).get_table_names()
         assert connection.execute(
+            sa.text("SELECT to_regprocedure('stock_price_revisions_reject_mutation()')")
+        ).scalar_one() is None
+        assert connection.execute(
             sa.text("SELECT symbol, close, adj_close FROM stock_prices WHERE symbol = 'AAPL'")
         ).one() == ("AAPL", 201.0, 200.5)
+        legacy_bar_after_downgrade = connection.execute(
+            sa.text(
+                """
+                SELECT raw_close, price_basis, normalization_version
+                FROM market_intelligence_canonical_bars
+                WHERE run_id = 17 AND symbol = 'XLK'
+                """
+            )
+        ).mappings().one()
+        assert float(legacy_bar_after_downgrade["raw_close"]) == 101.0
+        assert legacy_bar_after_downgrade["price_basis"] == "yahoo_adjusted_ohlc_provider_volume"
+        assert legacy_bar_after_downgrade["normalization_version"] == "market_intelligence_adjusted_ohlcv_v1"

@@ -1,9 +1,11 @@
 """Stock-related database models"""
+import sqlalchemy as sa
 from sqlalchemy import (
     BigInteger,
     Column,
     Date,
     DateTime,
+    event,
     Float,
     ForeignKey,
     Index,
@@ -35,8 +37,10 @@ class StockPrice(Base):
     provider = Column(String(32))
     source_timestamp = Column(DateTime(timezone=True))
     normalization_version = Column(String(64))
+    price_basis = Column(String(64))
     content_hash = Column(String(64))
     revision_number = Column(Integer)
+    reconciled_at = Column(DateTime(timezone=True))
     adjustment_factor = Column(Float)
     dividend_cash = Column(Float)
     split_ratio = Column(Float)
@@ -53,7 +57,7 @@ class StockPriceRevision(Base):
 
     __tablename__ = "stock_price_revisions"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     stock_price_id = Column(
         Integer,
         ForeignKey("stock_prices.id", ondelete="SET NULL"),
@@ -75,6 +79,7 @@ class StockPriceRevision(Base):
     provider = Column(String(32), nullable=True)
     source_timestamp = Column(DateTime(timezone=True), nullable=True)
     normalization_version = Column(String(64), nullable=True)
+    price_basis = Column(String(64), nullable=True)
     content_hash = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -93,6 +98,14 @@ class StockPriceRevision(Base):
             "content_hash",
         ),
     )
+
+
+def _raise_append_only_revision_error(*_args) -> None:
+    raise sa.exc.InvalidRequestError("stock_price_revisions is append-only")
+
+
+event.listen(StockPriceRevision, "before_update", _raise_append_only_revision_error)
+event.listen(StockPriceRevision, "before_delete", _raise_append_only_revision_error)
 
 
 class StockFundamental(Base):

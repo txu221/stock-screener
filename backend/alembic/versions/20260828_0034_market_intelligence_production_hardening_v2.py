@@ -28,8 +28,13 @@ def upgrade() -> None:
         "stock_prices",
         sa.Column("normalization_version", sa.String(length=64), nullable=True),
     )
+    op.add_column("stock_prices", sa.Column("price_basis", sa.String(length=64), nullable=True))
     op.add_column("stock_prices", sa.Column("content_hash", sa.String(length=64), nullable=True))
     op.add_column("stock_prices", sa.Column("revision_number", sa.Integer(), nullable=True))
+    op.add_column(
+        "stock_prices",
+        sa.Column("reconciled_at", sa.DateTime(timezone=True), nullable=True),
+    )
     op.add_column("stock_prices", sa.Column("adjustment_factor", sa.Float(), nullable=True))
     op.add_column("stock_prices", sa.Column("dividend_cash", sa.Float(), nullable=True))
     op.add_column("stock_prices", sa.Column("split_ratio", sa.Float(), nullable=True))
@@ -58,6 +63,7 @@ def upgrade() -> None:
         sa.Column("provider", sa.String(length=32), nullable=True),
         sa.Column("source_timestamp", sa.DateTime(timezone=True), nullable=True),
         sa.Column("normalization_version", sa.String(length=64), nullable=True),
+        sa.Column("price_basis", sa.String(length=64), nullable=True),
         sa.Column("content_hash", sa.String(length=64), nullable=True),
         sa.Column(
             "created_at",
@@ -87,6 +93,25 @@ def upgrade() -> None:
         "stock_price_revisions",
         ["symbol", "date", "content_hash"],
     )
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(
+            """
+            CREATE FUNCTION stock_price_revisions_reject_mutation()
+            RETURNS trigger AS $$
+            BEGIN
+                RAISE EXCEPTION 'stock_price_revisions is append-only'
+                    USING ERRCODE = '55000';
+            END;
+            $$ LANGUAGE plpgsql
+            """
+        )
+        op.execute(
+            """
+            CREATE TRIGGER trg_stock_price_revisions_append_only
+            BEFORE UPDATE OR DELETE ON stock_price_revisions
+            FOR EACH ROW EXECUTE FUNCTION stock_price_revisions_reject_mutation()
+            """
+        )
 
     op.add_column(
         "market_intelligence_canonical_bars",
@@ -101,6 +126,13 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_column("market_intelligence_canonical_bars", "split_ratio")
     op.drop_column("market_intelligence_canonical_bars", "dividend_cash")
+
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(
+            "DROP TRIGGER IF EXISTS trg_stock_price_revisions_append_only "
+            "ON stock_price_revisions"
+        )
+        op.execute("DROP FUNCTION IF EXISTS stock_price_revisions_reject_mutation()")
 
     op.drop_index(
         "ix_stock_price_revisions_symbol_date_hash",
@@ -121,6 +153,8 @@ def downgrade() -> None:
     op.drop_column("stock_prices", "adjustment_factor")
     op.drop_column("stock_prices", "revision_number")
     op.drop_column("stock_prices", "content_hash")
+    op.drop_column("stock_prices", "reconciled_at")
+    op.drop_column("stock_prices", "price_basis")
     op.drop_column("stock_prices", "normalization_version")
     op.drop_column("stock_prices", "source_timestamp")
     op.drop_column("stock_prices", "provider")
