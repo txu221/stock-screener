@@ -663,6 +663,141 @@ def test_short_session_history_uses_typed_insufficient_history_category(
     assert failure.stage == "validation"
 
 
+def test_candidate_assembly_exception_is_logged_at_calculation_boundary(
+    monkeypatch,
+    caplog,
+) -> None:
+    from app.use_cases.market_intelligence import build_sector_snapshot as module
+
+    as_of = date(2026, 5, 15)
+
+    def fail_candidate_assembly(*args, **kwargs):
+        raise ArithmeticError("candidate assembly failed")
+
+    monkeypatch.setattr(
+        module,
+        "build_candidate_snapshot",
+        fail_candidate_assembly,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(ArithmeticError, match="candidate assembly failed"):
+            _runner(_batch(as_of), _sessions(as_of)).execute(_command(as_of))
+
+    failure = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "market_intelligence_run_failed"
+    )
+    assert failure.failure_category == "INVALID_MARKET_DATA"
+    assert failure.stage == "calculation"
+
+
+@pytest.mark.parametrize(
+    ("lifecycle_method", "batch"),
+    (
+        ("mark_completed", _batch(date(2026, 5, 15))),
+        (
+            "mark_failed",
+            _batch(
+                date(2026, 5, 15),
+                request_failure=RequestFailure(
+                    "PROVIDER_TIMEOUT",
+                    "Yahoo timed out",
+                ),
+            ),
+        ),
+    ),
+)
+def test_feature_run_lifecycle_failure_is_database_failure(
+    lifecycle_method,
+    batch,
+    caplog,
+) -> None:
+    as_of = date(2026, 5, 15)
+
+    class _FailingLifecycleUow(SqlUnitOfWork):
+        def __enter__(self):
+            uow = super().__enter__()
+
+            def fail(*args, **kwargs):
+                raise RuntimeError(f"{lifecycle_method} failed")
+
+            setattr(uow.feature_runs, lifecycle_method, fail)
+            return uow
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(RuntimeError, match=f"{lifecycle_method} failed"):
+            _runner(
+                batch,
+                _sessions(as_of),
+                uow_factory=lambda: _FailingLifecycleUow(SessionLocal),
+            ).execute(_command(as_of))
+
+    failure = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "market_intelligence_run_failed"
+    )
+    assert failure.failure_category == "DATABASE_FAILURE"
+    assert failure.stage == "persistence"
+
+
+def test_lifecycle_time_is_persistence_and_pointer_swap_time_is_publication() -> None:
+    as_of = date(2026, 5, 15)
+
+    class _ControlledTimer:
+        value = 100.0
+
+        def __call__(self) -> float:
+            return self.value
+
+        def advance(self, seconds: float) -> None:
+            self.value += seconds
+
+    timer = _ControlledTimer()
+
+    class _TimedUow(SqlUnitOfWork):
+        def __enter__(self):
+            uow = super().__enter__()
+
+            def add_time(repository, method_name, seconds):
+                original = getattr(repository, method_name)
+
+                def timed(*args, **kwargs):
+                    timer.advance(seconds)
+                    return original(*args, **kwargs)
+
+                setattr(repository, method_name, timed)
+
+            add_time(uow.market_intelligence, "persist_candidate", 0.1)
+            add_time(uow.feature_runs, "mark_completed", 0.2)
+            add_time(
+                uow.feature_runs,
+                "publish_atomically_if_not_older",
+                0.3,
+            )
+            return uow
+
+    result = _runner(
+        _batch(as_of),
+        _sessions(as_of),
+        uow_factory=lambda: _TimedUow(SessionLocal),
+        monotonic=timer,
+    ).execute(_command(as_of))
+
+    with SessionLocal() as session:
+        audit = session.get(MarketIntelligenceRunAudit, result.run_id)
+
+    assert tuple(audit.stage_timings_json) == MARKET_INTELLIGENCE_STAGE_TIMING_KEYS
+    assert all(
+        math.isfinite(value) and value >= 0
+        for value in audit.stage_timings_json.values()
+    )
+    assert audit.stage_timings_json["persistence_ms"] == pytest.approx(300.0)
+    assert audit.stage_timings_json["publication_ms"] == pytest.approx(300.0)
+
+
 def test_provider_history_outside_session_reference_is_rejected_not_silently_cropped() -> None:
     as_of = date(2026, 5, 15)
     provider_batch = _batch(as_of)

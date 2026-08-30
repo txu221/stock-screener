@@ -400,6 +400,8 @@ class BuildSectorSnapshotUseCase:
                     if previous is not None
                     else {}
                 )
+                execution.stage = "calculation"
+                candidate_started = self._monotonic()
                 candidate = build_candidate_snapshot(
                     request_succeeded=batch.request_failure is None,
                     as_of=command.as_of,
@@ -413,7 +415,13 @@ class BuildSectorSnapshotUseCase:
                     calculation_timestamp=prepared.timestamp,
                     previous_published=previous_by_symbol,
                 )
+                prepared.stage_timings["calculation_ms"] += elapsed_milliseconds(
+                    candidate_started,
+                    self._monotonic(),
+                )
                 audit = self._build_audit(prepared, candidate, command.as_of)
+                execution.stage = "persistence"
+                persistence_started = self._monotonic()
                 run = uow.feature_runs.start_run(
                     as_of_date=command.as_of,
                     run_type=RunType.DAILY_SNAPSHOT,
@@ -428,7 +436,6 @@ class BuildSectorSnapshotUseCase:
                     },
                 )
                 run_id = run.id
-                persistence_started = self._monotonic()
                 uow.market_intelligence.persist_candidate(
                     run.id,
                     audit,
@@ -436,21 +443,31 @@ class BuildSectorSnapshotUseCase:
                     prepared.validation.rejections,
                     candidate.snapshots,
                 )
-                prepared.stage_timings["persistence_ms"] = elapsed_milliseconds(
-                    persistence_started, self._monotonic()
-                )
-
-                execution.stage = "publication"
-                publication_started = self._monotonic()
-                publication_status = self._finalize_feature_run(
+                publication_status = self._persist_feature_run_lifecycle(
                     uow,
                     run.id,
                     candidate,
                     duration_seconds=0.0,
                 )
-                prepared.stage_timings["publication_ms"] = elapsed_milliseconds(
-                    publication_started, self._monotonic()
+                prepared.stage_timings["persistence_ms"] = elapsed_milliseconds(
+                    persistence_started,
+                    self._monotonic(),
                 )
+                if candidate.publishable:
+                    execution.stage = "publication"
+                    publication_started = self._monotonic()
+                    uow.feature_runs.publish_atomically_if_not_older(
+                        run.id,
+                        LATEST_POINTER_KEY,
+                    )
+                    publication_status = "PUBLISHED"
+                    prepared.stage_timings["publication_ms"] = (
+                        elapsed_milliseconds(
+                            publication_started,
+                            self._monotonic(),
+                        )
+                    )
+                execution.stage = "persistence"
                 prepared.stage_timings["total_ms"] = elapsed_milliseconds(
                     total_started, self._monotonic()
                 )
@@ -683,7 +700,7 @@ class BuildSectorSnapshotUseCase:
         )
 
     @classmethod
-    def _finalize_feature_run(
+    def _persist_feature_run_lifecycle(
         cls,
         uow: Any,
         run_id: int,
@@ -715,11 +732,7 @@ class BuildSectorSnapshotUseCase:
                 ),
             )
             return "QUARANTINED"
-        uow.feature_runs.publish_atomically_if_not_older(
-            run_id,
-            LATEST_POINTER_KEY,
-        )
-        return "PUBLISHED"
+        return "PENDING_PUBLICATION"
 
     @staticmethod
     def _log_run(
