@@ -23,6 +23,22 @@ class TestLivez:
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
 
+    async def test_is_dependency_free(self, client):
+        with patch("app.main.engine.connect") as database, \
+             patch("app.main.get_redis_client") as redis, \
+             patch("app.main._check_market_intelligence_snapshot") as snapshot, \
+             patch(
+                 "app.infra.providers.market_intelligence_yahoo."
+                 "YahooMarketIntelligenceProvider.fetch"
+             ) as yahoo:
+            response = await client.get("/livez")
+
+        assert response.status_code == 200
+        database.assert_not_called()
+        redis.assert_not_called()
+        snapshot.assert_not_called()
+        yahoo.assert_not_called()
+
 
 @pytest.mark.asyncio
 class TestReadyz:
@@ -36,13 +52,72 @@ class TestReadyz:
         mock_engine.connect.return_value = mock_conn
         with patch("app.main.get_redis_client", return_value=mock_redis), \
              patch("app.main.engine", mock_engine), \
-             patch("app.main.table_exists", return_value=True):
+             patch("app.main.table_exists", return_value=True), \
+             patch("app.main._check_market_intelligence_snapshot", return_value=True):
             response = await client.get("/readyz")
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "ok"
             assert data["checks"]["database"] == "ok"
             assert data["checks"]["redis"] == "ok"
+            assert data["checks"]["market_intelligence_snapshot"] == "ok"
+
+    async def test_degraded_when_stable_market_intelligence_snapshot_is_unavailable(
+        self,
+        client,
+    ):
+        mock_redis = MagicMock()
+        mock_redis.ping.return_value = True
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_engine = MagicMock()
+        mock_engine.connect.return_value = mock_conn
+        mock_session = MagicMock()
+        with patch("app.main.get_redis_client", return_value=mock_redis), \
+             patch("app.main.engine", mock_engine), \
+             patch("app.main.table_exists", return_value=True), \
+             patch("app.main.SessionLocal", return_value=mock_session), \
+             patch(
+                 "app.infra.db.repositories.market_intelligence_repo."
+                 "SqlMarketIntelligenceRepository.get_latest_published",
+                 return_value=None,
+             ), \
+             patch(
+                 "app.infra.providers.market_intelligence_yahoo."
+                 "YahooMarketIntelligenceProvider.fetch"
+             ) as yahoo:
+            response = await client.get("/readyz")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "degraded"
+        assert data["checks"]["database"] == "ok"
+        assert data["checks"]["redis"] == "ok"
+        assert "warning" in data["checks"]["market_intelligence_snapshot"]
+        yahoo.assert_not_called()
+
+    async def test_degraded_when_stable_snapshot_check_errors(self, client):
+        mock_redis = MagicMock()
+        mock_redis.ping.return_value = True
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_engine = MagicMock()
+        mock_engine.connect.return_value = mock_conn
+        with patch("app.main.get_redis_client", return_value=mock_redis), \
+             patch("app.main.engine", mock_engine), \
+             patch("app.main.table_exists", return_value=True), \
+             patch(
+                 "app.main._check_market_intelligence_snapshot",
+                 side_effect=RuntimeError("snapshot query failed"),
+             ):
+            response = await client.get("/readyz")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "degraded"
+        assert "RuntimeError" in data["checks"]["market_intelligence_snapshot"]
 
     async def test_degraded_when_redis_unavailable(self, client):
         """Redis is a soft dependency — unavailable Redis degrades but doesn't fail."""

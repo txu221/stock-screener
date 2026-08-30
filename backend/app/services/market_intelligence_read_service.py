@@ -28,6 +28,9 @@ from app.domain.market_intelligence.mvp import (
     categories_for_symbol,
     score_and_rank_etfs,
 )
+from app.domain.market_intelligence.freshness import (
+    classify_completed_session_freshness,
+)
 from app.domain.scanning.default_filters import resolve_default_scan_filters
 from app.infra.db.models.feature_store import (
     FeatureRun,
@@ -71,9 +74,15 @@ class MarketIntelligenceReadService:
         session: Session,
         *,
         completed_session: date | None = None,
+        completed_sessions: Iterable[date] | None = None,
     ):
         self._session = session
         self._completed_session = completed_session
+        self._completed_session_dates = (
+            None
+            if completed_sessions is None
+            else tuple(sorted(set(completed_sessions)))
+        )
 
     def _price_rows(
         self,
@@ -101,19 +110,34 @@ class MarketIntelligenceReadService:
         return dict(grouped)
 
     def _expected_session(self) -> date:
+        if self._completed_session_dates:
+            return self._completed_session_dates[-1]
         if self._completed_session is not None:
             return self._completed_session
         return MarketCalendarService().last_completed_trading_day("US")
 
-    @staticmethod
-    def _freshness_status(*, as_of: date | None, expected_session: date) -> str:
-        if as_of is None:
-            return "UNAVAILABLE"
-        if as_of == expected_session:
-            return "FRESH"
-        if as_of < expected_session:
-            return "STALE"
-        return "FUTURE"
+    def _freshness_status(self, *, as_of: date | None, expected_session: date) -> str:
+        if self._completed_session_dates is not None:
+            sessions = self._completed_session_dates
+        elif self._completed_session is not None:
+            calendar = MarketCalendarService()
+            sessions = tuple(
+                calendar.trading_days(
+                    "US",
+                    self._completed_session - timedelta(days=14),
+                    self._completed_session,
+                )
+            )
+        else:
+            calendar = MarketCalendarService()
+            sessions = tuple(
+                calendar.trading_days(
+                    "US",
+                    expected_session - timedelta(days=14),
+                    expected_session,
+                )
+            )
+        return classify_completed_session_freshness(as_of, sessions)
 
     def get_overview(self) -> MarketOverview:
         expected_session = self._expected_session()

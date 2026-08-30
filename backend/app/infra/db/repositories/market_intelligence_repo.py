@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from datetime import date, datetime, timezone
 from typing import Any
 
+from sqlalchemy import and_, func, or_, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -188,6 +189,62 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             if run_id is None
             else self._load_bundle(run_id, include_evidence=False)
         )
+
+    def get_last_successful_attempt(self) -> MarketIntelligenceRunBundle | None:
+        run_id = (
+            self._session.query(FeatureRun.id)
+            .join(
+                MarketIntelligenceRunAudit,
+                MarketIntelligenceRunAudit.run_id == FeatureRun.id,
+            )
+            .filter(
+                MarketIntelligenceRunAudit.ingestion_status
+                == IngestionStatus.SUCCEEDED.value
+            )
+            .order_by(FeatureRun.created_at.desc(), FeatureRun.id.desc())
+            .limit(1)
+            .scalar()
+        )
+        return (
+            None
+            if run_id is None
+            else self._load_bundle(run_id, include_evidence=False)
+        )
+
+    def count_consecutive_failures(self) -> int:
+        latest_success = (
+            self._session.query(
+                FeatureRun.created_at.label("created_at"),
+                FeatureRun.id.label("run_id"),
+            )
+            .join(
+                MarketIntelligenceRunAudit,
+                MarketIntelligenceRunAudit.run_id == FeatureRun.id,
+            )
+            .filter(
+                MarketIntelligenceRunAudit.ingestion_status
+                == IngestionStatus.SUCCEEDED.value
+            )
+            .order_by(FeatureRun.created_at.desc(), FeatureRun.id.desc())
+            .limit(1)
+            .subquery()
+        )
+        query = (
+            self._session.query(func.count(MarketIntelligenceRunAudit.run_id))
+            .join(FeatureRun, FeatureRun.id == MarketIntelligenceRunAudit.run_id)
+            .outerjoin(latest_success, true())
+            .filter(
+                or_(
+                    latest_success.c.run_id.is_(None),
+                    FeatureRun.created_at > latest_success.c.created_at,
+                    and_(
+                        FeatureRun.created_at == latest_success.c.created_at,
+                        FeatureRun.id > latest_success.c.run_id,
+                    ),
+                )
+            )
+        )
+        return int(query.scalar() or 0)
 
     def get_latest_published(
         self,

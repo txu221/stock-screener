@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -32,6 +32,11 @@ from app.domain.market_intelligence.models import (
     RunAudit,
     SectorMetrics,
     SectorSnapshot,
+)
+from app.domain.market_intelligence.observability import (
+    PIPELINE_VERSION,
+    MarketIntelligenceErrorCategory,
+    complete_stage_timings,
 )
 from app.domain.market_intelligence.ranking import RANKING_METRICS
 from app.infra.db.uow import SqlUnitOfWork
@@ -162,6 +167,26 @@ def _audit(
         },
         calculation_timestamp=NOW,
         ingestion_timestamp=NOW,
+        pipeline_version=PIPELINE_VERSION,
+        failure_category=(
+            None
+            if complete
+            else MarketIntelligenceErrorCategory.PROVIDER_FAILURE
+            if request_failure is not None
+            else MarketIntelligenceErrorCategory.INVALID_MARKET_DATA
+        ),
+        stage_timings=complete_stage_timings(
+            {"provider_fetch_ms": 125.0, "total_ms": 200.0}
+        ),
+        publication_status=(
+            "PUBLISHED"
+            if complete
+            else "FAILED"
+            if status is IngestionStatus.FAILED
+            else "QUARANTINED"
+        ),
+        retry_status="NOT_RETRYABLE" if complete else "RETRYABLE",
+        reuse_status="NEW",
     )
 
 
@@ -278,7 +303,16 @@ async def test_latest_serves_previous_complete_with_stable_contract(
 async def test_health_separates_latest_attempt_from_published_and_uses_audit_counters(
     client,
     seeded_runs: _SeededRuns,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.api.v1.market_intelligence._completed_us_sessions",
+        lambda: (MONDAY, TUESDAY),
+    )
+    monkeypatch.setattr(
+        "app.api.v1.market_intelligence._utc_now",
+        lambda: NOW + timedelta(hours=1),
+    )
     response = await client.get("/api/v1/market-intelligence/sectors/health")
 
     assert response.status_code == 200
@@ -290,6 +324,57 @@ async def test_health_separates_latest_attempt_from_published_and_uses_audit_cou
     assert body["latest_published"]["run_id"] == seeded_runs.published_id
     assert body["latest_published"]["status"] == "SUCCEEDED"
     assert body["publication_occurred"] is False
+    assert body["publication_status"] == "SERVING_PREVIOUS"
+    assert body["freshness_status"] == "AGING"
+    assert body["last_attempt_age_seconds"] == 3600.0
+    assert body["last_success_age_seconds"] == 3600.0
+    assert body["provider_latency_ms"] == 125.0
+    assert body["failure_category"] == "INVALID_MARKET_DATA"
+    assert body["consecutive_failures"] == 1
+    assert body["last_successful_trading_date"] == MONDAY.isoformat()
+    assert body["stale_threshold_completed_sessions"] == 2
+    assert body["pipeline_version"] == PIPELINE_VERSION
+    assert body["latest_attempt"]["provider_latency_ms"] == 125.0
+    assert body["latest_attempt"]["publication_status"] == "QUARANTINED"
+    assert body["latest_attempt"]["retry_status"] == "RETRYABLE"
+    assert body["latest_attempt"]["reuse_status"] == "NEW"
+
+
+@pytest.mark.asyncio
+async def test_health_counts_consecutive_failures_since_last_persisted_success(
+    client,
+    seeded_runs: _SeededRuns,
+    monkeypatch,
+) -> None:
+    del seeded_runs
+    with SqlUnitOfWork(SessionLocal) as uow:
+        run = _start(uow, TUESDAY, "9" * 64)
+        uow.market_intelligence.persist_candidate(
+            run.id,
+            _audit(
+                "9" * 64,
+                TUESDAY,
+                IngestionStatus.FAILED,
+                request_failure=RequestFailure("PROVIDER_TIMEOUT", "timeout"),
+            ),
+            (),
+            (),
+            (),
+        )
+        uow.feature_runs.mark_failed(run.id, RunStats(12, 0, 12, 1.0, 0))
+        uow.commit()
+
+    monkeypatch.setattr(
+        "app.api.v1.market_intelligence._completed_us_sessions",
+        lambda: (MONDAY, TUESDAY),
+    )
+    body = (
+        await client.get("/api/v1/market-intelligence/sectors/health")
+    ).json()
+
+    assert body["consecutive_failures"] == 2
+    assert body["failure_category"] == "PROVIDER_FAILURE"
+    assert body["last_successful_trading_date"] == MONDAY.isoformat()
 
 
 @pytest.mark.asyncio
@@ -318,6 +403,10 @@ async def test_health_failed_request_has_zero_row_rejections(client) -> None:
     assert body["latest_attempt"]["counters"]["rejected_bars"] == 0
     assert body["latest_attempt"]["counters"]["valid_bars"] == 0
     assert body["latest_published"] is None
+    assert body["publication_status"] == "UNAVAILABLE"
+    assert body["freshness_status"] == "UNAVAILABLE"
+    assert body["last_successful_run"] is None
+    assert body["last_successful_trading_date"] is None
 
 
 @pytest.mark.asyncio

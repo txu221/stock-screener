@@ -301,16 +301,41 @@ def test_overview_and_etf_radar_use_published_boundary_not_same_day_partial_bar(
     session.add_all(_prices("SPY", [100.0] * 20 + [105.0]))
     session.commit()
 
-    service = MarketIntelligenceReadService(session, completed_session=AS_OF)
+    service = MarketIntelligenceReadService(
+        session,
+        completed_sessions=(published_date, AS_OF),
+    )
     overview = service.get_overview()
     radar = service.get_etf_radar(category="broad_market")
 
     assert overview.as_of == published_date
     assert overview.pulse[0].price == pytest.approx(100.0)
-    assert overview.freshness_status == "STALE"
+    assert overview.freshness_status == "AGING"
     assert radar.as_of == published_date
     assert radar.items[0].price == pytest.approx(100.0)
-    assert radar.freshness_status == "STALE"
+    assert radar.freshness_status == "AGING"
+
+
+def test_legacy_completed_session_marks_two_session_lag_stale(session):
+    published_date = AS_OF - timedelta(days=2)
+    run = FeatureRun(
+        as_of_date=published_date,
+        run_type="daily_snapshot",
+        status="published",
+        published_at=PUBLISHED_AT - timedelta(days=2),
+    )
+    session.add(run)
+    session.flush()
+    session.add(FeatureRunPointer(key="latest_published_market:US", run_id=run.id))
+    session.commit()
+
+    overview = MarketIntelligenceReadService(
+        session,
+        completed_session=AS_OF,
+    ).get_overview()
+
+    assert overview.as_of == published_date
+    assert overview.freshness_status == "STALE"
 
 
 def test_movers_normalize_non_finite_market_cap_before_serialization(session):

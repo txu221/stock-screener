@@ -210,6 +210,13 @@ class MarketIntelligenceHealthRunResponse(BaseModel):
     calculation_timestamp: datetime
     ingestion_timestamp: datetime
     published_at: datetime | None
+    pipeline_version: str | None
+    failure_category: str | None
+    stage_timings: dict[str, float] | None
+    provider_latency_ms: float | None
+    publication_status: str | None
+    retry_status: str | None
+    reuse_status: str | None
 
     @classmethod
     def from_bundle(cls, bundle: MarketIntelligenceRunBundle) -> Self:
@@ -246,6 +253,25 @@ class MarketIntelligenceHealthRunResponse(BaseModel):
             calculation_timestamp=audit.calculation_timestamp,
             ingestion_timestamp=audit.ingestion_timestamp,
             published_at=bundle.published_at,
+            pipeline_version=audit.pipeline_version,
+            failure_category=(
+                None
+                if audit.failure_category is None
+                else audit.failure_category.value
+            ),
+            stage_timings=(
+                None
+                if audit.stage_timings is None
+                else dict(audit.stage_timings)
+            ),
+            provider_latency_ms=(
+                None
+                if audit.stage_timings is None
+                else audit.stage_timings.get("provider_fetch_ms")
+            ),
+            publication_status=audit.publication_status,
+            retry_status=audit.retry_status,
+            reuse_status=audit.reuse_status,
         )
 
 
@@ -257,6 +283,16 @@ class MarketIntelligenceHealthResponse(BaseModel):
     last_successful_run: MarketIntelligenceHealthRunResponse | None
     last_complete_published_snapshot: date | None
     publication_occurred: bool
+    publication_status: str
+    freshness_status: str
+    last_attempt_age_seconds: float | None
+    last_success_age_seconds: float | None
+    provider_latency_ms: float | None
+    failure_category: str | None
+    consecutive_failures: int
+    last_successful_trading_date: date | None
+    stale_threshold_completed_sessions: int
+    pipeline_version: str | None
 
 
 class MarketPulseItemResponse(BaseModel):

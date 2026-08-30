@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,6 +13,10 @@ from app.domain.market_intelligence.constants import (
     LATEST_POINTER_KEY,
     MARKET_INTELLIGENCE_UNIVERSE,
     METRIC_VERSION,
+)
+from app.domain.market_intelligence.freshness import (
+    FRESHNESS_STALE_THRESHOLD_COMPLETED_SESSIONS,
+    classify_completed_session_freshness,
 )
 from app.infra.db.repositories.market_intelligence_repo import (
     SqlMarketIntelligenceRepository,
@@ -31,8 +35,27 @@ from app.services.market_intelligence_read_service import (
     DEFAULT_MIN_PRICE,
     MarketIntelligenceReadService,
 )
+from app.services.market_calendar_service import MarketCalendarService
 
 router = APIRouter()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _completed_us_sessions() -> tuple[date, ...]:
+    calendar = MarketCalendarService()
+    latest = calendar.last_completed_trading_day("US")
+    return tuple(calendar.trading_days("US", latest - timedelta(days=14), latest))
+
+
+def _age_seconds(value: datetime | None, *, now: datetime) -> float | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - value.astimezone(timezone.utc)).total_seconds())
 
 
 @router.get(
@@ -173,11 +196,36 @@ def sector_intelligence_health(
     repository = SqlMarketIntelligenceRepository(db)
     latest_attempt = repository.get_latest_attempt()
     latest_published = repository.get_latest_published(LATEST_POINTER_KEY)
+    last_success = repository.get_last_successful_attempt()
+    consecutive_failures = repository.count_consecutive_failures()
+    completed_sessions = _completed_us_sessions()
+    now = _utc_now()
     published_response = (
         MarketIntelligenceHealthRunResponse.from_bundle(latest_published)
         if latest_published is not None
         else None
     )
+    last_success_response = (
+        MarketIntelligenceHealthRunResponse.from_bundle(last_success)
+        if last_success is not None
+        else None
+    )
+    latest_attempt_response = (
+        MarketIntelligenceHealthRunResponse.from_bundle(latest_attempt)
+        if latest_attempt is not None
+        else None
+    )
+    publication_occurred = (
+        latest_attempt is not None
+        and latest_published is not None
+        and latest_attempt.run_id == latest_published.run_id
+    )
+    if latest_published is None:
+        actual_publication_status = "UNAVAILABLE"
+    elif publication_occurred:
+        actual_publication_status = "PUBLISHED"
+    else:
+        actual_publication_status = "SERVING_PREVIOUS"
     return MarketIntelligenceHealthResponse(
         universe_expected=len(MARKET_INTELLIGENCE_UNIVERSE),
         current_run_timestamp=(
@@ -185,19 +233,50 @@ def sector_intelligence_health(
             if latest_attempt is not None
             else None
         ),
-        latest_attempt=(
-            MarketIntelligenceHealthRunResponse.from_bundle(latest_attempt)
-            if latest_attempt is not None
-            else None
-        ),
+        latest_attempt=latest_attempt_response,
         latest_published=published_response,
-        last_successful_run=published_response,
+        last_successful_run=last_success_response,
         last_complete_published_snapshot=(
             latest_published.as_of_date if latest_published is not None else None
         ),
-        publication_occurred=(
-            latest_attempt is not None
-            and latest_published is not None
-            and latest_attempt.run_id == latest_published.run_id
+        publication_occurred=publication_occurred,
+        publication_status=actual_publication_status,
+        freshness_status=classify_completed_session_freshness(
+            latest_published.as_of_date if latest_published is not None else None,
+            completed_sessions,
+        ),
+        last_attempt_age_seconds=_age_seconds(
+            latest_attempt.audit.ingestion_timestamp
+            if latest_attempt is not None
+            else None,
+            now=now,
+        ),
+        last_success_age_seconds=_age_seconds(
+            last_success.audit.ingestion_timestamp
+            if last_success is not None
+            else None,
+            now=now,
+        ),
+        provider_latency_ms=(
+            latest_attempt_response.provider_latency_ms
+            if latest_attempt_response is not None
+            else None
+        ),
+        failure_category=(
+            latest_attempt_response.failure_category
+            if latest_attempt_response is not None
+            else None
+        ),
+        consecutive_failures=consecutive_failures,
+        last_successful_trading_date=(
+            last_success.as_of_date if last_success is not None else None
+        ),
+        stale_threshold_completed_sessions=(
+            FRESHNESS_STALE_THRESHOLD_COMPLETED_SESSIONS
+        ),
+        pipeline_version=(
+            latest_attempt_response.pipeline_version
+            if latest_attempt_response is not None
+            else None
         ),
     )

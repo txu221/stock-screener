@@ -206,6 +206,22 @@ app.add_middleware(
 _READINESS_TABLES = ("scans", "scan_results", "stock_universe")
 
 
+def _check_market_intelligence_snapshot() -> bool:
+    """Check only the persisted stable pointer; never invoke a data provider."""
+    from .domain.market_intelligence.constants import LATEST_POINTER_KEY
+    from .infra.db.repositories.market_intelligence_repo import (
+        SqlMarketIntelligenceRepository,
+    )
+
+    with SessionLocal() as session:
+        return (
+            SqlMarketIntelligenceRepository(session).get_latest_published(
+                LATEST_POINTER_KEY
+            )
+            is not None
+        )
+
+
 @app.get("/")
 async def root():
     """Return API information."""
@@ -305,9 +321,36 @@ async def readiness():
         )
         checks["redis"] = f"warning: {type(exc).__name__}"
 
+    # Market Intelligence stable snapshot — persisted-state-only soft check.
+    if healthy:
+        try:
+            if await asyncio.to_thread(_check_market_intelligence_snapshot):
+                checks["market_intelligence_snapshot"] = "ok"
+            else:
+                checks["market_intelligence_snapshot"] = "warning: unavailable"
+        except Exception as exc:
+            _log_critical_error(
+                message="Market Intelligence snapshot readiness probe failed",
+                exc=exc,
+                event="readiness_check_failed",
+                path="/readyz",
+                error_code="readiness_market_intelligence_snapshot_failed",
+                level=logging.WARNING,
+                pipeline="market_intelligence",
+            )
+            checks["market_intelligence_snapshot"] = (
+                f"warning: {type(exc).__name__}"
+            )
+    else:
+        checks["market_intelligence_snapshot"] = (
+            "warning: skipped because database is unavailable"
+        )
+
     status_code = 200 if healthy else 503
     status_label = "ok" if healthy else "unhealthy"
-    if healthy and checks.get("redis", "").startswith("warning"):
+    if healthy and any(
+        value.startswith("warning") for value in checks.values()
+    ):
         status_label = "degraded"
 
     return JSONResponse(

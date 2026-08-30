@@ -63,6 +63,14 @@ class MarketIntelligenceRepository(abc.ABC):
         ...
 
     @abc.abstractmethod
+    def get_last_successful_attempt(self) -> MarketIntelligenceRunBundle | None:
+        ...
+
+    @abc.abstractmethod
+    def count_consecutive_failures(self) -> int:
+        ...
+
+    @abc.abstractmethod
     def get_latest_published(
         self,
         pointer_key: str,
