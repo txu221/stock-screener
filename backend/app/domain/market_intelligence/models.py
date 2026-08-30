@@ -212,3 +212,13 @@ class MarketIntelligenceRunBundle:
     canonical_bars: tuple[CanonicalBar, ...]
     rejections: tuple[BarRejection, ...]
     snapshots: tuple[SectorSnapshot, ...]
+
+
+@dataclass(frozen=True)
+class MarketIntelligenceHealthAggregate:
+    """Health state captured from one persisted selector snapshot."""
+
+    latest_attempt: MarketIntelligenceRunBundle | None
+    latest_published: MarketIntelligenceRunBundle | None
+    last_successful_attempt: MarketIntelligenceRunBundle | None
+    consecutive_failures: int

@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import date, datetime, timezone
 
 import pytest
-from sqlalchemy import func
+from sqlalchemy import event, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
@@ -378,6 +378,69 @@ def test_latest_attempt_includes_failed_or_quarantined_run(engine) -> None:
         "TIMEOUT", "provider unavailable"
     )
     assert latest_published is not None and latest_published.run_id == published.id
+
+
+def test_health_aggregate_captures_all_selector_state_in_one_statement(
+    engine,
+    monkeypatch,
+) -> None:
+    factory = sessionmaker(bind=engine)
+    with SqlUnitOfWork(factory) as uow:
+        published = _start(uow, as_of=date(2026, 5, 14), input_hash="1" * 64)
+        uow.market_intelligence.persist_candidate(
+            published.id,
+            _audit(key="1" * 64, target_session=date(2026, 5, 14)),
+            (),
+            (),
+            (_snapshot(trading_date=date(2026, 5, 14)),),
+        )
+        _publish(uow, published.id)
+        published_id = published.id
+
+        failed_ids = []
+        for suffix in ("2", "3"):
+            failed = _start(uow, input_hash=suffix * 64)
+            uow.market_intelligence.persist_candidate(
+                failed.id,
+                replace(
+                    _audit(key=suffix * 64, status=IngestionStatus.FAILED),
+                    request_failure=RequestFailure(
+                        "TIMEOUT",
+                        "provider unavailable",
+                    ),
+                ),
+                (),
+                (),
+                (),
+            )
+            uow.feature_runs.mark_failed(failed.id, RunStats(12, 0, 12, 1.0))
+            failed_ids.append(failed.id)
+        uow.commit()
+
+    selector_statements: list[str] = []
+
+    def capture_selector(_conn, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            selector_statements.append(statement)
+
+    with SqlUnitOfWork(factory) as uow:
+        repository = uow.market_intelligence
+        monkeypatch.setattr(
+            repository,
+            "_load_bundle",
+            lambda run_id, **_kwargs: run_id,
+        )
+        event.listen(engine, "before_cursor_execute", capture_selector)
+        try:
+            aggregate = repository.get_health_aggregate(LATEST_POINTER_KEY)
+        finally:
+            event.remove(engine, "before_cursor_execute", capture_selector)
+
+    assert selector_statements and len(selector_statements) == 1
+    assert aggregate.latest_attempt == failed_ids[-1]
+    assert aggregate.latest_published == published_id
+    assert aggregate.last_successful_attempt == published_id
+    assert aggregate.consecutive_failures == 2
 
 
 def test_previous_published_excludes_same_date_partial_and_failed(engine) -> None:

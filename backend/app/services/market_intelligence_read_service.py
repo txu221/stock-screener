@@ -30,6 +30,7 @@ from app.domain.market_intelligence.mvp import (
 )
 from app.domain.market_intelligence.freshness import (
     classify_completed_session_freshness,
+    collect_completed_sessions,
 )
 from app.domain.scanning.default_filters import resolve_default_scan_filters
 from app.infra.db.models.feature_store import (
@@ -119,23 +120,11 @@ class MarketIntelligenceReadService:
     def _freshness_status(self, *, as_of: date | None, expected_session: date) -> str:
         if self._completed_session_dates is not None:
             sessions = self._completed_session_dates
-        elif self._completed_session is not None:
-            calendar = MarketCalendarService()
-            sessions = tuple(
-                calendar.trading_days(
-                    "US",
-                    self._completed_session - timedelta(days=14),
-                    self._completed_session,
-                )
-            )
         else:
             calendar = MarketCalendarService()
-            sessions = tuple(
-                calendar.trading_days(
-                    "US",
-                    expected_session - timedelta(days=14),
-                    expected_session,
-                )
+            sessions = collect_completed_sessions(
+                self._completed_session or expected_session,
+                lambda start, end: calendar.trading_days("US", start, end),
             )
         return classify_completed_session_freshness(as_of, sessions)
 

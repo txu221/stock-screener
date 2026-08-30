@@ -338,6 +338,48 @@ def test_legacy_completed_session_marks_two_session_lag_stale(session):
     assert overview.freshness_status == "STALE"
 
 
+def test_legacy_completed_session_widens_across_extended_closure(
+    session,
+    monkeypatch,
+):
+    sessions = (
+        date(2025, 12, 1),
+        date(2026, 1, 5),
+        date(2026, 1, 31),
+    )
+    run = FeatureRun(
+        as_of_date=sessions[0],
+        run_type="daily_snapshot",
+        status="published",
+        published_at=PUBLISHED_AT,
+    )
+    session.add(run)
+    session.flush()
+    session.add(FeatureRunPointer(key="latest_published_market:US", run_id=run.id))
+    session.commit()
+    lookbacks: list[int] = []
+
+    class ExtendedClosureCalendar:
+        def trading_days(self, market, start, end):
+            assert market == "US"
+            lookbacks.append((end - start).days)
+            return tuple(day for day in sessions if start <= day <= end)
+
+    monkeypatch.setattr(
+        "app.services.market_intelligence_read_service.MarketCalendarService",
+        ExtendedClosureCalendar,
+    )
+
+    overview = MarketIntelligenceReadService(
+        session,
+        completed_session=sessions[-1],
+    ).get_overview()
+
+    assert overview.as_of == sessions[0]
+    assert overview.freshness_status == "STALE"
+    assert lookbacks == [14, 28, 56, 112]
+
+
 def test_movers_normalize_non_finite_market_cap_before_serialization(session):
     run = _published_run(session)
     session.add(_universe("NAN", price_market_cap=float("nan")))

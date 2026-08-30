@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, func, or_, true
+from sqlalchemy import and_, func, or_, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,7 @@ from app.domain.market_intelligence.models import (
     BarRejection,
     CanonicalBar,
     IngestionStatus,
+    MarketIntelligenceHealthAggregate,
     MarketIntelligenceRunBundle,
     ProviderSymbolFailure,
     RankDirection,
@@ -245,6 +246,107 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             )
         )
         return int(query.scalar() or 0)
+
+    def get_health_aggregate(
+        self,
+        pointer_key: str,
+    ) -> MarketIntelligenceHealthAggregate:
+        latest_attempt_id = (
+            select(FeatureRun.id)
+            .join(
+                MarketIntelligenceRunAudit,
+                MarketIntelligenceRunAudit.run_id == FeatureRun.id,
+            )
+            .order_by(FeatureRun.created_at.desc(), FeatureRun.id.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        latest_published_id = (
+            select(FeatureRunPointer.run_id)
+            .join(FeatureRun, FeatureRun.id == FeatureRunPointer.run_id)
+            .join(
+                MarketIntelligenceRunAudit,
+                MarketIntelligenceRunAudit.run_id == FeatureRun.id,
+            )
+            .where(
+                FeatureRunPointer.key == pointer_key,
+                FeatureRun.status == RunStatus.PUBLISHED.value,
+                MarketIntelligenceRunAudit.ingestion_status
+                == IngestionStatus.SUCCEEDED.value,
+            )
+            .limit(1)
+            .scalar_subquery()
+        )
+        last_successful_id = (
+            select(FeatureRun.id)
+            .join(
+                MarketIntelligenceRunAudit,
+                MarketIntelligenceRunAudit.run_id == FeatureRun.id,
+            )
+            .where(
+                MarketIntelligenceRunAudit.ingestion_status
+                == IngestionStatus.SUCCEEDED.value
+            )
+            .order_by(FeatureRun.created_at.desc(), FeatureRun.id.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        last_successful_created_at = (
+            select(FeatureRun.created_at)
+            .join(
+                MarketIntelligenceRunAudit,
+                MarketIntelligenceRunAudit.run_id == FeatureRun.id,
+            )
+            .where(
+                MarketIntelligenceRunAudit.ingestion_status
+                == IngestionStatus.SUCCEEDED.value
+            )
+            .order_by(FeatureRun.created_at.desc(), FeatureRun.id.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        consecutive_failures = (
+            select(func.count(MarketIntelligenceRunAudit.run_id))
+            .select_from(MarketIntelligenceRunAudit)
+            .join(FeatureRun, FeatureRun.id == MarketIntelligenceRunAudit.run_id)
+            .where(
+                or_(
+                    last_successful_id.is_(None),
+                    FeatureRun.created_at > last_successful_created_at,
+                    and_(
+                        FeatureRun.created_at == last_successful_created_at,
+                        FeatureRun.id > last_successful_id,
+                    ),
+                )
+            )
+            .scalar_subquery()
+        )
+        selected = self._session.execute(
+            select(
+                latest_attempt_id.label("latest_attempt_id"),
+                latest_published_id.label("latest_published_id"),
+                last_successful_id.label("last_successful_id"),
+                consecutive_failures.label("consecutive_failures"),
+            )
+        ).one()
+        bundles: dict[int, MarketIntelligenceRunBundle] = {}
+
+        def load(run_id: int | None) -> MarketIntelligenceRunBundle | None:
+            if run_id is None:
+                return None
+            if run_id not in bundles:
+                bundles[run_id] = self._load_bundle(
+                    run_id,
+                    include_evidence=False,
+                )
+            return bundles[run_id]
+
+        return MarketIntelligenceHealthAggregate(
+            latest_attempt=load(selected.latest_attempt_id),
+            latest_published=load(selected.latest_published_id),
+            last_successful_attempt=load(selected.last_successful_id),
+            consecutive_failures=int(selected.consecutive_failures or 0),
+        )
 
     def get_latest_published(
         self,

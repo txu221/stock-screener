@@ -40,6 +40,9 @@ from app.domain.market_intelligence.observability import (
 )
 from app.domain.market_intelligence.ranking import RANKING_METRICS
 from app.infra.db.uow import SqlUnitOfWork
+from app.infra.db.repositories.market_intelligence_repo import (
+    SqlMarketIntelligenceRepository,
+)
 from app.api.v1.market_intelligence import router as market_intelligence_router
 
 api_app = FastAPI()
@@ -305,6 +308,33 @@ async def test_health_separates_latest_attempt_from_published_and_uses_audit_cou
     seeded_runs: _SeededRuns,
     monkeypatch,
 ) -> None:
+    aggregate_calls: list[str] = []
+    original_aggregate = SqlMarketIntelligenceRepository.get_health_aggregate
+
+    def tracked_aggregate(repository, pointer_key):
+        aggregate_calls.append(pointer_key)
+        return original_aggregate(repository, pointer_key)
+
+    monkeypatch.setattr(
+        SqlMarketIntelligenceRepository,
+        "get_health_aggregate",
+        tracked_aggregate,
+    )
+
+    def inconsistent_legacy_selector(*_args, **_kwargs):
+        raise AssertionError("health endpoint must use the atomic aggregate selector")
+
+    for method_name in (
+        "get_latest_attempt",
+        "get_latest_published",
+        "get_last_successful_attempt",
+        "count_consecutive_failures",
+    ):
+        monkeypatch.setattr(
+            SqlMarketIntelligenceRepository,
+            method_name,
+            inconsistent_legacy_selector,
+        )
     monkeypatch.setattr(
         "app.api.v1.market_intelligence._completed_us_sessions",
         lambda: (MONDAY, TUESDAY),
@@ -338,6 +368,7 @@ async def test_health_separates_latest_attempt_from_published_and_uses_audit_cou
     assert body["latest_attempt"]["publication_status"] == "QUARANTINED"
     assert body["latest_attempt"]["retry_status"] == "RETRYABLE"
     assert body["latest_attempt"]["reuse_status"] == "NEW"
+    assert aggregate_calls == [LATEST_POINTER_KEY]
 
 
 @pytest.mark.asyncio

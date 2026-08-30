@@ -9,6 +9,7 @@ from datetime import date
 from .models import (
     BarRejection,
     CanonicalBar,
+    MarketIntelligenceHealthAggregate,
     MarketIntelligenceRunBundle,
     RunAudit,
     SectorSnapshot,
@@ -68,6 +69,13 @@ class MarketIntelligenceRepository(abc.ABC):
 
     @abc.abstractmethod
     def count_consecutive_failures(self) -> int:
+        ...
+
+    @abc.abstractmethod
+    def get_health_aggregate(
+        self,
+        pointer_key: str,
+    ) -> MarketIntelligenceHealthAggregate:
         ...
 
     @abc.abstractmethod

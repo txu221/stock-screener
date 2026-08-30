@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,6 +17,7 @@ from app.domain.market_intelligence.constants import (
 from app.domain.market_intelligence.freshness import (
     FRESHNESS_STALE_THRESHOLD_COMPLETED_SESSIONS,
     classify_completed_session_freshness,
+    collect_completed_sessions,
 )
 from app.infra.db.repositories.market_intelligence_repo import (
     SqlMarketIntelligenceRepository,
@@ -47,7 +48,10 @@ def _utc_now() -> datetime:
 def _completed_us_sessions() -> tuple[date, ...]:
     calendar = MarketCalendarService()
     latest = calendar.last_completed_trading_day("US")
-    return tuple(calendar.trading_days("US", latest - timedelta(days=14), latest))
+    return collect_completed_sessions(
+        latest,
+        lambda start, end: calendar.trading_days("US", start, end),
+    )
 
 
 def _age_seconds(value: datetime | None, *, now: datetime) -> float | None:
@@ -194,10 +198,11 @@ def sector_intelligence_health(
     db: Session = Depends(get_db),
 ) -> MarketIntelligenceHealthResponse:
     repository = SqlMarketIntelligenceRepository(db)
-    latest_attempt = repository.get_latest_attempt()
-    latest_published = repository.get_latest_published(LATEST_POINTER_KEY)
-    last_success = repository.get_last_successful_attempt()
-    consecutive_failures = repository.count_consecutive_failures()
+    aggregate = repository.get_health_aggregate(LATEST_POINTER_KEY)
+    latest_attempt = aggregate.latest_attempt
+    latest_published = aggregate.latest_published
+    last_success = aggregate.last_successful_attempt
+    consecutive_failures = aggregate.consecutive_failures
     completed_sessions = _completed_us_sessions()
     now = _utc_now()
     published_response = (

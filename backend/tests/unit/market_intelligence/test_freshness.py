@@ -6,6 +6,7 @@ import pytest
 
 from app.domain.market_intelligence.freshness import (
     classify_completed_session_freshness,
+    collect_completed_sessions,
 )
 
 
@@ -53,6 +54,28 @@ def test_two_or_more_completed_sessions_behind_is_stale() -> None:
         )
         == "STALE"
     )
+
+
+def test_completed_session_collection_widens_across_extended_closure() -> None:
+    sessions = (
+        date(2025, 12, 1),
+        date(2026, 1, 5),
+        date(2026, 1, 31),
+    )
+    lookbacks: list[int] = []
+
+    def load_sessions(start: date, end: date) -> tuple[date, ...]:
+        lookbacks.append((end - start).days)
+        return tuple(session for session in sessions if start <= session <= end)
+
+    completed = collect_completed_sessions(
+        sessions[-1],
+        load_sessions,
+    )
+
+    assert completed == sessions
+    assert lookbacks == [14, 28, 56, 112]
+    assert classify_completed_session_freshness(sessions[0], completed) == "STALE"
 
 
 @pytest.mark.parametrize(
