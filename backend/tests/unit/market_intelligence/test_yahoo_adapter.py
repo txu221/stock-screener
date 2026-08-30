@@ -68,6 +68,24 @@ def test_adapter_requests_exact_fixed_universe_once() -> None:
     assert len(result.rows) == 12
 
 
+def test_adapter_reports_separate_fetch_and_normalization_timing_evidence() -> None:
+    fetcher = Mock()
+    fetcher.fetch_batch_prices.return_value = _all_success()
+    ticks = iter((10.0, 10.125, 10.125, 10.375))
+    provider = YahooMarketIntelligenceProvider(
+        fetcher,
+        clock=lambda: NOW,
+        monotonic=lambda: next(ticks),
+    )
+
+    result = provider.fetch(MARKET_INTELLIGENCE_UNIVERSE, AS_OF)
+
+    assert result.stage_timings == {
+        "provider_fetch_ms": 125.0,
+        "normalization_ms": 250.0,
+    }
+
+
 def test_dataframe_fields_are_mapped_raw_without_adjustment_or_repair() -> None:
     fetcher = Mock()
     fetcher.fetch_batch_prices.return_value = _all_success()

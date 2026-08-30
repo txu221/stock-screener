@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
 from typing import Any
@@ -15,6 +16,7 @@ from app.domain.market_intelligence.models import (
     RawBar,
     RequestFailure,
 )
+from app.domain.market_intelligence.observability import elapsed_milliseconds
 
 _REQUIRED_COLUMNS = frozenset(
     {
@@ -193,9 +195,10 @@ def _wrapped_batch_failure(
 class YahooMarketIntelligenceProvider:
     """Map bulk Yahoo frames to raw rows without normalizing or repairing them."""
 
-    def __init__(self, fetcher: Any, *, clock) -> None:
+    def __init__(self, fetcher: Any, *, clock, monotonic=time.monotonic) -> None:
         self._fetcher = fetcher
         self._clock = clock
+        self._monotonic = monotonic
 
     def fetch(
         self,
@@ -203,24 +206,49 @@ class YahooMarketIntelligenceProvider:
         as_of: date,
     ) -> ProviderBatchResult:
         requested = tuple(symbols)
+        fetch_started = self._monotonic()
         try:
             results = self._fetcher.fetch_batch_prices(
                 list(requested), period="6mo"
             )
         except Exception as exc:
+            fetch_finished = self._monotonic()
             return ProviderBatchResult(
                 provider="yahoo",
                 response_timestamp=self._clock(),
                 rows=(),
                 symbol_failures=(),
                 request_failure=_request_failure(exc),
+                stage_timings={
+                    "provider_fetch_ms": elapsed_milliseconds(
+                        fetch_started, fetch_finished
+                    ),
+                    "normalization_ms": 0.0,
+                },
             )
 
+        fetch_finished = self._monotonic()
         response_timestamp = self._clock()
-        if not isinstance(results, Mapping):
+        normalization_started = self._monotonic()
+
+        def batch_result(**values: Any) -> ProviderBatchResult:
+            normalization_finished = self._monotonic()
             return ProviderBatchResult(
                 provider="yahoo",
                 response_timestamp=response_timestamp,
+                stage_timings={
+                    "provider_fetch_ms": elapsed_milliseconds(
+                        fetch_started, fetch_finished
+                    ),
+                    "normalization_ms": elapsed_milliseconds(
+                        normalization_started, normalization_finished
+                    ),
+                },
+                **values,
+            )
+
+        if not isinstance(results, Mapping):
+            return batch_result(
                 rows=(),
                 symbol_failures=(),
                 request_failure=_schema_drift(
@@ -229,9 +257,7 @@ class YahooMarketIntelligenceProvider:
             )
         wrapped_failure = _wrapped_batch_failure(results, requested)
         if wrapped_failure is not None:
-            return ProviderBatchResult(
-                provider="yahoo",
-                response_timestamp=response_timestamp,
+            return batch_result(
                 rows=(),
                 symbol_failures=(),
                 request_failure=wrapped_failure,
@@ -239,9 +265,7 @@ class YahooMarketIntelligenceProvider:
 
         schema_error = _batch_schema_error(results, requested)
         if schema_error is not None:
-            return ProviderBatchResult(
-                provider="yahoo",
-                response_timestamp=response_timestamp,
+            return batch_result(
                 rows=(),
                 symbol_failures=(),
                 request_failure=_schema_drift(schema_error),
@@ -310,9 +334,7 @@ class YahooMarketIntelligenceProvider:
                 str(row.raw_trading_date),
             )
         )
-        return ProviderBatchResult(
-            provider="yahoo",
-            response_timestamp=response_timestamp,
+        return batch_result(
             rows=tuple(rows),
             symbol_failures=tuple(failures),
             request_failure=None,

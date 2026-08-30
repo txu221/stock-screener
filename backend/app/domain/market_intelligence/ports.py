@@ -13,6 +13,7 @@ from .models import (
     RunAudit,
     SectorSnapshot,
 )
+from .observability import MarketIntelligenceErrorCategory
 
 
 class MarketIntelligenceIdempotencyConflict(RuntimeError):
@@ -33,6 +34,19 @@ class MarketIntelligenceRepository(abc.ABC):
 
     @abc.abstractmethod
     def find_exact(self, idempotency_key: str) -> MarketIntelligenceRunBundle | None:
+        ...
+
+    @abc.abstractmethod
+    def update_observability(
+        self,
+        run_id: int,
+        *,
+        stage_timings: dict[str, float],
+        failure_category: MarketIntelligenceErrorCategory | None,
+        publication_status: str,
+        retry_status: str,
+        reuse_status: str,
+    ) -> None:
         ...
 
     @abc.abstractmethod

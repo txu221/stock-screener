@@ -45,6 +45,12 @@ class MarketIntelligenceRunAudit(Base):
     source_freshness_json = Column(JSON, nullable=False)
     calculation_timestamp = Column(DateTime(timezone=True), nullable=False)
     ingestion_timestamp = Column(DateTime(timezone=True), nullable=False)
+    pipeline_version = Column(String(64), nullable=True)
+    failure_category = Column(String(64), nullable=True)
+    stage_timings_json = Column(JSON, nullable=True)
+    publication_status = Column(String(32), nullable=True)
+    retry_status = Column(String(32), nullable=True)
+    reuse_status = Column(String(32), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (

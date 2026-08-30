@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
+import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -41,6 +43,15 @@ from app.domain.market_intelligence.models import (
     SectorMetrics,
     ValidationResult,
 )
+from app.domain.market_intelligence.observability import (
+    PIPELINE_VERSION,
+    InsufficientMarketHistoryError,
+    MarketIntelligenceErrorCategory,
+    complete_stage_timings,
+    elapsed_milliseconds,
+    failure_category_for_exception,
+    failure_category_for_request,
+)
 from app.domain.market_intelligence.ports import (
     MarketIntelligenceIdempotencyConflict,
 )
@@ -49,6 +60,9 @@ from app.domain.market_intelligence.snapshot import (
     build_candidate_snapshot,
 )
 from app.domain.market_intelligence.validation import validate_provider_rows
+
+
+logger = logging.getLogger(__name__)
 
 
 class MarketIntelligenceProvider(Protocol):
@@ -74,6 +88,9 @@ class CompletedSessionSource(Protocol):
 class BuildSectorSnapshotCommand:
     as_of: date
     reuse_published: bool = False
+    force_refresh: bool = False
+    retry_count: int = 0
+    broker_redelivered: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,6 +99,8 @@ class BuildSectorSnapshotResult:
     ingestion_status: IngestionStatus
     published: bool
     idempotency_key: str
+    reused: bool = False
+    failure_category: MarketIntelligenceErrorCategory | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +114,12 @@ class _PreparedAttempt:
     idempotency_key: str
     source_freshness: Mapping[str, Any]
     timestamp: datetime
+    stage_timings: dict[str, float]
+
+
+@dataclass
+class _ExecutionState:
+    stage: str = "persistence"
 
 
 def _stable_value(value: Any) -> Any:
@@ -264,45 +289,107 @@ class BuildSectorSnapshotUseCase:
         uow_factory: Callable[[], Any],
         clock: Callable[[], datetime],
         attempt_id_factory: Callable[[], str] | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._provider = provider
         self._session_source = session_source
         self._uow_factory = uow_factory
         self._clock = clock
         self._attempt_id_factory = attempt_id_factory or (lambda: uuid4().hex)
+        self._monotonic = monotonic
 
     def execute(
         self,
         command: BuildSectorSnapshotCommand,
     ) -> BuildSectorSnapshotResult:
-        if command.reuse_published:
-            with self._uow_factory() as uow:
-                published = uow.market_intelligence.list_published_history(
-                    metric_version=METRIC_VERSION,
-                    date_from=command.as_of,
-                    date_to=command.as_of,
-                    limit=1,
-                )
-            if published:
-                return self._result_from_existing(published[0])
-
-        sessions = tuple(
-            self._session_source.completed_sessions(
-                "US", command.as_of, minimum=90
-            )
-        )
-        if len(sessions) < 90:
-            raise ValueError("at least 90 completed US sessions are required")
-        batch = self._provider.fetch(MARKET_INTELLIGENCE_UNIVERSE, command.as_of)
-        prepared = self._prepare(batch, sessions, command.as_of)
-
+        total_started = self._monotonic()
+        execution = _ExecutionState()
+        run_id: int | None = None
+        provider_name: str | None = None
+        retry_status = self._retry_status(command)
+        reuse_status = "FORCE_REFRESH" if command.force_refresh else "NEW"
         try:
+            if command.reuse_published:
+                with self._uow_factory() as uow:
+                    published = uow.market_intelligence.list_published_history(
+                        metric_version=METRIC_VERSION,
+                        date_from=command.as_of,
+                        date_to=command.as_of,
+                        limit=1,
+                    )
+                if published:
+                    result = self._result_from_existing(published[0])
+                    self._log_run(
+                        event="market_intelligence_run_reused",
+                        command=command,
+                        run_id=result.run_id,
+                        provider=published[0].audit.provider,
+                        stage="reuse",
+                        duration_ms=elapsed_milliseconds(
+                            total_started, self._monotonic()
+                        ),
+                        publication_status="PUBLISHED",
+                        retry_status=retry_status,
+                        reuse_status="PUBLISHED_RESULT_REUSED",
+                    )
+                    return result
+
+            execution.stage = "validation"
+            sessions = tuple(
+                self._session_source.completed_sessions(
+                    "US", command.as_of, minimum=90
+                )
+            )
+            if len(sessions) < 90:
+                raise InsufficientMarketHistoryError(
+                    "insufficient history: at least 90 completed US sessions "
+                    "are required"
+                )
+
+            execution.stage = "provider_fetch"
+            provider_started = self._monotonic()
+            batch = self._provider.fetch(
+                MARKET_INTELLIGENCE_UNIVERSE, command.as_of
+            )
+            provider_finished = self._monotonic()
+            provider_name = batch.provider
+            provider_evidence = dict(batch.stage_timings or {})
+            provider_evidence.setdefault(
+                "provider_fetch_ms",
+                elapsed_milliseconds(provider_started, provider_finished),
+            )
+            provider_evidence.setdefault("normalization_ms", 0.0)
+            prepared = self._prepare(
+                batch,
+                sessions,
+                command.as_of,
+                provider_evidence=provider_evidence,
+                execution=execution,
+            )
+
+            execution.stage = "persistence"
             with self._uow_factory() as uow:
                 existing = uow.market_intelligence.find_exact(
                     prepared.idempotency_key
                 )
                 if existing is not None:
-                    return self._result_from_existing(existing)
+                    result = self._result_from_existing(existing)
+                    self._log_run(
+                        event="market_intelligence_run_reused",
+                        command=command,
+                        run_id=result.run_id,
+                        provider=existing.audit.provider,
+                        stage="reuse",
+                        duration_ms=elapsed_milliseconds(
+                            total_started, self._monotonic()
+                        ),
+                        publication_status=(
+                            "PUBLISHED" if result.published else "NOT_PUBLISHED"
+                        ),
+                        retry_status=retry_status,
+                        reuse_status="IDEMPOTENT_RESULT_REUSED",
+                    )
+                    return result
 
                 previous = uow.market_intelligence.get_previous_published(
                     before=command.as_of,
@@ -337,8 +424,11 @@ class BuildSectorSnapshotUseCase:
                         "metric_version": METRIC_VERSION,
                         "normalization_version": NORMALIZATION_VERSION,
                         "price_basis": PRICE_BASIS,
+                        "pipeline_version": PIPELINE_VERSION,
                     },
                 )
+                run_id = run.id
+                persistence_started = self._monotonic()
                 uow.market_intelligence.persist_candidate(
                     run.id,
                     audit,
@@ -346,14 +436,62 @@ class BuildSectorSnapshotUseCase:
                     prepared.validation.rejections,
                     candidate.snapshots,
                 )
-                self._finalize_feature_run(uow, run.id, candidate)
+                prepared.stage_timings["persistence_ms"] = elapsed_milliseconds(
+                    persistence_started, self._monotonic()
+                )
+
+                execution.stage = "publication"
+                publication_started = self._monotonic()
+                publication_status = self._finalize_feature_run(
+                    uow,
+                    run.id,
+                    candidate,
+                    duration_seconds=0.0,
+                )
+                prepared.stage_timings["publication_ms"] = elapsed_milliseconds(
+                    publication_started, self._monotonic()
+                )
+                prepared.stage_timings["total_ms"] = elapsed_milliseconds(
+                    total_started, self._monotonic()
+                )
+                final_timings = complete_stage_timings(prepared.stage_timings)
+                final_stats = self._run_stats(
+                    candidate,
+                    duration_seconds=final_timings["total_ms"] / 1000.0,
+                )
+                execution.stage = "persistence"
+                uow.feature_runs.update_stats(run.id, final_stats)
+                uow.market_intelligence.update_observability(
+                    run.id,
+                    stage_timings=final_timings,
+                    failure_category=audit.failure_category,
+                    publication_status=publication_status,
+                    retry_status=retry_status,
+                    reuse_status=reuse_status,
+                )
                 uow.commit()
-                return BuildSectorSnapshotResult(
+                result = BuildSectorSnapshotResult(
                     run_id=run.id,
                     ingestion_status=candidate.ingestion_status,
                     published=candidate.publishable,
                     idempotency_key=prepared.idempotency_key,
+                    failure_category=audit.failure_category,
                 )
+                self._log_run(
+                    event="market_intelligence_run_completed",
+                    command=command,
+                    run_id=run.id,
+                    provider=batch.provider,
+                    stage="completed",
+                    duration_ms=final_timings["total_ms"],
+                    publication_status=publication_status,
+                    retry_status=retry_status,
+                    reuse_status=reuse_status,
+                    symbol_count=len(candidate.usable_symbols),
+                    snapshot_count=len(candidate.snapshots),
+                    failure_category=audit.failure_category,
+                )
+                return result
         except MarketIntelligenceIdempotencyConflict:
             with self._uow_factory() as winner_uow:
                 winner = winner_uow.market_intelligence.find_exact(
@@ -362,19 +500,49 @@ class BuildSectorSnapshotUseCase:
                 if winner is None:
                     raise
                 return self._result_from_existing(winner)
+        except Exception as exc:
+            category = failure_category_for_exception(exc, stage=execution.stage)
+            exc.market_intelligence_failure_category = category
+            exc.market_intelligence_stage = execution.stage
+            self._log_run(
+                event="market_intelligence_run_failed",
+                command=command,
+                run_id=run_id,
+                provider=provider_name,
+                stage=execution.stage,
+                duration_ms=elapsed_milliseconds(total_started, self._monotonic()),
+                publication_status="FAILED",
+                retry_status=retry_status,
+                reuse_status=reuse_status,
+                failure_category=category,
+                level=logging.ERROR,
+                exc_info=True,
+            )
+            raise
 
     def _prepare(
         self,
         batch: ProviderBatchResult,
         sessions: tuple[date, ...],
         as_of: date,
+        *,
+        provider_evidence: Mapping[str, float],
+        execution: _ExecutionState,
     ) -> _PreparedAttempt:
         timestamp = self._clock()
+        stage_timings = complete_stage_timings(provider_evidence)
+        execution.stage = "validation"
+        validation_started = self._monotonic()
         validation = (
             ValidationResult((), (), ())
             if batch.request_failure is not None
             else validate_provider_rows(batch.rows, sessions, timestamp)
         )
+        stage_timings["validation_ms"] = elapsed_milliseconds(
+            validation_started, self._monotonic()
+        )
+        execution.stage = "calculation"
+        calculation_started = self._monotonic()
         metrics, history_counts = _calculate_metrics(validation, sessions)
         input_hash = _hash_payload(batch, sessions)
         idempotency_key = _idempotency_key(as_of, input_hash)
@@ -384,6 +552,14 @@ class BuildSectorSnapshotUseCase:
                 input_hash,
                 self._attempt_id_factory(),
             )
+        source_freshness = _source_freshness(
+            validation,
+            as_of=as_of,
+            response_timestamp=batch.response_timestamp,
+        )
+        stage_timings["calculation_ms"] = elapsed_milliseconds(
+            calculation_started, self._monotonic()
+        )
         return _PreparedAttempt(
             batch=batch,
             sessions=sessions,
@@ -392,12 +568,9 @@ class BuildSectorSnapshotUseCase:
             history_session_counts=history_counts,
             input_hash=input_hash,
             idempotency_key=idempotency_key,
-            source_freshness=_source_freshness(
-                validation,
-                as_of=as_of,
-                response_timestamp=batch.response_timestamp,
-            ),
+            source_freshness=source_freshness,
             timestamp=timestamp,
+            stage_timings=stage_timings,
         )
 
     @staticmethod
@@ -435,6 +608,10 @@ class BuildSectorSnapshotUseCase:
             "usable_symbols": len(candidate.usable_symbols),
             "snapshot_rows": len(candidate.snapshots),
         }
+        failure_category = BuildSectorSnapshotUseCase._candidate_failure_category(
+            prepared,
+            candidate,
+        )
         return RunAudit(
             idempotency_key=prepared.idempotency_key,
             input_hash=prepared.input_hash,
@@ -457,25 +634,71 @@ class BuildSectorSnapshotUseCase:
             source_freshness=prepared.source_freshness,
             calculation_timestamp=prepared.timestamp,
             ingestion_timestamp=prepared.timestamp,
+            pipeline_version=PIPELINE_VERSION,
+            failure_category=failure_category,
+            stage_timings=complete_stage_timings(prepared.stage_timings),
+            publication_status="PENDING",
+            retry_status=None,
+            reuse_status=None,
         )
 
     @staticmethod
-    def _finalize_feature_run(
-        uow: Any,
-        run_id: int,
+    def _candidate_failure_category(
+        prepared: _PreparedAttempt,
         candidate: CandidateSnapshot,
-    ) -> None:
+    ) -> MarketIntelligenceErrorCategory | None:
+        if prepared.batch.request_failure is not None:
+            return failure_category_for_request(prepared.batch.request_failure.code)
+        if prepared.validation.rejections:
+            return MarketIntelligenceErrorCategory.INVALID_MARKET_DATA
+        if prepared.batch.symbol_failures:
+            return MarketIntelligenceErrorCategory.PROVIDER_FAILURE
+        if prepared.source_freshness.get("stale_or_missing_symbols"):
+            return MarketIntelligenceErrorCategory.STALE_DATA
+        if candidate.ingestion_status is not IngestionStatus.SUCCEEDED:
+            return MarketIntelligenceErrorCategory.INSUFFICIENT_HISTORY
+        return None
+
+    @staticmethod
+    def _retry_status(command: BuildSectorSnapshotCommand) -> str:
+        if command.broker_redelivered:
+            return "BROKER_REDELIVERED"
+        if command.retry_count > 0:
+            return "RETRY"
+        return "INITIAL"
+
+    @staticmethod
+    def _run_stats(
+        candidate: CandidateSnapshot,
+        *,
+        duration_seconds: float,
+    ) -> RunStats:
         usable_count = len(candidate.usable_symbols)
-        stats = RunStats(
+        return RunStats(
             total_symbols=len(MARKET_INTELLIGENCE_UNIVERSE),
             processed_symbols=usable_count,
             failed_symbols=len(MARKET_INTELLIGENCE_UNIVERSE) - usable_count,
-            duration_seconds=0.0,
+            duration_seconds=duration_seconds,
             passed_symbols=usable_count,
+        )
+
+    @classmethod
+    def _finalize_feature_run(
+        cls,
+        uow: Any,
+        run_id: int,
+        candidate: CandidateSnapshot,
+        *,
+        duration_seconds: float,
+    ) -> str:
+        usable_count = len(candidate.usable_symbols)
+        stats = cls._run_stats(
+            candidate,
+            duration_seconds=duration_seconds,
         )
         if candidate.ingestion_status is IngestionStatus.FAILED:
             uow.feature_runs.mark_failed(run_id, stats)
-            return
+            return "FAILED"
         uow.feature_runs.mark_completed(run_id, stats)
         if candidate.ingestion_status is IngestionStatus.PARTIAL:
             uow.feature_runs.mark_quarantined(
@@ -491,10 +714,54 @@ class BuildSectorSnapshotUseCase:
                     ),
                 ),
             )
-            return
+            return "QUARANTINED"
         uow.feature_runs.publish_atomically_if_not_older(
             run_id,
             LATEST_POINTER_KEY,
+        )
+        return "PUBLISHED"
+
+    @staticmethod
+    def _log_run(
+        *,
+        event: str,
+        command: BuildSectorSnapshotCommand,
+        run_id: int | None,
+        provider: str | None,
+        stage: str,
+        duration_ms: float,
+        publication_status: str,
+        retry_status: str,
+        reuse_status: str,
+        symbol_count: int | None = None,
+        snapshot_count: int | None = None,
+        failure_category: MarketIntelligenceErrorCategory | None = None,
+        level: int = logging.INFO,
+        exc_info: bool = False,
+    ) -> None:
+        logger.log(
+            level,
+            event,
+            extra={
+                "event": event,
+                "task_id": None,
+                "run_id": run_id,
+                "as_of_date": command.as_of.isoformat(),
+                "pipeline_version": PIPELINE_VERSION,
+                "metric_version": METRIC_VERSION,
+                "provider": provider,
+                "stage": stage,
+                "duration_ms": duration_ms,
+                "symbol_count": symbol_count,
+                "snapshot_count": snapshot_count,
+                "publication_status": publication_status,
+                "retry_status": retry_status,
+                "reuse_status": reuse_status,
+                "failure_category": (
+                    None if failure_category is None else failure_category.value
+                ),
+            },
+            exc_info=exc_info,
         )
 
     @staticmethod
@@ -506,4 +773,6 @@ class BuildSectorSnapshotUseCase:
             ingestion_status=bundle.audit.ingestion_status,
             published=bundle.lifecycle_status == "published",
             idempotency_key=bundle.audit.idempotency_key,
+            reused=True,
+            failure_category=bundle.audit.failure_category,
         )

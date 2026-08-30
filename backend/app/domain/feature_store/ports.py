@@ -112,6 +112,15 @@ class FeatureRunRepository(abc.ABC):
         ...
 
     @abc.abstractmethod
+    def update_stats(
+        self,
+        run_id: int,
+        stats: RunStats,
+    ) -> FeatureRunDomain:
+        """Replace measured run statistics before transaction commit."""
+        ...
+
+    @abc.abstractmethod
     def publish_atomically_if_not_older(
         self,
         run_id: int,

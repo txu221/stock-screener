@@ -32,6 +32,11 @@ from app.domain.market_intelligence.models import (
     SectorMetrics,
     SectorSnapshot,
 )
+from app.domain.market_intelligence.observability import (
+    PIPELINE_VERSION,
+    MarketIntelligenceErrorCategory,
+    complete_stage_timings,
+)
 from app.domain.market_intelligence.ports import (
     MarketIntelligenceIdempotencyConflict,
 )
@@ -234,6 +239,33 @@ def test_persisted_bundle_round_trips_lineage_rejection_audit_and_snapshot(engin
     assert bundle.rejections == (rejection,)
     assert bundle.snapshots == (_snapshot(),)
     assert bundle.lifecycle_status == "running"
+
+
+def test_persisted_bundle_round_trips_observability_fields(engine) -> None:
+    factory = sessionmaker(bind=engine)
+    audit = replace(
+        _audit(status=IngestionStatus.PARTIAL),
+        pipeline_version=PIPELINE_VERSION,
+        failure_category=MarketIntelligenceErrorCategory.INVALID_MARKET_DATA,
+        stage_timings=complete_stage_timings(
+            {"provider_fetch_ms": 20.0, "total_ms": 50.0}
+        ),
+        publication_status="QUARANTINED",
+        retry_status="RETRY",
+        reuse_status="NEW",
+    )
+    with SqlUnitOfWork(factory) as uow:
+        run = _start(uow)
+        uow.market_intelligence.persist_candidate(
+            run.id, audit, (_bar(),), (_rejection(),), (_snapshot(),)
+        )
+        uow.commit()
+
+    with SqlUnitOfWork(factory) as uow:
+        bundle = uow.market_intelligence.find_exact(audit.idempotency_key)
+
+    assert bundle is not None
+    assert bundle.audit == audit
 
 
 def test_persisted_canonical_bar_round_trips_yahoo_action_provenance(engine) -> None:

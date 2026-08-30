@@ -150,6 +150,19 @@ class SqlFeatureRunRepository(FeatureRunRepository):
         self._session.flush()
         return self._to_domain(row)
 
+    def update_stats(self, run_id: int, stats: RunStats) -> FeatureRunDomain:
+        """Replace measured run stats before the caller commits its transaction."""
+        row = self._get_or_raise(run_id)
+        row.stats_json = {
+            "total_symbols": stats.total_symbols,
+            "processed_symbols": stats.processed_symbols,
+            "failed_symbols": stats.failed_symbols,
+            "duration_seconds": stats.duration_seconds,
+            "passed_symbols": stats.passed_symbols,
+        }
+        self._session.flush()
+        return self._to_domain(row)
+
     def publish_atomically_if_not_older(
         self,
         run_id: int,

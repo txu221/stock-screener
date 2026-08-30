@@ -7,6 +7,8 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Any, Mapping
 
+from .observability import MarketIntelligenceErrorCategory
+
 
 class IngestionStatus(str, Enum):
     SUCCEEDED = "SUCCEEDED"
@@ -118,6 +120,7 @@ class ProviderBatchResult:
     rows: tuple[RawBar, ...]
     symbol_failures: tuple[ProviderSymbolFailure, ...]
     request_failure: RequestFailure | None
+    stage_timings: Mapping[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -179,6 +182,12 @@ class RunAudit:
     source_freshness: Mapping[str, Any]
     calculation_timestamp: datetime
     ingestion_timestamp: datetime
+    pipeline_version: str | None = None
+    failure_category: MarketIntelligenceErrorCategory | None = None
+    stage_timings: Mapping[str, float] | None = None
+    publication_status: str | None = None
+    retry_status: str | None = None
+    reuse_status: str | None = None
 
 
 @dataclass(frozen=True)

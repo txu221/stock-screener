@@ -12,7 +12,7 @@ Other test files outside this directory can import these fakes directly::
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -639,6 +639,12 @@ class FakeFeatureRunRepository(FeatureRunRepository):
         )
         self._runs[run_id] = updated
         self._pointers[pointer_key] = run_id
+        return updated
+
+    def update_stats(self, run_id, stats) -> FeatureRunDomain:
+        run = self._get_or_raise(run_id)
+        updated = replace(run, stats=stats)
+        self._runs[run_id] = updated
         return updated
 
     def publish_atomically_if_not_older(

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +24,11 @@ from app.domain.market_intelligence.models import (
     ProviderBatchResult,
     RawBar,
     RequestFailure,
+)
+from app.domain.market_intelligence.observability import (
+    MARKET_INTELLIGENCE_STAGE_TIMING_KEYS,
+    PIPELINE_VERSION,
+    MarketIntelligenceErrorCategory,
 )
 from app.domain.market_intelligence.ports import (
     MarketIntelligenceIdempotencyConflict,
@@ -151,12 +158,17 @@ def _runner(
     sessions: tuple[date, ...],
     *,
     uow_factory=None,
+    monotonic=None,
 ) -> BuildSectorSnapshotUseCase:
+    kwargs = {}
+    if monotonic is not None:
+        kwargs["monotonic"] = monotonic
     return BuildSectorSnapshotUseCase(
         provider=_StaticProvider(batch),
         session_source=_StaticSessions(sessions),
         uow_factory=uow_factory or (lambda: SqlUnitOfWork(SessionLocal)),
         clock=lambda: NOW,
+        **kwargs,
     )
 
 
@@ -211,6 +223,91 @@ def test_case_a_complete_run_publishes_twelve_rows() -> None:
     assert result.published is True
     assert _pointer_run_id() == result.run_id
     assert _table_counts(result.run_id)["snapshots"] == 12
+    assert result.reused is False
+
+
+def test_run_persists_complete_final_observability_and_measured_duration() -> None:
+    as_of = date(2026, 5, 15)
+    batch = replace(
+        _batch(as_of),
+        stage_timings={"provider_fetch_ms": 125.0, "normalization_ms": 25.0},
+    )
+
+    class _StepTimer:
+        value = 100.0
+
+        def __call__(self) -> float:
+            self.value += 0.01
+            return self.value
+
+    result = _runner(
+        batch,
+        _sessions(as_of),
+        monotonic=_StepTimer(),
+    ).execute(
+        BuildSectorSnapshotCommand(
+            as_of=as_of,
+            reuse_published=False,
+            force_refresh=True,
+            retry_count=2,
+            broker_redelivered=True,
+        )
+    )
+
+    with SessionLocal() as session:
+        audit = session.get(MarketIntelligenceRunAudit, result.run_id)
+        run = session.get(FeatureRun, result.run_id)
+
+    assert audit.pipeline_version == PIPELINE_VERSION
+    assert audit.failure_category is None
+    assert tuple(audit.stage_timings_json) == MARKET_INTELLIGENCE_STAGE_TIMING_KEYS
+    assert audit.stage_timings_json["provider_fetch_ms"] == 125.0
+    assert audit.stage_timings_json["normalization_ms"] == 25.0
+    assert all(
+        math.isfinite(value) and value >= 0
+        for value in audit.stage_timings_json.values()
+    )
+    assert audit.publication_status == "PUBLISHED"
+    assert audit.retry_status == "BROKER_REDELIVERED"
+    assert audit.reuse_status == "FORCE_REFRESH"
+    assert run.stats_json["duration_seconds"] == pytest.approx(
+        audit.stage_timings_json["total_ms"] / 1000.0
+    )
+
+
+@pytest.mark.parametrize(
+    ("batch", "expected_category"),
+    (
+        (
+            _batch(
+                date(2026, 5, 15),
+                request_failure=RequestFailure(
+                    "PROVIDER_SCHEMA_DRIFT", "Yahoo changed its schema"
+                ),
+            ),
+            MarketIntelligenceErrorCategory.PROVIDER_SCHEMA_DRIFT.value,
+        ),
+        (
+            _batch(
+                date(2026, 5, 15),
+                request_failure=RequestFailure("PROVIDER_TIMEOUT", "Yahoo timed out"),
+            ),
+            MarketIntelligenceErrorCategory.PROVIDER_FAILURE.value,
+        ),
+    ),
+)
+def test_request_failures_persist_stable_failure_category(
+    batch: ProviderBatchResult,
+    expected_category: str,
+) -> None:
+    as_of = date(2026, 5, 15)
+    result = _runner(batch, _sessions(as_of)).execute(_command(as_of))
+
+    with SessionLocal() as session:
+        audit = session.get(MarketIntelligenceRunAudit, result.run_id)
+
+    assert audit.failure_category == expected_category
+    assert audit.publication_status == "FAILED"
 
 
 def test_case_b_eleven_of_twelve_is_partial_and_keeps_pointer() -> None:
@@ -370,6 +467,7 @@ def test_scheduled_retry_reuses_published_session_before_provider_fetch() -> Non
     assert retry.idempotency_key == first.idempotency_key
     assert retry.ingestion_status is IngestionStatus.SUCCEEDED
     assert retry.published is True
+    assert retry.reused is True
     assert _table_counts()["runs"] == 1
 
 
@@ -391,19 +489,20 @@ def test_scheduled_retry_rebuilds_unpublished_partial_session() -> None:
     assert _pointer_run_id() == recovered.run_id
 
 
-def test_commit_failure_rolls_back_run_snapshot_and_pointer() -> None:
+def test_commit_failure_rolls_back_run_snapshot_and_pointer(caplog) -> None:
     as_of = date(2026, 5, 15)
 
     class _FailingCommitUow(SqlUnitOfWork):
         def commit(self) -> None:
             raise RuntimeError("commit failed")
 
-    with pytest.raises(RuntimeError, match="commit failed"):
-        _runner(
-            _batch(as_of),
-            _sessions(as_of),
-            uow_factory=lambda: _FailingCommitUow(SessionLocal),
-        ).execute(_command(as_of))
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(RuntimeError, match="commit failed"):
+            _runner(
+                _batch(as_of),
+                _sessions(as_of),
+                uow_factory=lambda: _FailingCommitUow(SessionLocal),
+            ).execute(_command(as_of))
 
     assert _table_counts() == {
         "runs": 0,
@@ -413,6 +512,155 @@ def test_commit_failure_rolls_back_run_snapshot_and_pointer() -> None:
         "snapshots": 0,
         "pointers": 0,
     }
+    failure = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "market_intelligence_run_failed"
+    )
+    assert failure.failure_category == "DATABASE_FAILURE"
+    assert failure.stage == "persistence"
+    assert failure.as_of_date == as_of.isoformat()
+    assert failure.pipeline_version == PIPELINE_VERSION
+    assert failure.metric_version == METRIC_VERSION
+
+
+@pytest.mark.parametrize("failing_method", ("update_stats", "update_observability"))
+def test_observability_persistence_failure_is_database_failure(
+    failing_method,
+    caplog,
+) -> None:
+    as_of = date(2026, 5, 15)
+
+    class _FailingObservabilityUow(SqlUnitOfWork):
+        def __enter__(self):
+            uow = super().__enter__()
+            repository = (
+                uow.feature_runs
+                if failing_method == "update_stats"
+                else uow.market_intelligence
+            )
+
+            def fail(*args, **kwargs):
+                raise RuntimeError(f"{failing_method} failed")
+
+            setattr(repository, failing_method, fail)
+            return uow
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(RuntimeError, match=f"{failing_method} failed") as raised:
+            _runner(
+                _batch(as_of),
+                _sessions(as_of),
+                uow_factory=lambda: _FailingObservabilityUow(SessionLocal),
+            ).execute(_command(as_of))
+
+    assert raised.value.market_intelligence_failure_category is (
+        MarketIntelligenceErrorCategory.DATABASE_FAILURE
+    )
+    assert raised.value.market_intelligence_stage == "persistence"
+    failure = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "market_intelligence_run_failed"
+    )
+    assert failure.failure_category == "DATABASE_FAILURE"
+    assert failure.stage == "persistence"
+
+
+def test_validation_exception_is_logged_at_validation_boundary(
+    monkeypatch,
+    caplog,
+) -> None:
+    from app.use_cases.market_intelligence import build_sector_snapshot as module
+
+    as_of = date(2026, 5, 15)
+
+    def fail_validation(*args, **kwargs):
+        raise ValueError("invalid provider row")
+
+    monkeypatch.setattr(module, "validate_provider_rows", fail_validation)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(ValueError, match="invalid provider row"):
+            _runner(_batch(as_of), _sessions(as_of)).execute(_command(as_of))
+
+    failure = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "market_intelligence_run_failed"
+    )
+    assert failure.failure_category == "INVALID_MARKET_DATA"
+    assert failure.stage == "validation"
+
+
+def test_calculation_exception_is_logged_at_calculation_boundary(
+    monkeypatch,
+    caplog,
+) -> None:
+    from app.use_cases.market_intelligence import build_sector_snapshot as module
+
+    as_of = date(2026, 5, 15)
+
+    def fail_calculation(*args, **kwargs):
+        raise ArithmeticError("metric calculation failed")
+
+    monkeypatch.setattr(module, "_calculate_metrics", fail_calculation)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(ArithmeticError, match="metric calculation failed"):
+            _runner(_batch(as_of), _sessions(as_of)).execute(_command(as_of))
+
+    failure = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "market_intelligence_run_failed"
+    )
+    assert failure.failure_category == "INVALID_MARKET_DATA"
+    assert failure.stage == "calculation"
+
+
+def test_provider_exception_is_logged_as_provider_failure(
+    monkeypatch,
+    caplog,
+) -> None:
+    as_of = date(2026, 5, 15)
+
+    def fail_fetch(self, symbols, requested_as_of):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(_StaticProvider, "fetch", fail_fetch)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            _runner(_batch(as_of), _sessions(as_of)).execute(_command(as_of))
+
+    failure = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "market_intelligence_run_failed"
+    )
+    assert failure.failure_category == "PROVIDER_FAILURE"
+    assert failure.stage == "provider_fetch"
+
+
+def test_short_session_history_uses_typed_insufficient_history_category(
+    caplog,
+) -> None:
+    as_of = date(2026, 5, 15)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(ValueError, match="at least 90 completed US sessions"):
+            _runner(_batch(as_of), _sessions(as_of, count=89)).execute(
+                _command(as_of)
+            )
+
+    failure = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "market_intelligence_run_failed"
+    )
+    assert failure.failure_category == "INSUFFICIENT_HISTORY"
+    assert failure.stage == "validation"
 
 
 def test_provider_history_outside_session_reference_is_rejected_not_silently_cropped() -> None:
@@ -533,6 +781,7 @@ def test_concurrent_idempotency_conflict_reads_committed_winner() -> None:
                 audit=SimpleNamespace(
                     ingestion_status=IngestionStatus.SUCCEEDED,
                     idempotency_key=idempotency_key,
+                    failure_category=None,
                 ),
             )
 

@@ -28,6 +28,9 @@ from app.domain.market_intelligence.ports import (
     MarketIntelligenceIdempotencyConflict,
     MarketIntelligenceRepository,
 )
+from app.domain.market_intelligence.observability import (
+    MarketIntelligenceErrorCategory,
+)
 from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
 from app.infra.db.models.market_intelligence import (
     MarketIntelligenceCanonicalBar,
@@ -113,6 +116,28 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             .one_or_none()
         )
         return None if row is None else self._load_bundle(row.run_id)
+
+    def update_observability(
+        self,
+        run_id: int,
+        *,
+        stage_timings: dict[str, float],
+        failure_category: MarketIntelligenceErrorCategory | None,
+        publication_status: str,
+        retry_status: str,
+        reuse_status: str,
+    ) -> None:
+        row = self._session.get(MarketIntelligenceRunAudit, run_id)
+        if row is None:
+            raise LookupError(f"market-intelligence run {run_id} has no audit")
+        row.stage_timings_json = dict(stage_timings)
+        row.failure_category = (
+            None if failure_category is None else failure_category.value
+        )
+        row.publication_status = publication_status
+        row.retry_status = retry_status
+        row.reuse_status = reuse_status
+        self._session.flush()
 
     def get_previous_published(
         self,
@@ -328,6 +353,18 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             source_freshness_json=dict(audit.source_freshness),
             calculation_timestamp=audit.calculation_timestamp,
             ingestion_timestamp=audit.ingestion_timestamp,
+            pipeline_version=audit.pipeline_version,
+            failure_category=(
+                None
+                if audit.failure_category is None
+                else audit.failure_category.value
+            ),
+            stage_timings_json=(
+                None if audit.stage_timings is None else dict(audit.stage_timings)
+            ),
+            publication_status=audit.publication_status,
+            retry_status=audit.retry_status,
+            reuse_status=audit.reuse_status,
         )
 
     @staticmethod
@@ -429,6 +466,20 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             source_freshness=dict(row.source_freshness_json),
             calculation_timestamp=_aware(row.calculation_timestamp),
             ingestion_timestamp=_aware(row.ingestion_timestamp),
+            pipeline_version=row.pipeline_version,
+            failure_category=(
+                None
+                if row.failure_category is None
+                else MarketIntelligenceErrorCategory(row.failure_category)
+            ),
+            stage_timings=(
+                None
+                if row.stage_timings_json is None
+                else dict(row.stage_timings_json)
+            ),
+            publication_status=row.publication_status,
+            retry_status=row.retry_status,
+            reuse_status=row.reuse_status,
         )
 
     @staticmethod
