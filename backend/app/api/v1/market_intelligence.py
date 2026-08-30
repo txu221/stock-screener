@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Literal
+from typing import Any, Literal, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -19,6 +21,10 @@ from app.domain.market_intelligence.freshness import (
     classify_completed_session_freshness,
     collect_completed_sessions,
 )
+from app.domain.market_intelligence.models import IngestionStatus
+from app.domain.market_intelligence.mvp import MVP_METRIC_VERSION
+from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
+from app.infra.db.models.market_intelligence import MarketIntelligenceRunAudit
 from app.infra.db.repositories.market_intelligence_repo import (
     SqlMarketIntelligenceRepository,
 )
@@ -35,10 +41,116 @@ from app.schemas.market_intelligence import (
 from app.services.market_intelligence_read_service import (
     DEFAULT_MIN_PRICE,
     MarketIntelligenceReadService,
+    US_PUBLISHED_POINTER,
+)
+from app.services.market_intelligence_read_cache import (
+    MarketIntelligenceCacheKeyParts,
+    cached_market_intelligence_payload,
 )
 from app.services.market_calendar_service import MarketCalendarService
 
 router = APIRouter()
+ResponseModel = TypeVar("ResponseModel")
+
+
+@dataclass(frozen=True)
+class _StablePublishedIdentity:
+    run_id: int
+    trading_date: date
+    metric_version: str
+    pointer_revision: datetime | None
+
+
+def _mvp_published_identity(db: Session) -> _StablePublishedIdentity | None:
+    row = (
+        db.query(
+            FeatureRun.id,
+            FeatureRun.as_of_date,
+            FeatureRunPointer.updated_at,
+        )
+        .join(FeatureRunPointer, FeatureRunPointer.run_id == FeatureRun.id)
+        .filter(
+            FeatureRunPointer.key == US_PUBLISHED_POINTER,
+            FeatureRun.status == "published",
+            FeatureRun.published_at.isnot(None),
+        )
+        .one_or_none()
+    )
+    if row is None:
+        return None
+    return _StablePublishedIdentity(
+        run_id=int(row.id),
+        trading_date=row.as_of_date,
+        metric_version=MVP_METRIC_VERSION,
+        pointer_revision=row.updated_at,
+    )
+
+
+def _sector_published_identity(db: Session) -> _StablePublishedIdentity | None:
+    row = (
+        db.query(
+            FeatureRun.id,
+            FeatureRun.as_of_date,
+            MarketIntelligenceRunAudit.metric_version,
+            FeatureRunPointer.updated_at,
+        )
+        .join(FeatureRunPointer, FeatureRunPointer.run_id == FeatureRun.id)
+        .join(
+            MarketIntelligenceRunAudit,
+            MarketIntelligenceRunAudit.run_id == FeatureRun.id,
+        )
+        .filter(
+            FeatureRunPointer.key == LATEST_POINTER_KEY,
+            FeatureRun.status == "published",
+            FeatureRun.published_at.isnot(None),
+            MarketIntelligenceRunAudit.ingestion_status
+            == IngestionStatus.SUCCEEDED.value,
+        )
+        .one_or_none()
+    )
+    if row is None:
+        return None
+    return _StablePublishedIdentity(
+        run_id=int(row.id),
+        trading_date=row.as_of_date,
+        metric_version=row.metric_version,
+        pointer_revision=row.updated_at,
+    )
+
+
+def _cache_key_parts(
+    identity: _StablePublishedIdentity | None,
+    *,
+    endpoint: str,
+    params: Mapping[str, Any] | None = None,
+) -> MarketIntelligenceCacheKeyParts | None:
+    if identity is None:
+        return None
+    return MarketIntelligenceCacheKeyParts(
+        endpoint=endpoint,
+        stable_run_id=identity.run_id,
+        stable_trading_date=identity.trading_date,
+        metric_version=identity.metric_version,
+        params=params or {},
+    )
+
+
+def _cached_response(
+    response_type: type[ResponseModel],
+    *,
+    key_parts: MarketIntelligenceCacheKeyParts | None,
+    compute: Callable[[], ResponseModel],
+    is_still_stable: Callable[[], bool] | None = None,
+) -> ResponseModel:
+    payload = cached_market_intelligence_payload(
+        key_parts,
+        lambda: compute().model_dump(mode="json"),
+        is_still_stable=is_still_stable,
+        validate_cached=lambda value: response_type.model_validate(value).model_dump(
+            mode="json"
+        ),
+    )
+    return response_type.model_validate(payload)
 
 
 def _utc_now() -> datetime:
@@ -51,6 +163,20 @@ def _completed_us_sessions() -> tuple[date, ...]:
     return collect_completed_sessions(
         latest,
         lambda start, end: calendar.trading_days("US", start, end),
+    )
+
+
+def _refresh_mvp_freshness(response: ResponseModel) -> ResponseModel:
+    completed_sessions = _completed_us_sessions()
+    expected_session = completed_sessions[-1] if completed_sessions else None
+    return response.model_copy(
+        update={
+            "expected_session": expected_session,
+            "freshness_status": classify_completed_session_freshness(
+                response.as_of,
+                completed_sessions,
+            ),
+        }
     )
 
 
@@ -69,8 +195,20 @@ def _age_seconds(value: datetime | None, *, now: datetime) -> float | None:
 def market_intelligence_overview(
     db: Session = Depends(get_db),
 ) -> MarketIntelligenceOverviewResponse:
-    return MarketIntelligenceOverviewResponse.from_domain(
-        MarketIntelligenceReadService(db).get_overview()
+    identity = _mvp_published_identity(db)
+    return _refresh_mvp_freshness(
+        _cached_response(
+            MarketIntelligenceOverviewResponse,
+            key_parts=_cache_key_parts(identity, endpoint="overview"),
+            compute=lambda: MarketIntelligenceOverviewResponse.from_domain(
+                MarketIntelligenceReadService(db).get_overview()
+            ),
+            is_still_stable=(
+                None
+                if identity is None
+                else lambda: _mvp_published_identity(db) == identity
+            ),
+        ),
     )
 
 
@@ -88,16 +226,39 @@ def market_intelligence_movers(
     search: str | None = Query(default=None, min_length=1, max_length=64),
     db: Session = Depends(get_db),
 ) -> MarketMoversResponse:
-    return MarketMoversResponse.from_domain(
-        MarketIntelligenceReadService(db).get_movers(
-            limit=limit,
-            sector=sector,
-            direction=direction,
-            min_price=min_price,
-            min_rvol=min_rvol,
-            market_cap_group=market_cap_group,
-            search=search,
-        )
+    identity = _mvp_published_identity(db)
+    normalized_sector = sector.strip().casefold() if sector is not None else None
+    normalized_search = search.strip().casefold() if search is not None else None
+    params = {
+        "limit": limit,
+        "sector": normalized_sector,
+        "direction": direction,
+        "min_price": min_price,
+        "min_rvol": min_rvol,
+        "market_cap_group": market_cap_group,
+        "search": normalized_search,
+    }
+    return _refresh_mvp_freshness(
+        _cached_response(
+            MarketMoversResponse,
+            key_parts=_cache_key_parts(identity, endpoint="movers", params=params),
+            compute=lambda: MarketMoversResponse.from_domain(
+                MarketIntelligenceReadService(db).get_movers(
+                    limit=limit,
+                    sector=normalized_sector,
+                    direction=direction,
+                    min_price=min_price,
+                    min_rvol=min_rvol,
+                    market_cap_group=market_cap_group,
+                    search=normalized_search,
+                )
+            ),
+            is_still_stable=(
+                None
+                if identity is None
+                else lambda: _mvp_published_identity(db) == identity
+            )
+        ),
     )
 
 
@@ -120,8 +281,24 @@ def market_intelligence_etfs(
     ] = "all",
     db: Session = Depends(get_db),
 ) -> EtfRadarResponse:
-    return EtfRadarResponse.from_domain(
-        MarketIntelligenceReadService(db).get_etf_radar(category=category)
+    identity = _mvp_published_identity(db)
+    return _refresh_mvp_freshness(
+        _cached_response(
+            EtfRadarResponse,
+            key_parts=_cache_key_parts(
+                identity,
+                endpoint="etfs",
+                params={"category": category},
+            ),
+            compute=lambda: EtfRadarResponse.from_domain(
+                MarketIntelligenceReadService(db).get_etf_radar(category=category)
+            ),
+            is_still_stable=(
+                None
+                if identity is None
+                else lambda: _mvp_published_identity(db) == identity
+            ),
+        ),
     )
 
 
@@ -132,15 +309,29 @@ def market_intelligence_etfs(
 def latest_sector_intelligence(
     db: Session = Depends(get_db),
 ) -> SectorIntelligenceLatestResponse:
-    bundle = SqlMarketIntelligenceRepository(db).get_latest_published(
-        LATEST_POINTER_KEY
-    )
-    if bundle is None:
-        raise HTTPException(
-            status_code=404,
-            detail="No complete sector intelligence snapshot has been published",
+    identity = _sector_published_identity(db)
+
+    def compute() -> SectorIntelligenceLatestResponse:
+        bundle = SqlMarketIntelligenceRepository(db).get_latest_published(
+            LATEST_POINTER_KEY
         )
-    return SectorIntelligenceLatestResponse.from_bundle(bundle)
+        if bundle is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No complete sector intelligence snapshot has been published",
+            )
+        return SectorIntelligenceLatestResponse.from_bundle(bundle)
+
+    return _cached_response(
+        SectorIntelligenceLatestResponse,
+        key_parts=_cache_key_parts(identity, endpoint="sectors-latest"),
+        compute=compute,
+        is_still_stable=(
+            None
+            if identity is None
+            else lambda: _sector_published_identity(db) == identity
+        ),
+    )
 
 
 @router.get(
@@ -160,6 +351,7 @@ def sector_intelligence_history(
     db: Session = Depends(get_db),
 ) -> SectorIntelligenceHistoryResponse:
     normalized_symbol = symbol.strip().upper() if symbol is not None else None
+    normalized_metric_version = metric_version.strip()
     if (
         normalized_symbol is not None
         and normalized_symbol not in MARKET_INTELLIGENCE_UNIVERSE
@@ -173,20 +365,49 @@ def sector_intelligence_history(
             status_code=422,
             detail="date_from must be on or before date_to",
         )
-    bundles = SqlMarketIntelligenceRepository(db).list_published_history(
-        metric_version=metric_version,
-        symbol=normalized_symbol,
-        date_from=date_from,
-        date_to=date_to,
-        limit=limit,
-    )
-    return SectorIntelligenceHistoryResponse(
-        metric_version=metric_version,
-        symbol=normalized_symbol,
-        items=[
-            SectorIntelligenceHistoryItemResponse.from_bundle(bundle)
-            for bundle in bundles
-        ],
+    if not normalized_metric_version:
+        raise HTTPException(
+            status_code=422,
+            detail="metric_version must not be blank",
+        )
+    identity = _sector_published_identity(db)
+
+    def compute() -> SectorIntelligenceHistoryResponse:
+        bundles = SqlMarketIntelligenceRepository(db).list_published_history(
+            metric_version=normalized_metric_version,
+            symbol=normalized_symbol,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+        return SectorIntelligenceHistoryResponse(
+            metric_version=normalized_metric_version,
+            symbol=normalized_symbol,
+            items=[
+                SectorIntelligenceHistoryItemResponse.from_bundle(bundle)
+                for bundle in bundles
+            ],
+        )
+
+    return _cached_response(
+        SectorIntelligenceHistoryResponse,
+        key_parts=_cache_key_parts(
+            identity,
+            endpoint="sectors-history",
+            params={
+                "date_from": date_from,
+                "date_to": date_to,
+                "symbol": normalized_symbol,
+                "metric_version": normalized_metric_version,
+                "limit": limit,
+            },
+        ),
+        compute=compute,
+        is_still_stable=(
+            None
+            if identity is None
+            else lambda: _sector_published_identity(db) == identity
+        ),
     )
 
 

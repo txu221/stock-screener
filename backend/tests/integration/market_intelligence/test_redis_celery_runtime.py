@@ -21,6 +21,14 @@ from sqlalchemy.orm import sessionmaker
 from app.domain.market_intelligence.constants import LATEST_POINTER_KEY, METRIC_VERSION
 from app.infra.db.models.feature_store import FeatureRunPointer
 from app.infra.db.models.market_intelligence import MarketIntelligenceRunAudit
+from app.services import market_intelligence_read_cache
+from app.services.market_intelligence_read_cache import (
+    MAX_TTL_SECONDS,
+    MIN_TTL_SECONDS,
+    MarketIntelligenceCacheKeyParts,
+    build_market_intelligence_cache_key,
+    cached_market_intelligence_payload,
+)
 from app.tasks.market_intelligence_tasks import (
     calculate_sector_intelligence_snapshot,
 )
@@ -69,6 +77,49 @@ def test_real_redis_connectivity_uses_scoped_round_trip(phase2_redis_url: str) -
         assert client.ping() is True
         assert client.set(key, "ok", ex=30, nx=True) is True
         assert client.get(key) == b"ok"
+    finally:
+        client.delete(key)
+        client.close()
+
+
+@pytest.mark.integration
+@pytest.mark.redis_integration
+def test_real_redis_market_intelligence_read_cache_round_trip_and_ttl(
+    phase2_redis_url: str,
+    monkeypatch,
+) -> None:
+    client = Redis.from_url(phase2_redis_url, socket_connect_timeout=3)
+    scope = uuid4().hex
+    identity = int(scope[:7], 16) + 1
+    parts = MarketIntelligenceCacheKeyParts(
+        endpoint="integration-contract",
+        stable_run_id=identity,
+        stable_trading_date=date(2026, 8, 26),
+        metric_version=METRIC_VERSION,
+        params={"symbol": " xlk ", "limit": 10, "scope": scope},
+    )
+    key = build_market_intelligence_cache_key(parts)
+    calls = 0
+
+    def compute() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"run_id": identity, "source": "postgres"}
+
+    monkeypatch.setattr(
+        market_intelligence_read_cache.redis_pool,
+        "get_redis_client",
+        lambda: client,
+    )
+    try:
+        client.delete(key)
+        first = cached_market_intelligence_payload(parts, compute)
+        second = cached_market_intelligence_payload(parts, compute)
+
+        assert first == second == {"run_id": identity, "source": "postgres"}
+        assert calls == 1
+        assert client.get(key) is not None
+        assert MIN_TTL_SECONDS <= client.ttl(key) <= MAX_TTL_SECONDS
     finally:
         client.delete(key)
         client.close()

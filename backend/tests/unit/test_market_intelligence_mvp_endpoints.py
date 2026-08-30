@@ -137,6 +137,7 @@ def _seed_mover(factory):
             _prices("AAPL", [100.0] * 20 + [110.0], current_volume=4_000_000)
         )
         session.commit()
+        return run.id
 
 
 @pytest.mark.asyncio
@@ -244,3 +245,107 @@ async def test_mvp_query_validation_is_explicit(mvp_client, path, params):
     response = await client.get(path, params=params)
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_movers_cache_uses_stable_pointer_and_normalized_parameters(
+    mvp_client,
+    monkeypatch,
+):
+    from app.api.v1 import market_intelligence as module
+    from app.services.market_intelligence_read_cache import (
+        build_market_intelligence_cache_key,
+    )
+
+    client, factory = mvp_client
+    run_id = _seed_mover(factory)
+    observed = []
+
+    def capture(key_parts, compute, **_kwargs):
+        observed.append(key_parts)
+        return compute()
+
+    monkeypatch.setattr(
+        module,
+        "cached_market_intelligence_payload",
+        capture,
+        raising=False,
+    )
+
+    first = await client.get(
+        "/api/v1/market-intelligence/movers",
+        params={"direction": "gainers", "sector": " Technology ", "limit": 20},
+    )
+    second = await client.get(
+        "/api/v1/market-intelligence/movers",
+        params={"limit": 20, "sector": "technology", "direction": "gainers"},
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert len(observed) == 2
+    assert observed[0].stable_run_id == run_id
+    assert observed[0].stable_trading_date == AS_OF
+    assert observed[0].metric_version == "market_intelligence_mvp_v1"
+    assert build_market_intelligence_cache_key(observed[0]) == (
+        build_market_intelligence_cache_key(observed[1])
+    )
+
+
+@pytest.mark.asyncio
+async def test_unpublished_mvp_read_bypasses_cache_storage(mvp_client, monkeypatch):
+    from app.api.v1 import market_intelligence as module
+
+    client, _ = mvp_client
+    observed = []
+
+    def capture(key_parts, compute, **_kwargs):
+        observed.append(key_parts)
+        return compute()
+
+    monkeypatch.setattr(
+        module,
+        "cached_market_intelligence_payload",
+        capture,
+        raising=False,
+    )
+
+    response = await client.get("/api/v1/market-intelligence/overview")
+
+    assert response.status_code == 200
+    assert response.json()["unavailable_reason"] == "no_published_us_feature_run"
+    assert observed == [None]
+
+
+@pytest.mark.asyncio
+async def test_cached_mvp_read_refreshes_completed_session_freshness(
+    mvp_client,
+    monkeypatch,
+):
+    from app.api.v1 import market_intelligence as module
+
+    client, factory = mvp_client
+    _seed_pulse_and_etfs(factory)
+    cached_payload = None
+    completed_sessions = [AS_OF]
+
+    def in_process_cache(_key_parts, compute, **_kwargs):
+        nonlocal cached_payload
+        if cached_payload is None:
+            cached_payload = compute()
+        return cached_payload
+
+    monkeypatch.setattr(module, "cached_market_intelligence_payload", in_process_cache)
+    monkeypatch.setattr(
+        module,
+        "_completed_us_sessions",
+        lambda: tuple(completed_sessions),
+    )
+
+    first = await client.get("/api/v1/market-intelligence/overview")
+    completed_sessions.append(AS_OF + timedelta(days=1))
+    second = await client.get("/api/v1/market-intelligence/overview")
+
+    assert first.json()["expected_session"] == AS_OF.isoformat()
+    assert first.json()["freshness_status"] == "FRESH"
+    assert second.json()["expected_session"] == (AS_OF + timedelta(days=1)).isoformat()
+    assert second.json()["freshness_status"] == "AGING"

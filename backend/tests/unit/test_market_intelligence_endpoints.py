@@ -479,3 +479,118 @@ async def test_history_rejects_symbol_outside_fixed_universe(client) -> None:
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_sector_reads_use_stable_pointer_cache_but_health_never_does(
+    client,
+    monkeypatch,
+) -> None:
+    from app.api.v1 import market_intelligence as module
+
+    with SqlUnitOfWork(SessionLocal) as uow:
+        run_id = _persist_published(uow, MONDAY, "6" * 64)
+        uow.commit()
+
+    observed = []
+
+    def capture(key_parts, compute, **_kwargs):
+        observed.append(key_parts)
+        return compute()
+
+    monkeypatch.setattr(
+        module,
+        "cached_market_intelligence_payload",
+        capture,
+        raising=False,
+    )
+
+    latest = await client.get("/api/v1/market-intelligence/sectors/latest")
+    history = await client.get(
+        "/api/v1/market-intelligence/sectors/history",
+        params={"symbol": " xlk ", "limit": 10},
+    )
+    cache_calls_before_health = len(observed)
+    health = await client.get("/api/v1/market-intelligence/sectors/health")
+
+    assert latest.status_code == history.status_code == health.status_code == 200
+    assert cache_calls_before_health == 2
+    assert len(observed) == cache_calls_before_health
+    assert [parts.endpoint for parts in observed] == [
+        "sectors-latest",
+        "sectors-history",
+    ]
+    assert all(parts.stable_run_id == run_id for parts in observed)
+    assert all(parts.stable_trading_date == MONDAY for parts in observed)
+    assert all(parts.metric_version == METRIC_VERSION for parts in observed)
+    assert observed[1].params["symbol"] == "XLK"
+    assert observed[1].params["limit"] == 10
+
+
+@pytest.mark.asyncio
+async def test_history_normalizes_metric_version_for_query_and_parameter_key(
+    client,
+    monkeypatch,
+) -> None:
+    from app.api.v1 import market_intelligence as module
+
+    with SqlUnitOfWork(SessionLocal) as uow:
+        _persist_published(uow, MONDAY, "7" * 64)
+        uow.commit()
+    observed = []
+
+    def capture(key_parts, compute, **_kwargs):
+        observed.append(key_parts)
+        return compute()
+
+    monkeypatch.setattr(module, "cached_market_intelligence_payload", capture)
+
+    response = await client.get(
+        "/api/v1/market-intelligence/sectors/history",
+        params={"metric_version": f" {METRIC_VERSION} "},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["metric_version"] == METRIC_VERSION
+    assert len(response.json()["items"]) == 1
+    assert observed[0].metric_version == METRIC_VERSION
+    assert observed[0].params["metric_version"] == METRIC_VERSION
+
+
+@pytest.mark.asyncio
+async def test_pointer_revision_recheck_rejects_aba_repoint(client, monkeypatch) -> None:
+    from app.api.v1 import market_intelligence as module
+
+    with SqlUnitOfWork(SessionLocal) as uow:
+        run_id = _persist_published(uow, MONDAY, "8" * 64)
+        uow.commit()
+    initial = module._StablePublishedIdentity(
+        run_id=run_id,
+        trading_date=MONDAY,
+        metric_version=METRIC_VERSION,
+        pointer_revision=datetime(2026, 5, 12, 21, 0, tzinfo=timezone.utc),
+    )
+    repointed_back = replace(
+        initial,
+        pointer_revision=datetime(2026, 5, 12, 21, 1, tzinfo=timezone.utc),
+    )
+    identities = iter((initial, repointed_back))
+    stability_results = []
+
+    monkeypatch.setattr(
+        module,
+        "_sector_published_identity",
+        lambda _db: next(identities),
+    )
+
+    def capture(_key_parts, compute, **kwargs):
+        value = compute()
+        stability_results.append(kwargs["is_still_stable"]())
+        return value
+
+    monkeypatch.setattr(module, "cached_market_intelligence_payload", capture)
+
+    response = await client.get("/api/v1/market-intelligence/sectors/latest")
+
+    assert response.status_code == 200
+    assert stability_results == [False]
