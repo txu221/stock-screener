@@ -31,9 +31,11 @@ def require_postgresql_url(value: str | None) -> str:
             "Phase 2 PostgreSQL checks require a real PostgreSQL URL"
         )
     database_name = urlsplit(candidate).path.rsplit("/", 1)[-1].lower()
-    if not database_name or not any(
+    is_phase2_or_test = any(
         marker in database_name for marker in ("phase2", "test")
-    ):
+    )
+    is_exact_slo_database = database_name == "market_intelligence_slo"
+    if not database_name or not (is_phase2_or_test or is_exact_slo_database):
         raise Phase2EnvironmentError(
             "Phase 2 PostgreSQL checks require a dedicated phase2/test database"
         )

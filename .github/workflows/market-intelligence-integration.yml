@@ -221,17 +221,6 @@ jobs:
             tests/integration/market_intelligence/test_postgres_api.py \
             -q 2>&1 | tee "$RUNNER_TEMP/phase2-postgresql.log"
 
-      - name: Record PostgreSQL 16 uncached Market Intelligence SLO evidence
-        working-directory: backend
-        env:
-          MARKET_INTELLIGENCE_SLO_ARTIFACT_DIR: ${{ runner.temp }}/phase2-evidence
-        run: |
-          set -o pipefail
-          python -m pytest \
-            tests/integration/market_intelligence/test_postgres_performance_slo.py \
-            -k postgresql_16_uncached_read_baseline_and_opt_in_slo \
-            -q -s 2>&1 | tee "$RUNNER_TEMP/phase2-slo.log"
-
       - name: Run real Redis connectivity test
         working-directory: backend
         run: |
@@ -286,6 +275,90 @@ jobs:
         with:
           name: market-intelligence-integration-${{ github.run_id }}
           path: ${{ runner.temp }}/phase2-evidence
+          if-no-files-found: error
+
+  market-intelligence-slo:
+    name: PostgreSQL 16 Market Intelligence read evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: market_intelligence_slo
+          POSTGRES_USER: slo
+          POSTGRES_PASSWORD: slo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U slo -d market_intelligence_slo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://slo:slo@localhost:5432/market_intelligence_slo
+      PHASE2_POSTGRES_URL: postgresql+psycopg2://slo:slo@localhost:5432/market_intelligence_slo
+      RUN_MARKET_INTELLIGENCE_POSTGRES: "1"
+      PHASE2_ALLOW_DESTRUCTIVE_POSTGRES_TESTS: "1"
+      MARKET_INTELLIGENCE_SLO_SAMPLE_COUNT: "20"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-runtime.txt
+            backend/requirements-test.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-runtime.txt -r backend/requirements-test.txt
+
+      - name: Migrate dedicated SLO database to Alembic head
+        working-directory: backend
+        run: |
+          set -o pipefail
+          pg_isready -h localhost -p 5432 -U slo -d market_intelligence_slo
+          python -m alembic upgrade head 2>&1 | tee "$RUNNER_TEMP/market-intelligence-slo-migration.log"
+          python -m alembic current --verbose 2>&1 | tee -a "$RUNNER_TEMP/market-intelligence-slo-migration.log"
+
+      - name: Record uncached production-route read evidence
+        working-directory: backend
+        env:
+          MARKET_INTELLIGENCE_SLO_ARTIFACT_DIR: ${{ runner.temp }}/market-intelligence-slo-evidence
+        run: |
+          set -o pipefail
+          python -m pytest \
+            tests/integration/market_intelligence/test_postgres_performance_slo.py \
+            -k postgresql_16_uncached_read_baseline_and_opt_in_slo \
+            -q -s 2>&1 | tee "$RUNNER_TEMP/market-intelligence-slo-pytest.log"
+
+      - name: Write SLO evidence metadata
+        if: always()
+        run: |
+          SLO_EVIDENCE_DIR="$RUNNER_TEMP/market-intelligence-slo-evidence"
+          mkdir -p "$SLO_EVIDENCE_DIR"
+          {
+            echo "github_repository=${GITHUB_REPOSITORY}"
+            echo "github_run_id=${GITHUB_RUN_ID}"
+            echo "github_sha=${GITHUB_SHA}"
+            echo "runner_os=${RUNNER_OS}"
+            echo "postgres_image=postgres:16-alpine"
+            echo "database_name=market_intelligence_slo"
+            echo "sample_count_per_family=${MARKET_INTELLIGENCE_SLO_SAMPLE_COUNT}"
+          } > "$SLO_EVIDENCE_DIR/run-metadata.txt"
+          cp "$RUNNER_TEMP"/market-intelligence-slo-*.log \
+            "$SLO_EVIDENCE_DIR/" 2>/dev/null || true
+          cp docs/market-intelligence-slo.md \
+            "$SLO_EVIDENCE_DIR/"
+
+      - name: Upload SLO evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-intelligence-slo-${{ github.run_id }}
+          path: ${{ runner.temp }}/market-intelligence-slo-evidence
           if-no-files-found: error
 
   live-yahoo-and-celery:

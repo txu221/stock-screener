@@ -48,6 +48,12 @@ def test_postgresql_gate_accepts_explicit_postgresql_url() -> None:
     assert require_postgresql_url(value) == value
 
 
+def test_postgresql_gate_accepts_exact_market_intelligence_slo_database() -> None:
+    value = "postgresql+psycopg2://slo:secret@localhost/market_intelligence_slo"
+
+    assert require_postgresql_url(value) == value
+
+
 def test_postgresql_gate_does_not_accept_an_absent_dedicated_url() -> None:
     with pytest.raises(Phase2EnvironmentError, match="real PostgreSQL URL"):
         require_postgresql_url(None)

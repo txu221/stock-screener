@@ -2,24 +2,29 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import sys
 from time import perf_counter_ns
 from typing import Any
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 import httpx
 import pytest
-from fastapi import FastAPI
-from sqlalchemy import event, text
-from sqlalchemy.engine import Engine
+from fastapi import APIRouter, FastAPI
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import sessionmaker
 
 import app.api.v1.market_intelligence as market_intelligence_api
-from app.api.v1.market_intelligence import router
+from app.api.v1.market_intelligence import router as market_intelligence_router
 from app.database import get_db
 from app.domain.market_intelligence.constants import (
     LATEST_POINTER_KEY,
@@ -40,10 +45,8 @@ from app.infra.db.models.market_intelligence import (
 )
 from app.models.stock import StockPrice
 from app.models.stock_universe import StockUniverse
+from app.services.server_auth import require_server_session
 from tests.integration.market_intelligence.scenario import weekday_sessions
-from tests.integration.market_intelligence.test_postgres_publication import (
-    _create_tables,
-)
 
 
 API_FAMILIES = (
@@ -70,7 +73,9 @@ ENDPOINTS = {
 DATASET_STOCK_COUNT = 500
 DATASET_PRICE_SESSION_COUNT = 90
 DATASET_SECTOR_SESSION_COUNT = 60
-DEFAULT_SAMPLE_COUNT = 10
+DEFAULT_SAMPLE_COUNT = 20
+SLO_DATABASE_NAME = "market_intelligence_slo"
+BACKEND_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _linear_percentile(values: list[float], percentile: float) -> float:
@@ -122,14 +127,16 @@ def _configured_slo_ms() -> float | None:
 
 
 def _slo_violations(
-    report: dict[str, object], *, threshold_ms: float
+    samples: dict[str, list[float]], *, threshold_ms: float
 ) -> list[str]:
-    families = report["api_families"]
-    return [
-        f"{family} p95={families[family]['p95_ms']:.3f}ms > {threshold_ms:.3f}ms"
-        for family in API_FAMILIES
-        if families[family]["p95_ms"] > threshold_ms
-    ]
+    violations = []
+    for family in API_FAMILIES:
+        raw_p95_ms = _linear_percentile(samples[family], 0.95)
+        if raw_p95_ms > threshold_ms:
+            violations.append(
+                f"{family} p95={raw_p95_ms:.6f}ms > {threshold_ms:.6f}ms"
+            )
+    return violations
 
 
 def _sample_count() -> int:
@@ -142,6 +149,44 @@ def _sample_count() -> int:
     if value < 5:
         raise ValueError("MARKET_INTELLIGENCE_SLO_SAMPLE_COUNT must be at least 5")
     return value
+
+
+def _require_exact_database_name(database_name: str | None) -> str:
+    normalized = (database_name or "").strip()
+    if normalized != SLO_DATABASE_NAME:
+        raise ValueError(
+            "Market Intelligence SLO evidence requires the exact database "
+            f"name {SLO_DATABASE_NAME!r}; received {normalized!r}"
+        )
+    return normalized
+
+
+def _synthetic_market_cap(index: int, stock_count: int) -> float:
+    if stock_count < 2:
+        raise ValueError("stock_count must be at least two")
+    if index < 0 or index >= stock_count:
+        raise ValueError("index must identify a stock in the synthetic universe")
+    lower = 5_000_000_000.0
+    upper = 3_000_000_000_000.0
+    rank_fraction = (stock_count - 1 - index) / (stock_count - 1)
+    return lower + (upper - lower) * rank_fraction**6
+
+
+def _migration_state(connection: Connection) -> dict[str, list[str]]:
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    expected_heads = sorted(ScriptDirectory.from_config(config).get_heads())
+    database_heads = sorted(
+        connection.execute(text("SELECT version_num FROM alembic_version")).scalars()
+    )
+    if database_heads != expected_heads:
+        raise AssertionError(
+            "SLO database is not migrated to the repository Alembic heads: "
+            f"database={database_heads}, expected={expected_heads}"
+        )
+    return {
+        "database_heads": database_heads,
+        "expected_heads": expected_heads,
+    }
 
 
 def _jsonable(value: Any) -> Any:
@@ -159,9 +204,17 @@ def _jsonable(value: Any) -> Any:
 @dataclass(frozen=True)
 class _QueryObservation:
     api_family: str
+    request_index: int
     elapsed_ms: float
     statement: str
     parameters: Any
+
+
+@dataclass(frozen=True)
+class _RequestObservation:
+    api_family: str
+    sample_index: int
+    api_elapsed_ms: float
 
 
 class _QueryRecorder:
@@ -170,7 +223,9 @@ class _QueryRecorder:
     def __init__(self, engine: Engine):
         self.engine = engine
         self.api_family: str | None = None
+        self.request_index: int | None = None
         self.observations: list[_QueryObservation] = []
+        self.capture_bookkeeping_ns = 0
 
     def start(self) -> None:
         event.listen(self.engine, "before_cursor_execute", self._before)
@@ -182,6 +237,7 @@ class _QueryRecorder:
 
     def clear(self) -> None:
         self.observations.clear()
+        self.capture_bookkeeping_ns = 0
 
     def _before(
         self,
@@ -208,20 +264,127 @@ class _QueryRecorder:
         normalized = statement.lstrip().upper()
         if not normalized.startswith(("SELECT", "WITH")):
             return
+        bookkeeping_started_ns = perf_counter_ns()
         elapsed_ms = (
-            perf_counter_ns() - context._market_intelligence_slo_started_ns
+            bookkeeping_started_ns - context._market_intelligence_slo_started_ns
         ) / 1_000_000
         captured_parameters = (
             dict(parameters) if isinstance(parameters, dict) else tuple(parameters)
         )
+        assert self.request_index is not None
         self.observations.append(
             _QueryObservation(
                 api_family=self.api_family,
+                request_index=self.request_index,
                 elapsed_ms=elapsed_ms,
                 statement=statement,
                 parameters=captured_parameters,
             )
         )
+        self.capture_bookkeeping_ns += perf_counter_ns() - bookkeeping_started_ns
+
+
+def _statement_fingerprint(statement: str) -> tuple[str, str]:
+    normalized = " ".join(statement.split())
+    fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return fingerprint, normalized
+
+
+def _build_query_evidence(
+    requests: list[_RequestObservation],
+    observations: list[_QueryObservation],
+    *,
+    capture_bookkeeping_ns: int,
+) -> dict[str, object]:
+    observations_by_request: dict[tuple[str, int], list[_QueryObservation]] = (
+        defaultdict(list)
+    )
+    for observation in observations:
+        observations_by_request[
+            (observation.api_family, observation.request_index)
+        ].append(observation)
+
+    requests_by_family: dict[str, list[dict[str, int | float]]] = defaultdict(list)
+    for request in requests:
+        request_queries = observations_by_request[
+            (request.api_family, request.sample_index)
+        ]
+        aggregate_sql_ms = sum(item.elapsed_ms for item in request_queries)
+        requests_by_family[request.api_family].append(
+            {
+                "sample_index": request.sample_index,
+                "query_count": len(request_queries),
+                "api_elapsed_ms": round(request.api_elapsed_ms, 3),
+                "aggregate_sql_ms": round(aggregate_sql_ms, 3),
+                "api_minus_sql_ms": round(
+                    request.api_elapsed_ms - aggregate_sql_ms,
+                    3,
+                ),
+            }
+        )
+
+    family_evidence: dict[str, object] = {}
+    for family in API_FAMILIES:
+        family_requests = requests_by_family[family]
+        family_observations = [
+            item for item in observations if item.api_family == family
+        ]
+        statement_groups: dict[str, dict[str, object]] = {}
+        for observation in family_observations:
+            fingerprint, normalized = _statement_fingerprint(observation.statement)
+            group = statement_groups.setdefault(
+                fingerprint,
+                {
+                    "fingerprint": fingerprint,
+                    "statement": normalized,
+                    "frequency": 0,
+                    "aggregate_sql_ms": 0.0,
+                },
+            )
+            group["frequency"] += 1
+            group["aggregate_sql_ms"] += observation.elapsed_ms
+        statements = []
+        for fingerprint in sorted(statement_groups):
+            group = dict(statement_groups[fingerprint])
+            group["aggregate_sql_ms"] = round(group["aggregate_sql_ms"], 3)
+            statements.append(group)
+        aggregate_api_ms = sum(
+            item.api_elapsed_ms
+            for item in requests
+            if item.api_family == family
+        )
+        aggregate_sql_ms = sum(item.elapsed_ms for item in family_observations)
+        family_evidence[family] = {
+            "request_count": len(family_requests),
+            "total_query_count": len(family_observations),
+            "aggregate_api_ms": round(aggregate_api_ms, 3),
+            "aggregate_sql_ms": round(aggregate_sql_ms, 3),
+            "aggregate_api_minus_sql_ms": round(
+                aggregate_api_ms - aggregate_sql_ms,
+                3,
+            ),
+            "requests": family_requests,
+            "statement_fingerprints": statements,
+        }
+
+    capture_total_ms = capture_bookkeeping_ns / 1_000_000
+    return {
+        "capture_overhead": {
+            "scope": "measured after-cursor bookkeeping only",
+            "bookkeeping_total_ms": round(capture_total_ms, 6),
+            "bookkeeping_per_select_ms": (
+                capture_total_ms / len(observations) if observations else 0.0
+            ),
+            "included_in_api_elapsed": True,
+            "excluded_from_sql_elapsed": True,
+            "unisolated_components": [
+                "SQLAlchemy event dispatch",
+                "before-cursor timer and context assignment",
+                "after-cursor timer read",
+            ],
+        },
+        "api_families": family_evidence,
+    }
 
 
 def _published_at(as_of: date, sequence: int) -> datetime:
@@ -235,22 +398,9 @@ def _published_at(as_of: date, sequence: int) -> datetime:
     )
 
 
-def _create_required_tables(engine: Engine) -> None:
-    _create_tables(engine)
-    StockPrice.metadata.create_all(
-        engine,
-        tables=[
-            StockFeatureDaily.__table__,
-            StockUniverse.__table__,
-            StockPrice.__table__,
-        ],
-    )
-
-
 def _seed_representative_dataset(engine: Engine) -> dict[str, int]:
     """Seed a fixed read-heavy dataset without network or Redis dependencies."""
 
-    _create_required_tables(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     sector_sessions = weekday_sessions(date(2026, 8, 26), DATASET_SECTOR_SESSION_COUNT)
     price_sessions = weekday_sessions(date(2026, 8, 26), DATASET_PRICE_SESSION_COUNT)
@@ -389,7 +539,10 @@ def _seed_representative_dataset(engine: Engine) -> dict[str, int]:
                     "timezone": "America/New_York",
                     "sector": sectors[index % len(sectors)],
                     "industry": f"Industry {index % 25:02d}",
-                    "market_cap": float(1_000_000_000 + index * 7_500_000_000),
+                    "market_cap": _synthetic_market_cap(
+                        index,
+                        DATASET_STOCK_COUNT,
+                    ),
                     "is_active": True,
                     "status": "active",
                     "is_common_stock": True,
@@ -447,6 +600,77 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     )
 
 
+class _EvidenceArtifacts:
+    """Persist complete or partial evidence without replacing a test failure."""
+
+    def __init__(
+        self,
+        baseline_path: Path,
+        plan_path: Path,
+        report: dict[str, object],
+        plan: dict[str, object],
+    ) -> None:
+        self.baseline_path = baseline_path
+        self.plan_path = plan_path
+        self.report = report
+        self.plan = plan
+
+    def __enter__(self) -> _EvidenceArtifacts:
+        return self
+
+    def __exit__(self, exc_type, exc, _traceback) -> bool:
+        if exc is None:
+            self.report["status"] = "completed"
+        else:
+            self.report["status"] = "failed"
+            stages = self.report.get("stages", {})
+            for name, status in tuple(stages.items()):
+                if status == "running":
+                    stages[name] = "failed"
+            self.report["failure"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            if self.plan.get("status") != "completed":
+                self.plan["status"] = "not_completed"
+                self.plan["failure"] = {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+
+        write_failures = []
+        for path, payload in (
+            (self.baseline_path, self.report),
+            (self.plan_path, self.plan),
+        ):
+            try:
+                _write_json(path, payload)
+            except Exception as write_error:  # pragma: no cover - filesystem failure
+                write_failures.append(f"{path}: {write_error}")
+        if write_failures:
+            message = "failed to persist SLO evidence: " + "; ".join(write_failures)
+            if exc is None:
+                raise RuntimeError(message)
+            print(message, file=sys.stderr)
+        return False
+
+
+def _build_benchmark_app(session_factory, api_router: APIRouter | None = None) -> FastAPI:
+    if api_router is None:
+        from app.api.v1.router import router as api_router
+
+    api_app = FastAPI()
+    api_app.include_router(api_router, prefix="/api/v1")
+
+    def override_get_db():
+        with session_factory() as session:
+            yield session
+
+    api_app.dependency_overrides[get_db] = override_get_db
+    api_app.dependency_overrides[require_server_session] = lambda: True
+    return api_app
+
+
 def _explain_slowest(engine: Engine, observation: _QueryObservation) -> Any:
     statement = observation.statement.strip().rstrip(";")
     with engine.connect() as connection:
@@ -496,12 +720,131 @@ def test_slo_is_disabled_by_default_even_when_threshold_is_present(monkeypatch) 
 
 
 def test_slo_violations_report_only_families_above_measured_threshold() -> None:
-    report = _build_report({family: [10.0, 10.0] for family in API_FAMILIES})
-    report["api_families"]["sectors_history"]["p95_ms"] = 20.001
+    samples = {family: [10.0, 10.0] for family in API_FAMILIES}
+    samples["sectors_history"] = [20.0004, 20.0004]
 
-    assert _slo_violations(report, threshold_ms=20.0) == [
-        "sectors_history p95=20.001ms > 20.000ms"
+    assert _slo_violations(samples, threshold_ms=20.0) == [
+        "sectors_history p95=20.000400ms > 20.000000ms"
     ]
+
+
+def test_sample_count_defaults_to_twenty(monkeypatch) -> None:
+    monkeypatch.delenv("MARKET_INTELLIGENCE_SLO_SAMPLE_COUNT", raising=False)
+
+    assert _sample_count() == 20
+
+
+def test_exact_slo_database_name_rejects_similar_names() -> None:
+    assert _require_exact_database_name("market_intelligence_slo") == (
+        "market_intelligence_slo"
+    )
+
+    with pytest.raises(ValueError, match="exact database"):
+        _require_exact_database_name("market_intelligence_slo_copy")
+
+
+def test_synthetic_market_caps_are_bounded_and_ranked() -> None:
+    values = [
+        _synthetic_market_cap(index, DATASET_STOCK_COUNT)
+        for index in range(DATASET_STOCK_COUNT)
+    ]
+
+    assert values[0] == 3_000_000_000_000.0
+    assert values[-1] == 5_000_000_000.0
+    assert all(left > right for left, right in zip(values, values[1:]))
+
+
+def test_query_evidence_has_per_request_frequencies_and_non_sql_time() -> None:
+    requests = [
+        _RequestObservation("overview", 0, 8.0),
+        _RequestObservation("overview", 1, 7.0),
+    ]
+    observations = [
+        _QueryObservation("overview", 0, 1.0, "SELECT  1", ()),
+        _QueryObservation("overview", 0, 2.0, "SELECT 2", ()),
+        _QueryObservation("overview", 1, 1.0, "SELECT 1", ()),
+    ]
+
+    evidence = _build_query_evidence(
+        requests,
+        observations,
+        capture_bookkeeping_ns=500_000,
+    )
+
+    overview = evidence["api_families"]["overview"]
+    assert overview["request_count"] == 2
+    assert overview["total_query_count"] == 3
+    assert overview["aggregate_api_ms"] == 15.0
+    assert overview["aggregate_sql_ms"] == 4.0
+    assert overview["aggregate_api_minus_sql_ms"] == 11.0
+    assert [item["query_count"] for item in overview["requests"]] == [2, 1]
+    frequencies = sorted(
+        item["frequency"] for item in overview["statement_fingerprints"]
+    )
+    assert frequencies == [1, 2]
+    assert evidence["capture_overhead"]["bookkeeping_total_ms"] == 0.5
+    assert evidence["capture_overhead"]["bookkeeping_per_select_ms"] == pytest.approx(
+        1 / 6
+    )
+
+
+def test_evidence_artifacts_write_partial_state_without_hiding_failure(tmp_path) -> None:
+    baseline_path = tmp_path / "baseline.json"
+    plan_path = tmp_path / "plan.json"
+    report = {"status": "running", "stages": {"seed": "running"}}
+    plan = {"status": "pending"}
+
+    with pytest.raises(RuntimeError, match="seed exploded"):
+        with _EvidenceArtifacts(baseline_path, plan_path, report, plan):
+            raise RuntimeError("seed exploded")
+
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert baseline["status"] == "failed"
+    assert baseline["stages"]["seed"] == "failed"
+    assert baseline["failure"] == {
+        "type": "RuntimeError",
+        "message": "seed exploded",
+    }
+    assert plan_payload["status"] == "not_completed"
+
+
+def test_benchmark_app_uses_production_route_and_explicit_overrides() -> None:
+    api_router = APIRouter()
+    api_router.include_router(
+        market_intelligence_router,
+        prefix="/market-intelligence",
+    )
+    app = _build_benchmark_app(lambda: None, api_router)
+
+    assert "/api/v1/market-intelligence/overview" in {
+        route.path for route in app.routes
+    }
+    assert get_db in app.dependency_overrides
+    assert require_server_session in app.dependency_overrides
+
+
+def test_workflow_has_dedicated_migrated_postgresql_slo_job() -> None:
+    workflow = (
+        Path(__file__).parents[4]
+        / ".github"
+        / "workflows"
+        / "market-intelligence-integration.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "market-intelligence-slo:" in workflow
+    ordinary_jobs, remainder = workflow.split("  market-intelligence-slo:", 1)
+    slo_job = remainder.split("  live-yahoo-and-celery:", 1)[0]
+    assert (
+        "-k postgresql_16_uncached_read_baseline_and_opt_in_slo"
+        not in ordinary_jobs
+    )
+    assert "image: postgres:16-alpine" in slo_job
+    assert "POSTGRES_DB: market_intelligence_slo" in slo_job
+    assert "python -m alembic upgrade head" in slo_job
+    assert 'MARKET_INTELLIGENCE_SLO_SAMPLE_COUNT: "20"' in slo_job
+    assert "if: always()" in slo_job
+    assert "actions/upload-artifact@v4" in slo_job
 
 
 @pytest.mark.integration
@@ -509,115 +852,9 @@ def test_slo_violations_report_only_families_above_measured_threshold() -> None:
 @pytest.mark.performance
 @pytest.mark.asyncio
 async def test_postgresql_16_uncached_read_baseline_and_opt_in_slo(
-    phase2_postgresql_engine,
+    phase2_postgresql_url,
     monkeypatch,
 ) -> None:
-    engine = phase2_postgresql_engine
-    assert engine.dialect.server_version_info[0] == 16
-    dataset = _seed_representative_dataset(engine)
-    factory = sessionmaker(bind=engine, expire_on_commit=False)
-    with engine.connect() as connection:
-        postgresql_version = connection.execute(
-            text("SELECT version()")
-        ).scalar_one()
-
-    api_app = FastAPI()
-    api_app.include_router(router, prefix="/api/v1/market-intelligence")
-
-    def override_get_db():
-        with factory() as session:
-            yield session
-
-    def bypass_read_cache(_key_parts, compute, **_kwargs):
-        return compute()
-
-    api_app.dependency_overrides[get_db] = override_get_db
-    monkeypatch.setattr(
-        market_intelligence_api,
-        "cached_market_intelligence_payload",
-        bypass_read_cache,
-    )
-
-    samples = {family: [] for family in API_FAMILIES}
-    recorder = _QueryRecorder(engine)
-    recorder.start()
-    try:
-        transport = httpx.ASGITransport(app=api_app)
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://market-intelligence-slo.test",
-        ) as client:
-            for family in API_FAMILIES:
-                path, params = ENDPOINTS[family]
-                recorder.api_family = family
-                response = await client.get(path, params=params)
-                recorder.api_family = None
-                assert response.status_code == 200, response.text
-
-            recorder.clear()
-            for _sample_index in range(_sample_count()):
-                for family in API_FAMILIES:
-                    path, params = ENDPOINTS[family]
-                    recorder.api_family = family
-                    started_ns = perf_counter_ns()
-                    response = await client.get(path, params=params)
-                    elapsed_ms = (perf_counter_ns() - started_ns) / 1_000_000
-                    recorder.api_family = None
-                    assert response.status_code == 200, response.text
-                    samples[family].append(elapsed_ms)
-    finally:
-        recorder.api_family = None
-        recorder.stop()
-        api_app.dependency_overrides.clear()
-
-    assert recorder.observations, "no relevant PostgreSQL SELECT was captured"
-    slowest = max(recorder.observations, key=lambda item: item.elapsed_ms)
-    explain_plan = _explain_slowest(engine, slowest)
-    threshold_ms = _configured_slo_ms()
-    report = _build_report(samples)
-    query_counts = {
-        family: sum(
-            observation.api_family == family
-            for observation in recorder.observations
-        )
-        for family in API_FAMILIES
-    }
-    report.update(
-        {
-            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-            "environment": {
-                "database": "PostgreSQL",
-                "postgresql_version": postgresql_version,
-                "cache_mode": "bypassed_uncached_db_baseline",
-                "live_provider_used": False,
-                "redis_used": False,
-            },
-            "dataset": dataset,
-            "sampling": {
-                "warmup_count_per_family": 1,
-                "sample_count_per_family": _sample_count(),
-                "percentile_method": "linear interpolation at (n - 1) * percentile",
-            },
-            "query_counts": query_counts,
-            "slowest_sql": {
-                "api_family": slowest.api_family,
-                "observed_elapsed_ms": round(slowest.elapsed_ms, 3),
-                "statement": slowest.statement,
-                "parameters": _jsonable(slowest.parameters),
-                "explain_artifact": "market-intelligence-slowest-query-plan.json",
-            },
-            "slo": {
-                "enforced": threshold_ms is not None,
-                "p95_threshold_ms": threshold_ms,
-                "threshold_source": (
-                    None
-                    if threshold_ms is None
-                    else "MARKET_INTELLIGENCE_SLO_P95_MS"
-                ),
-            },
-        }
-    )
-
     artifact_dir = Path(
         os.environ.get(
             "MARKET_INTELLIGENCE_SLO_ARTIFACT_DIR",
@@ -626,22 +863,240 @@ async def test_postgresql_16_uncached_read_baseline_and_opt_in_slo(
     ).resolve()
     baseline_path = artifact_dir / "market-intelligence-slo-baseline.json"
     explain_path = artifact_dir / "market-intelligence-slowest-query-plan.json"
-    _write_json(baseline_path, report)
-    _write_json(
-        explain_path,
-        {
-            "schema_version": 1,
-            "api_family": slowest.api_family,
-            "observed_elapsed_ms": round(slowest.elapsed_ms, 3),
-            "statement": slowest.statement,
-            "parameters": _jsonable(slowest.parameters),
-            "explain_options": ["ANALYZE", "BUFFERS", "FORMAT JSON"],
-            "plan": explain_plan,
-        },
-    )
     print(f"MARKET_INTELLIGENCE_SLO_BASELINE={baseline_path}")
     print(f"MARKET_INTELLIGENCE_SLO_EXPLAIN={explain_path}")
 
-    if threshold_ms is not None:
-        violations = _slo_violations(report, threshold_ms=threshold_ms)
-        assert not violations, "; ".join(violations)
+    stage_names = (
+        "database_validation",
+        "seed",
+        "warmup",
+        "measured_requests",
+        "query_capture",
+        "explain",
+        "slo_evaluation",
+    )
+    report: dict[str, object] = {
+        "schema_version": 2,
+        "status": "running",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "stages": {name: "pending" for name in stage_names},
+        "benchmark_scope": {
+            "included": [
+                "FastAPI production v1 router matching",
+                "explicit dependency-override resolution",
+                "handler, ORM, PostgreSQL, and response serialization",
+            ],
+            "excluded": [
+                "ASGI server and worker scheduling",
+                "socket, network, reverse-proxy, and TLS overhead",
+                "production lifespan and main-app middleware",
+                "real server-session authentication logic",
+            ],
+            "transport": "httpx ASGITransport in-process",
+        },
+    }
+    plan_payload: dict[str, object] = {
+        "schema_version": 2,
+        "status": "pending",
+        "explain_options": ["ANALYZE", "BUFFERS", "FORMAT JSON"],
+    }
+    samples = {family: [] for family in API_FAMILIES}
+    requests: list[_RequestObservation] = []
+    engine: Engine | None = None
+    recorder: _QueryRecorder | None = None
+    recorder_started = False
+    api_app: FastAPI | None = None
+
+    with _EvidenceArtifacts(
+        baseline_path,
+        explain_path,
+        report,
+        plan_payload,
+    ):
+        try:
+            engine = create_engine(phase2_postgresql_url, pool_pre_ping=True)
+            environment: dict[str, object] = {
+                "database": "PostgreSQL",
+                "configured_database_name": engine.url.database,
+                "schema_source": "alembic_upgrade_head",
+                "cache_mode": "bypassed_uncached_db_baseline",
+                "live_provider_used": False,
+                "redis_used": False,
+            }
+            report["environment"] = environment
+            report["stages"]["database_validation"] = "running"
+            configured_database = _require_exact_database_name(engine.url.database)
+            with engine.connect() as connection:
+                actual_database = _require_exact_database_name(
+                    connection.execute(text("SELECT current_database()")).scalar_one()
+                )
+                postgresql_version = connection.execute(
+                    text("SELECT version()")
+                ).scalar_one()
+                server_version_info = engine.dialect.server_version_info
+                environment.update(
+                    {
+                        "database_name": actual_database,
+                        "configured_database_name": configured_database,
+                        "postgresql_version": postgresql_version,
+                        "server_version_info": (
+                            list(server_version_info)
+                            if server_version_info is not None
+                            else None
+                        ),
+                    }
+                )
+                if not server_version_info or server_version_info[0] != 16:
+                    raise AssertionError(
+                        "Market Intelligence SLO evidence requires PostgreSQL 16; "
+                        f"received {server_version_info!r}"
+                    )
+                migration = _migration_state(connection)
+            environment["migration"] = migration
+            report["stages"]["database_validation"] = "completed"
+
+            report["stages"]["seed"] = "running"
+            dataset = _seed_representative_dataset(engine)
+            report["dataset"] = dataset
+            report["stages"]["seed"] = "completed"
+
+            report["stages"]["warmup"] = "running"
+            factory = sessionmaker(bind=engine, expire_on_commit=False)
+            api_app = _build_benchmark_app(factory)
+
+            def bypass_read_cache(_key_parts, compute, **_kwargs):
+                return compute()
+
+            monkeypatch.setattr(
+                market_intelligence_api,
+                "cached_market_intelligence_payload",
+                bypass_read_cache,
+            )
+
+            transport = httpx.ASGITransport(app=api_app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://market-intelligence-slo.test",
+            ) as client:
+                for family in API_FAMILIES:
+                    path, params = ENDPOINTS[family]
+                    response = await client.get(path, params=params)
+                    assert response.status_code == 200, response.text
+                report["stages"]["warmup"] = "completed"
+
+                recorder = _QueryRecorder(engine)
+                recorder.start()
+                recorder_started = True
+                report["stages"]["measured_requests"] = "running"
+                report["stages"]["query_capture"] = "running"
+                for sample_index in range(_sample_count()):
+                    for family in API_FAMILIES:
+                        path, params = ENDPOINTS[family]
+                        observation_start = len(recorder.observations)
+                        recorder.api_family = family
+                        recorder.request_index = sample_index
+                        started_ns = perf_counter_ns()
+                        try:
+                            response = await client.get(path, params=params)
+                        finally:
+                            elapsed_ms = (
+                                perf_counter_ns() - started_ns
+                            ) / 1_000_000
+                            recorder.api_family = None
+                            recorder.request_index = None
+                        assert response.status_code == 200, response.text
+                        samples[family].append(elapsed_ms)
+                        requests.append(
+                            _RequestObservation(family, sample_index, elapsed_ms)
+                        )
+                        request_queries = recorder.observations[observation_start:]
+                        assert request_queries, (
+                            f"{family} sample {sample_index} captured no relevant "
+                            "PostgreSQL SELECT"
+                        )
+                report["stages"]["measured_requests"] = "completed"
+                report["stages"]["query_capture"] = "completed"
+
+            recorder.stop()
+            recorder_started = False
+            assert recorder.observations
+            slowest = max(recorder.observations, key=lambda item: item.elapsed_ms)
+            fingerprint, normalized_statement = _statement_fingerprint(
+                slowest.statement
+            )
+            report.update(_build_report(samples))
+            report["schema_version"] = 2
+            report["sampling"] = {
+                "warmup_count_per_family": 1,
+                "sample_count_per_family": _sample_count(),
+                "percentile_method": (
+                    "linear interpolation at (n - 1) * percentile"
+                ),
+                "enforcement_precision": "unrounded p95",
+                "serialized_precision": "milliseconds rounded to 3 decimals",
+            }
+            report["slowest_sql"] = {
+                "api_family": slowest.api_family,
+                "request_index": slowest.request_index,
+                "fingerprint": fingerprint,
+                "observed_elapsed_ms": round(slowest.elapsed_ms, 3),
+                "statement": normalized_statement,
+                "parameters": _jsonable(slowest.parameters),
+                "explain_artifact": "market-intelligence-slowest-query-plan.json",
+            }
+
+            report["stages"]["explain"] = "running"
+            plan_payload.update(
+                {
+                    "status": "running",
+                    "api_family": slowest.api_family,
+                    "request_index": slowest.request_index,
+                    "fingerprint": fingerprint,
+                    "observed_elapsed_ms": round(slowest.elapsed_ms, 3),
+                    "statement": normalized_statement,
+                    "parameters": _jsonable(slowest.parameters),
+                }
+            )
+            plan_payload["plan"] = _explain_slowest(engine, slowest)
+            plan_payload["status"] = "completed"
+            report["stages"]["explain"] = "completed"
+
+            report["stages"]["slo_evaluation"] = "running"
+            threshold_ms = _configured_slo_ms()
+            report["slo"] = {
+                "enforced": threshold_ms is not None,
+                "p95_threshold_ms": threshold_ms,
+                "threshold_source": (
+                    None
+                    if threshold_ms is None
+                    else "MARKET_INTELLIGENCE_SLO_P95_MS"
+                ),
+                "comparison_precision": "unrounded",
+            }
+            if threshold_ms is not None:
+                violations = _slo_violations(samples, threshold_ms=threshold_ms)
+                assert not violations, "; ".join(violations)
+            report["stages"]["slo_evaluation"] = "completed"
+        finally:
+            if recorder is not None:
+                report["samples_collected"] = {
+                    family: len(samples[family]) for family in API_FAMILIES
+                }
+                report["api_families"] = {
+                    family: _latency_summary(samples[family])
+                    for family in API_FAMILIES
+                    if samples[family]
+                }
+                report["query_evidence"] = _build_query_evidence(
+                    requests,
+                    recorder.observations,
+                    capture_bookkeeping_ns=recorder.capture_bookkeeping_ns,
+                )
+                recorder.api_family = None
+                recorder.request_index = None
+                if recorder_started:
+                    recorder.stop()
+            if api_app is not None:
+                api_app.dependency_overrides.clear()
+            if engine is not None:
+                engine.dispose()

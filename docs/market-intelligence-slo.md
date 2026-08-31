@@ -3,25 +3,41 @@
 ## Current status
 
 The PostgreSQL read baseline is **provisional and not yet enforced**. The local
-development host did not have PostgreSQL listening on `localhost:5432`, so this
-change does not claim latency values, a slow-query diagnosis, or an index need.
-The reviewed harness must first run against PostgreSQL 16 in GitHub Actions.
+development host does not have PostgreSQL listening on `localhost:5432`, so this
+change claims no latency value, plan diagnosis, SLO, or index need. The first
+evidence must come from the dedicated PostgreSQL 16 GitHub Actions job.
 
-No index was added. Any index change requires the captured PostgreSQL plan to
-show a relevant scan, sort, or lookup cost and must include measured before/after
-evidence.
+No index was added. Any index change requires a captured PostgreSQL plan showing
+a specific scan, sort, lookup, or buffer cost and measured before/after evidence.
 
-## What is measured
+## Database and dataset contract
 
-The harness seeds a deterministic, disposable schema with:
+The performance job owns a fresh PostgreSQL 16 service and a database named
+exactly `market_intelligence_slo`. Before seeding, the harness connects and
+asserts all of the following:
 
-- 500 active US S&P-style equities and one published feature row per equity;
-- 90 price sessions for the 500 equities and the fixed ETF universe;
+- `current_database()` exactly equals `market_intelligence_slo`;
+- the connected server major version is 16;
+- the live `alembic_version` rows exactly equal the repository Alembic heads.
+
+The job runs `python -m alembic upgrade head`; the harness does not use ORM
+`create_all`. The exact-name checks intentionally reject similar names such as
+`market_intelligence_slo_copy` before destructive seed work.
+
+The migrated database receives a deterministic synthetic S&P-universe workload:
+
+- 500 active US equities and one published feature row per equity;
+- bounded rank-decay market caps from $3 trillion to $5 billion;
+- 90 price sessions for the equities and fixed ETF universe;
 - 60 published sector-intelligence sessions with all 12 fixed symbols;
 - both production publication pointers targeting the latest successful run.
 
-It warms each endpoint once, bypasses the optional Redis read cache, then takes
-10 sequential samples of each API family:
+## Request and SQL measurement
+
+The benchmark mounts the production v1 router at `/api/v1`. It explicitly
+overrides both the production database dependency and `require_server_session`,
+and bypasses the optional Redis payload cache. Each API family is warmed once,
+then measured sequentially 20 times:
 
 - `overview`
 - `movers`
@@ -30,62 +46,100 @@ It warms each endpoint once, bypasses the optional Redis read cache, then takes
 - `sectors/history`
 - `sectors/health`
 
-The report records sample count, p50, p95, and worst latency in milliseconds.
-Percentiles use deterministic linear interpolation at
-`(sample_count - 1) * percentile`. Warm-up calls are excluded. There are no
-wall-clock latency assertions in the default unit or service-independent test
-runs.
+Warm-ups occur before SQL capture begins and are excluded. Every measured
+family/request must capture at least one relevant PostgreSQL `SELECT` or the test
+fails. The baseline JSON contains:
 
-During measured calls, the harness records individual PostgreSQL `SELECT`
-durations. It selects the slowest observed statement and executes
-`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` with the captured bind parameters.
-This is a database baseline; it requires neither live Yahoo data nor Redis.
+- per-family sample count, p50, p95, and worst API latency;
+- per-request API latency, query count, aggregate SQL time, and API-minus-SQL
+  time;
+- per-family statement fingerprints, frequencies, and aggregate SQL time;
+- the slowest measured SELECT and its request/family identity;
+- measured after-cursor recorder bookkeeping overhead, in total and per SELECT.
 
-## CI command and evidence
+The recorder's bookkeeping is included in API latency and excluded from cursor
+SQL time. Its reported overhead covers statement/parameter observation work
+performed after the cursor returns. SQLAlchemy event dispatch, the before-cursor
+timer/context assignment, and the after-cursor timer read are not separately
+isolated; small portions can land in either the observed SELECT interval or
+API-minus-SQL. The JSON lists these unisolated components. API-minus-SQL also
+includes routing, overridden dependency resolution, ORM row materialization,
+application logic, and response serialization.
 
-The PostgreSQL 16 integration job runs:
+The slowest measured SELECT is replayed with its captured bind parameters using
+`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`.
+
+## Benchmark boundary and exclusions
+
+Requests use `httpx.ASGITransport` in-process. The evidence includes FastAPI
+production-router matching, dependency-override resolution, handler execution,
+ORM work, PostgreSQL calls, and response serialization. It excludes:
+
+- Uvicorn or another ASGI server, worker scheduling, and process handoff;
+- socket/network latency, reverse proxies, and TLS;
+- production lifespan and main-application middleware;
+- real server-session authentication logic because that dependency is explicitly
+  overridden for deterministic measurement;
+- Redis and live-provider latency.
+
+This boundary is suitable for database/read-path regression evidence, not an
+end-user network-latency claim.
+
+## Failure evidence
+
+The baseline and plan JSON files are initialized before version validation and
+written from an exception-transparent finalizer. Version, migration, seed,
+warm-up, endpoint, query-capture, EXPLAIN, or SLO failures retain stage status,
+the exception type/message, and whatever samples/query observations were
+available. Artifact-write errors never replace an already-active pytest failure.
+
+## CI command and artifact
+
+The dedicated `market-intelligence-slo` job runs:
 
 ```bash
 cd backend
-MARKET_INTELLIGENCE_SLO_ARTIFACT_DIR="$RUNNER_TEMP/phase2-evidence" \
+python -m alembic upgrade head
+MARKET_INTELLIGENCE_SLO_SAMPLE_COUNT=20 \
+MARKET_INTELLIGENCE_SLO_ARTIFACT_DIR="$RUNNER_TEMP/market-intelligence-slo-evidence" \
 python -m pytest \
   tests/integration/market_intelligence/test_postgres_performance_slo.py \
   -k postgresql_16_uncached_read_baseline_and_opt_in_slo \
   -q -s
 ```
 
-Download the Actions artifact named
-`market-intelligence-integration-<github_run_id>`. It contains:
+`set -o pipefail` ensures `tee` cannot hide pytest or migration failures.
+Metadata and upload steps use `if: always()`. Download
+`market-intelligence-slo-<github_run_id>`, which contains available partial or
+complete evidence:
 
-- `market-intelligence-slo-baseline.json` — dataset metadata, sampling method,
-  per-family p50/p95/worst values, query counts, and the slowest SQL statement;
-- `market-intelligence-slowest-query-plan.json` — the same query identity plus
-  PostgreSQL's machine-readable `ANALYZE` and `BUFFERS` plan;
-- `phase2-slo.log` and this document.
+- `market-intelligence-slo-baseline.json`;
+- `market-intelligence-slowest-query-plan.json`;
+- migration and pytest logs;
+- run metadata and this document.
+
+The ordinary integration job runs the service-independent helper/workflow
+contracts but does not collect timing evidence.
 
 ## Promotion to an enforceable SLO
 
-After the controller pushes the reviewed harness and the PostgreSQL 16 Actions
-run completes:
+After a reviewed PostgreSQL 16 Actions run:
 
-1. Verify that all six families have the configured sample count and successful
-   responses.
-2. Inspect the slowest plan for sequential scans over relevant large relations,
-   avoidable sorts, repeated/N+1 query patterns, buffer pressure, and JSON
-   decoding/response assembly cost.
-3. Repeat the run if runner noise or cold-start behavior makes the sample
-   questionable.
-4. Choose a conservative p95 threshold from the reviewed measurements and
-   record the run ID and values in this document.
-5. Enable enforcement only by setting both
-   `MARKET_INTELLIGENCE_ENFORCE_SLO=1` and the evidence-derived positive value
-   `MARKET_INTELLIGENCE_SLO_P95_MS=<milliseconds>` in the dedicated performance
-   job. The single threshold applies to every API family.
+1. Confirm all six families contain 20 successful measured requests and relevant
+   SELECT evidence.
+2. Inspect per-request counts and statement frequencies for N+1 behavior.
+3. Inspect SQL versus API-minus-SQL time to distinguish database cost from ORM,
+   application, and serialization cost.
+4. Inspect the slowest plan for scans, sorts, lookup cost, and buffer pressure.
+5. Repeat the run if runner noise makes the evidence questionable.
+6. Choose and document a conservative p95 threshold from reviewed evidence.
 
-Until those steps are complete, the artifact is diagnostic evidence and the SLO
-fields report `enforced: false` and `p95_threshold_ms: null`.
+Enforcement requires both `MARKET_INTELLIGENCE_ENFORCE_SLO=1` and a positive,
+evidence-derived `MARKET_INTELLIGENCE_SLO_P95_MS`. Comparisons use the unrounded
+p95; three-decimal rounding is serialization/display only. Until reviewed
+evidence exists, `enforced` remains false and the threshold remains null.
 
 ## PostgreSQL 16 baseline results
 
-Pending the first reviewed GitHub Actions run. Do not fill this section from a
-SQLite timing or an unreviewed local estimate.
+Pending the first reviewed GitHub Actions run. Do not populate this section from
+SQLite timing, an unreviewed estimate, or the in-process benchmark alone.
