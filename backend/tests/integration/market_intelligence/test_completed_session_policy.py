@@ -50,6 +50,8 @@ def test_unfinished_current_session_bar_is_excluded_by_provider_boundary() -> No
             "Close": [102.0, 103.0],
             "Adj Close": [102.0, 103.0],
             "Volume": [1_000_000.0, 250_000.0],
+            "Dividends": [0.0, 0.0],
+            "Stock Splits": [0.0, 0.0],
         },
         index=[pd.Timestamp(completed), pd.Timestamp(unfinished)],
     )
