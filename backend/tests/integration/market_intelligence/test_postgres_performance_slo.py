@@ -843,6 +843,8 @@ def test_workflow_has_dedicated_migrated_postgresql_slo_job() -> None:
     assert "POSTGRES_DB: market_intelligence_slo" in slo_job
     assert "python -m alembic upgrade head" in slo_job
     assert 'MARKET_INTELLIGENCE_SLO_SAMPLE_COUNT: "20"' in slo_job
+    assert 'MARKET_INTELLIGENCE_ENFORCE_SLO: "1"' in slo_job
+    assert 'MARKET_INTELLIGENCE_SLO_P95_MS: "1000"' in slo_job
     assert "if: always()" in slo_job
     assert "actions/upload-artifact@v4" in slo_job
 

@@ -2,10 +2,18 @@
 
 ## Current status
 
-The PostgreSQL read baseline is **provisional and not yet enforced**. The local
-development host does not have PostgreSQL listening on `localhost:5432`, so this
-change claims no latency value, plan diagnosis, SLO, or index need. The first
-evidence must come from the dedicated PostgreSQL 16 GitHub Actions job.
+The dedicated PostgreSQL 16 job is configured to enforce a common **1000 ms
+p95** ceiling for all six read families. This initial threshold is derived from
+the completed 20-sample baseline in GitHub Actions run
+[`33430844324`](https://github.com/txu221/stock-screener/actions/runs/33430844324),
+where the highest p95 was 717.408 ms and the highest single request was
+721.843 ms. The threshold leaves 282.592 ms (39.4%) above the highest measured
+p95 for shared-runner variation without hiding a full-second regression.
+
+The baseline job succeeded, but the new enforcement settings have not yet run
+in CI. A second Actions run must demonstrate that the configured enforcement
+passes on PostgreSQL 16 and that the integration-test trigger lookup fix works
+when multiple generated schemas contain the same trigger name.
 
 No index was added. Any index change requires a captured PostgreSQL plan showing
 a specific scan, sort, lookup, or buffer cost and measured before/after evidence.
@@ -101,6 +109,8 @@ The dedicated `market-intelligence-slo` job runs:
 cd backend
 python -m alembic upgrade head
 MARKET_INTELLIGENCE_SLO_SAMPLE_COUNT=20 \
+MARKET_INTELLIGENCE_ENFORCE_SLO=1 \
+MARKET_INTELLIGENCE_SLO_P95_MS=1000 \
 MARKET_INTELLIGENCE_SLO_ARTIFACT_DIR="$RUNNER_TEMP/market-intelligence-slo-evidence" \
 python -m pytest \
   tests/integration/market_intelligence/test_postgres_performance_slo.py \
@@ -123,7 +133,8 @@ contracts but does not collect timing evidence.
 
 ## Promotion to an enforceable SLO
 
-After a reviewed PostgreSQL 16 Actions run:
+The first reviewed PostgreSQL 16 run established the initial threshold. For a
+new baseline or threshold change:
 
 1. Confirm all six families contain 20 successful measured requests and relevant
    SELECT evidence.
@@ -136,10 +147,50 @@ After a reviewed PostgreSQL 16 Actions run:
 
 Enforcement requires both `MARKET_INTELLIGENCE_ENFORCE_SLO=1` and a positive,
 evidence-derived `MARKET_INTELLIGENCE_SLO_P95_MS`. Comparisons use the unrounded
-p95; three-decimal rounding is serialization/display only. Until reviewed
-evidence exists, `enforced` remains false and the threshold remains null.
+p95; three-decimal rounding is serialization/display only. The dedicated job
+now sets both values to enforce the measured 1000 ms ceiling.
 
 ## PostgreSQL 16 baseline results
 
-Pending the first reviewed GitHub Actions run. Do not populate this section from
-SQLite timing, an unreviewed estimate, or the in-process benchmark alone.
+Run `33430844324` measured commit `ef1fdec7` against PostgreSQL 16.15 and Alembic
+head `20260829_0035`. The fresh `market_intelligence_slo` database contained 500
+equities, 528 total price symbols, 47,520 price rows (90 sessions per symbol),
+and 60 published sector sessions with 12 symbols each. One warm-up per family
+was excluded; every family then completed 20 uncached requests.
+
+| Family | SELECTs/request | p50 ms | p95 ms | worst ms | aggregate SQL ms | aggregate API-minus-SQL ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| overview | 3 | 34.406 | 36.111 | 37.708 | 43.924 | 646.144 |
+| movers | 5 | 671.817 | 717.408 | 721.843 | 886.050 | 10,707.824 |
+| ETFs | 3 | 60.660 | 82.767 | 448.268 | 132.111 | 1,464.120 |
+| sectors/latest | 5 | 8.395 | 9.236 | 9.455 | 48.745 | 120.861 |
+| sectors/history | 182 | 176.416 | 206.309 | 553.114 | 1,160.998 | 2,727.982 |
+| sectors/health | 4 | 19.129 | 20.385 | 30.232 | 85.063 | 306.279 |
+
+Query counts were constant across the 20 requests in each family. The
+`sectors/history` count is a follow-up concern: three statement fingerprints
+each ran 60 times per request, producing 182 SELECTs/request. Its SQL share was
+29.85% of API time, so batching/eager-loading should be investigated separately;
+an index does not remove that N+1 shape.
+
+The slowest observed SELECT belonged to `movers` and took 43.695 ms in request
+10. `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` used the existing
+`uix_symbol_date` index, returned 21,500 rows versus 21,398 estimated, completed
+the index scan in 5.849 ms and the plan in 6.627 ms, hit 1,601 shared buffers,
+and performed no shared reads, writes, or temporary I/O. Across movers requests,
+SQL was only 7.64% of API time; API-minus-SQL was 10,707.824 ms of 11,593.874 ms.
+The evidence therefore supports **no new index**. The difference between the
+captured SELECT duration and EXPLAIN execution also includes returning the full
+rowset through the driver, which EXPLAIN does not do.
+
+Two isolated worst-case samples were application-side rather than SQL-side:
+ETFs took 448.268 ms with only 6.543 ms SQL, and `sectors/history` took
+553.114 ms with 58.033 ms SQL. Movers also showed large API-minus-SQL variation
+while SQL stayed near 40–51 ms. The artifact cannot distinguish shared-runner
+pauses from ORM/application/serialization work. This API-minus-SQL variation is
+why the first ceiling is conservative and why it should be reassessed after
+more enforced runs.
+
+Recorder bookkeeping measured 22.024551 ms total across 4,040 SELECTs, or
+0.005452 ms/SELECT. This is included in API time and excluded from SQL time;
+the event-dispatch and timer components listed earlier remain unisolated.

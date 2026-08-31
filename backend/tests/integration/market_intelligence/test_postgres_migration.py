@@ -33,6 +33,22 @@ NEW_TABLES = {
     "market_intelligence_rejections",
     "market_intelligence_sector_snapshots",
 }
+STOCK_PRICE_REVISIONS_TRIGGER_DEFINITION_SQL = """
+    SELECT pg_get_triggerdef(oid) FROM pg_trigger
+    WHERE tgname = 'trg_stock_price_revisions_append_only'
+    AND tgrelid = 'stock_price_revisions'::regclass
+    AND NOT tgisinternal
+"""
+
+
+def test_append_only_trigger_definition_query_is_relation_scoped() -> None:
+    normalized = " ".join(
+        STOCK_PRICE_REVISIONS_TRIGGER_DEFINITION_SQL.split()
+    ).lower()
+
+    assert "tgname = 'trg_stock_price_revisions_append_only'" in normalized
+    assert "tgrelid = 'stock_price_revisions'::regclass" in normalized
+    assert "not tgisinternal" in normalized
 
 
 def _load_migration():
@@ -444,12 +460,7 @@ def test_real_postgresql_v2_price_provenance_migration_preserves_legacy_rows(
         )
         assert trigger_names == {"trg_stock_price_revisions_append_only"}
         trigger_definition = connection.execute(
-            sa.text(
-                """
-                SELECT pg_get_triggerdef(oid) FROM pg_trigger
-                WHERE tgname = 'trg_stock_price_revisions_append_only'
-                """
-            )
+            sa.text(STOCK_PRICE_REVISIONS_TRIGGER_DEFINITION_SQL)
         ).scalar_one()
         assert "BEFORE DELETE OR UPDATE" in trigger_definition
         assert "stock_price_revisions_reject_mutation" in trigger_definition
