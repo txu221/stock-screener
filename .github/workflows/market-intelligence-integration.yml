@@ -6,6 +6,7 @@ on:
       - feat/market-intelligence-engine
     paths:
       - .github/workflows/market-intelligence-integration.yml
+      - .github/workflows/market-intelligence-yahoo-canary.yml
       - backend/**
       - frontend/**
       - docs/market-intelligence-spec.md
@@ -365,7 +366,7 @@ jobs:
 
   live-yahoo-and-celery:
     name: Optional Yahoo and Celery integration
-    if: ${{ github.event_name == 'push' || inputs.run_live_yahoo == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_live_yahoo == true }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.domain.market_intelligence.constants import MARKET_INTELLIGENCE_UNIVERSE
@@ -26,6 +28,7 @@ EXPECTED_UNIVERSE = (
     "XLK",
     "XLU",
 )
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 
 def test_phase2_universe_is_fixed_to_twelve_etfs() -> None:
@@ -95,4 +98,47 @@ def test_service_url_redaction_handles_passwordless_url() -> None:
     assert (
         redact_service_url("redis://localhost:6379/0?token=secret#private")
         == "redis://localhost:6379/0"
+    )
+
+
+def test_yahoo_canary_workflow_is_weekday_manual_and_production_read_only() -> None:
+    workflow = (
+        PROJECT_ROOT
+        / ".github"
+        / "workflows"
+        / "market-intelligence-yahoo-canary.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "schedule:" in workflow
+    assert "* * 1-5" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "push:" not in workflow
+    assert "contents: read" in workflow
+    assert "RUN_MARKET_INTELLIGENCE_LIVE: \"1\"" in workflow
+    assert "test_live_yahoo_validation.py" in workflow
+    for forbidden in (
+        "DATABASE_URL",
+        "POSTGRES_",
+        "REDIS_URL",
+        "CELERY_",
+        "alembic",
+        "docker",
+        "services:",
+        "contents: write",
+    ):
+        assert forbidden not in workflow
+
+    integration_workflow = (
+        PROJECT_ROOT
+        / ".github"
+        / "workflows"
+        / "market-intelligence-integration.yml"
+    ).read_text(encoding="utf-8")
+    assert (
+        "github.event_name == 'workflow_dispatch' && "
+        "inputs.run_live_yahoo == true"
+    ) in integration_workflow
+    assert (
+        "github.event_name == 'push' || inputs.run_live_yahoo == true"
+        not in integration_workflow
     )

@@ -26,6 +26,7 @@ from app.domain.market_intelligence.mvp import (
     MoverSummary,
     calculate_price_metrics,
     categories_for_symbol,
+    classify_price_history_quality,
     score_and_rank_etfs,
 )
 from app.domain.market_intelligence.freshness import (
@@ -158,6 +159,9 @@ class MarketIntelligenceReadService:
             as_of=as_of,
             calendar_days=120,
         )
+        price_history_quality = classify_price_history_quality(
+            row for rows in grouped.values() for row in rows
+        )
         pulse: list[MarketPulseItem] = []
         missing: list[str] = []
         for symbol in PULSE_SYMBOLS:
@@ -181,7 +185,7 @@ class MarketIntelligenceReadService:
             provider=PRICE_SOURCE,
             metric_version=MVP_METRIC_VERSION,
             price_basis=MVP_PRICE_BASIS,
-            price_history_quality=MVP_PRICE_HISTORY_QUALITY,
+            price_history_quality=price_history_quality,
             expected_session=expected_session,
             freshness_status=self._freshness_status(
                 as_of=as_of,
@@ -303,6 +307,9 @@ class MarketIntelligenceReadService:
             as_of=run.as_of_date,
             calendar_days=60,
         )
+        price_history_quality = classify_price_history_quality(
+            row for rows in grouped.values() for row in rows
+        )
         items: list[MoverItem] = []
         normalized_search = (search or "").strip().upper()
         normalized_sector = (sector or "").strip().casefold()
@@ -370,7 +377,7 @@ class MarketIntelligenceReadService:
             provider=PRICE_SOURCE,
             metric_version=MVP_METRIC_VERSION,
             price_basis=MVP_PRICE_BASIS,
-            price_history_quality=MVP_PRICE_HISTORY_QUALITY,
+            price_history_quality=price_history_quality,
             expected_session=expected_session,
             freshness_status=self._freshness_status(
                 as_of=run.as_of_date,
@@ -465,6 +472,9 @@ class MarketIntelligenceReadService:
             as_of=as_of,
             calendar_days=120,
         )
+        price_history_quality = classify_price_history_quality(
+            row for rows in grouped.values() for row in rows
+        )
         price_metrics = {
             symbol: calculate_price_metrics(grouped.get(symbol, ()), as_of=as_of)
             for symbol in ETF_UNIVERSE
@@ -504,7 +514,7 @@ class MarketIntelligenceReadService:
             provider=PRICE_SOURCE,
             metric_version=MVP_METRIC_VERSION,
             price_basis=MVP_PRICE_BASIS,
-            price_history_quality=MVP_PRICE_HISTORY_QUALITY,
+            price_history_quality=price_history_quality,
             expected_session=expected_session,
             freshness_status=self._freshness_status(
                 as_of=as_of,

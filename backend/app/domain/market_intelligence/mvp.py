@@ -12,7 +12,11 @@ from typing import Iterable, Mapping, Protocol, Sequence
 MVP_METRIC_VERSION = "market_intelligence_mvp_v1"
 ETF_STRENGTH_VERSION = "etf_strength_v1"
 MVP_PRICE_BASIS = "cached_adjusted_close"
-MVP_PRICE_HISTORY_QUALITY = "not_corporate_action_reconciled"
+MVP_PRICE_HISTORY_QUALITY = "partial_corporate_action_adjustment"
+CORPORATE_ACTION_ADJUSTED_QUALITY = "corporate_action_adjusted"
+
+_RECONCILED_PRICE_BASIS = "yahoo_adjusted_close_provider_volume"
+_RECONCILED_NORMALIZATION_VERSION = "canonical_price_adjustment_v2"
 
 PULSE_SYMBOLS = ("SPY", "QQQ", "DIA", "IWM")
 
@@ -59,6 +63,36 @@ class DailyPriceLike(Protocol):
     date: date
     adj_close: float | None
     volume: int | None
+
+
+def _has_reconciled_price_provenance(row: object) -> bool:
+    content_hash = getattr(row, "content_hash", None)
+    revision_number = getattr(row, "revision_number", None)
+    return (
+        getattr(row, "provider", None) == "yahoo"
+        and getattr(row, "source_timestamp", None) is not None
+        and getattr(row, "normalization_version", None)
+        == _RECONCILED_NORMALIZATION_VERSION
+        and getattr(row, "price_basis", None) == _RECONCILED_PRICE_BASIS
+        and isinstance(content_hash, str)
+        and len(content_hash) == 64
+        and all(
+            character in "0123456789abcdef"
+            for character in content_hash.lower()
+        )
+        and isinstance(revision_number, int)
+        and revision_number >= 0
+        and getattr(row, "reconciled_at", None) is not None
+        and _finite_positive(getattr(row, "adj_close", None)) is not None
+        and _finite_positive(getattr(row, "adjustment_factor", None)) is not None
+    )
+
+
+def classify_price_history_quality(rows: Iterable[object]) -> str:
+    observed = tuple(rows)
+    if observed and all(_has_reconciled_price_provenance(row) for row in observed):
+        return CORPORATE_ACTION_ADJUSTED_QUALITY
+    return MVP_PRICE_HISTORY_QUALITY
 
 
 @dataclass(frozen=True)

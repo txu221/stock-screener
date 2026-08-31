@@ -155,7 +155,10 @@ async def test_overview_contract_exposes_fixed_pulse_and_freshness(mvp_client):
     assert body["provider"] == "existing_stock_prices"
     assert body["metric_version"] == "market_intelligence_mvp_v1"
     assert body["price_basis"] == "cached_adjusted_close"
-    assert body["price_history_quality"] == "not_corporate_action_reconciled"
+    assert (
+        body["price_history_quality"]
+        == "partial_corporate_action_adjustment"
+    )
     assert body["freshness_status"] in {"FRESH", "STALE"}
     assert body["expected_session"] is not None
     assert body["market_status"] is None
@@ -179,7 +182,10 @@ async def test_movers_contract_exposes_backend_ordering_filters_and_sector_count
     assert body["as_of"] == AS_OF.isoformat()
     assert body["published_at"] is not None
     assert body["price_basis"] == "cached_adjusted_close"
-    assert body["price_history_quality"] == "not_corporate_action_reconciled"
+    assert (
+        body["price_history_quality"]
+        == "partial_corporate_action_adjustment"
+    )
     assert body["freshness_status"] in {"FRESH", "STALE"}
     assert body["eligible_count"] == 1
     assert [item["symbol"] for item in body["gainers"]] == ["AAPL"]
@@ -211,7 +217,10 @@ async def test_etf_contract_exposes_category_ranks_and_score_explanation(mvp_cli
     body = response.json()
     assert body["category"] == "broad_market"
     assert body["price_basis"] == "cached_adjusted_close"
-    assert body["price_history_quality"] == "not_corporate_action_reconciled"
+    assert (
+        body["price_history_quality"]
+        == "partial_corporate_action_adjustment"
+    )
     assert body["freshness_status"] in {"FRESH", "STALE"}
     assert [item["symbol"] for item in body["items"]] == ["SPY", "QQQ", "IWM", "DIA"]
     assert body["score_definition"]["version"] == "etf_strength_v1"

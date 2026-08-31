@@ -105,6 +105,7 @@ def _prices(
     closes: list[float],
     *,
     volumes: list[int] | None = None,
+    reconciled: bool = False,
 ) -> list[StockPrice]:
     volumes = volumes or [1_000_000] * len(closes)
     start = AS_OF - timedelta(days=len(closes) - 1)
@@ -118,6 +119,18 @@ def _prices(
             close=close,
             adj_close=close,
             volume=volumes[index],
+            provider="yahoo" if reconciled else None,
+            source_timestamp=PUBLISHED_AT if reconciled else None,
+            normalization_version=(
+                "canonical_price_adjustment_v2" if reconciled else None
+            ),
+            price_basis=(
+                "yahoo_adjusted_close_provider_volume" if reconciled else None
+            ),
+            content_hash="a" * 64 if reconciled else None,
+            revision_number=0 if reconciled else None,
+            reconciled_at=PUBLISHED_AT if reconciled else None,
+            adjustment_factor=1.0 if reconciled else None,
         )
         for index, close in enumerate(closes)
     ]
@@ -149,9 +162,23 @@ def test_movers_use_latest_published_sp500_snapshot_and_backend_metrics(session)
     )
 
     base = [100.0] * 20
-    session.add_all(_prices("AAPL", [*base, 110.0], volumes=[1_000_000] * 20 + [3_000_000]))
-    session.add_all(_prices("MSFT", [*base, 90.0], volumes=[1_000_000] * 20 + [2_000_000]))
-    session.add_all(_prices("LOW", [4.0] * 21))
+    session.add_all(
+        _prices(
+            "AAPL",
+            [*base, 110.0],
+            volumes=[1_000_000] * 20 + [3_000_000],
+            reconciled=True,
+        )
+    )
+    session.add_all(
+        _prices(
+            "MSFT",
+            [*base, 90.0],
+            volumes=[1_000_000] * 20 + [2_000_000],
+            reconciled=True,
+        )
+    )
+    session.add_all(_prices("LOW", [4.0] * 21, reconciled=True))
     session.add_all(_prices("ILLIQ", [*base, 120.0]))
     session.add_all(_prices("OUT", [*base, 130.0]))
     session.add_all(_prices("INACTIVE", [*base, 140.0]))
@@ -166,7 +193,7 @@ def test_movers_use_latest_published_sp500_snapshot_and_backend_metrics(session)
     assert result.published_at == PUBLISHED_AT
     assert result.provider == "existing_stock_prices"
     assert result.price_basis == "cached_adjusted_close"
-    assert result.price_history_quality == "not_corporate_action_reconciled"
+    assert result.price_history_quality == "corporate_action_adjusted"
     assert result.expected_session == AS_OF
     assert result.freshness_status == "FRESH"
     assert result.eligible_count == 2
@@ -207,6 +234,7 @@ def test_overview_and_etf_radar_use_completed_adjusted_sessions(session):
             "SPY",
             _etf_closes(start=60, d20=80, d5=90, d1=100, today=105),
             volumes=[1_000_000] * 60 + [1_500_000],
+            reconciled=True,
         )
     )
     session.add_all(
@@ -214,9 +242,10 @@ def test_overview_and_etf_radar_use_completed_adjusted_sessions(session):
             "QQQ",
             _etf_closes(start=50, d20=70, d5=85, d1=100, today=110),
             volumes=[1_000_000] * 60 + [2_000_000],
+            reconciled=True,
         )
     )
-    session.add_all(_prices("IWM", [100.0] * 10))
+    session.add_all(_prices("IWM", [100.0] * 10, reconciled=True))
     session.commit()
 
     service = MarketIntelligenceReadService(session, completed_session=AS_OF)
@@ -226,7 +255,7 @@ def test_overview_and_etf_radar_use_completed_adjusted_sessions(session):
     assert overview.as_of == AS_OF
     assert overview.last_updated == PUBLISHED_AT
     assert overview.price_basis == "cached_adjusted_close"
-    assert overview.price_history_quality == "not_corporate_action_reconciled"
+    assert overview.price_history_quality == "corporate_action_adjusted"
     assert overview.expected_session == AS_OF
     assert overview.freshness_status == "FRESH"
     assert [item.symbol for item in overview.pulse] == ["SPY", "QQQ", "DIA", "IWM"]
@@ -250,9 +279,26 @@ def test_overview_and_etf_radar_use_completed_adjusted_sessions(session):
     assert radar.score_version == "etf_strength_v1"
     assert radar.last_updated == PUBLISHED_AT
     assert radar.price_basis == "cached_adjusted_close"
-    assert radar.price_history_quality == "not_corporate_action_reconciled"
+    assert radar.price_history_quality == "corporate_action_adjusted"
     assert radar.expected_session == AS_OF
     assert radar.freshness_status == "FRESH"
+
+
+def test_overview_quality_is_partial_when_provenance_hash_is_invalid(session):
+    _published_run(session)
+    rows = _prices("SPY", [100.0, 101.0], reconciled=True)
+    rows[-1].content_hash = "z" * 64
+    session.add_all(rows)
+    session.commit()
+
+    overview = MarketIntelligenceReadService(
+        session, completed_session=AS_OF
+    ).get_overview()
+
+    assert (
+        overview.price_history_quality
+        == "partial_corporate_action_adjustment"
+    )
 
 
 def test_overview_and_etf_radar_ignore_unfinished_daily_price_row(session):

@@ -22,10 +22,12 @@ export default function FreshnessBanner({
 }) {
   const partial = status === 'PARTIAL' || status === 'FAILED';
   const stale = freshnessStatus && freshnessStatus !== 'FRESH';
+  const limitedPriceHistory = priceHistoryQuality
+    && priceHistoryQuality !== 'corporate_action_adjusted';
 
   return (
     <Alert
-      severity={partial || stale ? 'warning' : 'info'}
+      severity={partial || stale || limitedPriceHistory ? 'warning' : 'info'}
       icon={false}
       sx={{ mb: 1.5, py: 0.25, '& .MuiAlert-message': { width: '100%' } }}
     >
@@ -53,8 +55,16 @@ export default function FreshnessBanner({
         {expectedSession && freshnessStatus !== 'FRESH' && (
           <Typography variant="caption">Expected session {expectedSession}</Typography>
         )}
-        {priceHistoryQuality === 'not_corporate_action_reconciled' && (
-          <Chip size="small" label="Cached history not corporate-action reconciled" color="warning" variant="outlined" />
+        {priceHistoryQuality === 'corporate_action_adjusted' && (
+          <Typography variant="caption">
+            Historical analytical returns use corporate-action-adjusted prices.
+          </Typography>
+        )}
+        {limitedPriceHistory && (
+          <Typography variant="caption">
+            Historical analytical returns have partial corporate-action-adjusted price coverage;
+            {' '}legacy or unverified rows may be included.
+          </Typography>
         )}
         {status && <Chip size="small" label={`Latest attempt ${status}`} color={partial ? 'warning' : 'default'} />}
         {stableAsOf && (

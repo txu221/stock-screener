@@ -41,4 +41,27 @@ describe('FreshnessBanner', () => {
     expect(screen.getByText('Latest attempt PARTIAL')).toBeInTheDocument();
     expect(screen.getByText('Displayed stable snapshot 2026-08-26')).toBeInTheDocument();
   });
+
+  it('states that historical analytical returns are adjusted when provenance is complete', () => {
+    renderWithProviders(
+      <FreshnessBanner priceHistoryQuality="corporate_action_adjusted" />
+    );
+
+    expect(screen.getByText(
+      'Historical analytical returns use corporate-action-adjusted prices.'
+    )).toBeInTheDocument();
+  });
+
+  it('discloses the limitation when corporate-action provenance is partial', () => {
+    renderWithProviders(
+      <FreshnessBanner priceHistoryQuality="partial_corporate_action_adjustment" />
+    );
+
+    expect(screen.getByText(
+      'Historical analytical returns have partial corporate-action-adjusted price coverage; legacy or unverified rows may be included.'
+    )).toBeInTheDocument();
+    expect(screen.queryByText(
+      'Historical analytical returns use corporate-action-adjusted prices.'
+    )).not.toBeInTheDocument();
+  });
 });
