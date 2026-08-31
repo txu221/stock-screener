@@ -587,7 +587,18 @@ def test_history_generation_and_bound_include_backfill_without_repointing(engine
     assert [bundle.run_id for bundle in current] == [latest.id, backfill.id]
 
 
-def test_history_generation_tracks_a_lower_run_id_published_late(engine) -> None:
+def test_history_generation_tracks_a_lower_run_id_published_late(
+    engine,
+    monkeypatch,
+) -> None:
+    from app.infra.db.repositories import feature_run_repo as feature_run_module
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW if tz is not None else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(feature_run_module, "datetime", FrozenDateTime)
     factory = sessionmaker(bind=engine)
     backfill_date = date(2026, 5, 14)
     with SqlUnitOfWork(factory) as uow:
@@ -638,5 +649,7 @@ def test_history_generation_tracks_a_lower_run_id_published_late(engine) -> None
         )
 
     assert pointer is not None and pointer.run_id == latest.id
-    assert after != before
+    assert before is not None and before.run_id == latest.id
+    assert after is not None and after.run_id == backfill.id
+    assert after.published_at > before.published_at
     assert [bundle.run_id for bundle in bounded] == [latest.id]

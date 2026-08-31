@@ -244,7 +244,7 @@ market-intelligence:read:v2:<endpoint>:run:<captured-run-id>:date:<captured-date
 
 ### Final review disposition
 
-The final reviewer raised one Important concern that `FeatureRunPointer.updated_at` is not guaranteed unique. No schema change was made because uniqueness is not a correctness prerequisite after immutable run binding: an A-key miss can only compute A, and a D request has a different run ID/key. For history, pointer repoints among already-published runs do not change history content, while any new successful publication changes the immutable `(published_at, run_id)` history generation used by both the key and SQL cutoff. The same-timestamp ABA tests above directly cover this reasoning. The finding is therefore rejected as non-blocking with evidence rather than addressed by speculative pointer-version persistence.
+The final reviewer raised one concern that `FeatureRunPointer.updated_at` is not guaranteed unique. No pointer-revision schema change was made because uniqueness is not a correctness prerequisite after immutable run binding: an A-key miss can only compute A, and a D request has a different run ID/key. Pointer repoints among already-published runs do not change history content. The same-timestamp ABA tests above directly cover this reasoning. A subsequent rereview isolated a separate valid history-publication collision, addressed in the next section.
 
 ### Environment concern
 
@@ -255,3 +255,49 @@ $env:RUN_MARKET_INTELLIGENCE_REDIS='1'; $env:PHASE2_REDIS_URL='redis://127.0.0.1
 ```
 
 Result: **2 failed only because Redis was unreachable**, `redis.exceptions.ConnectionError`, Windows error 10061 at `127.0.0.1:6379`. No local Redis service is running. The UUID-scoped real-Redis contracts remain available for Redis-enabled CI; this is the only completion concern.
+
+## Review Fix 2: serialize publication generations (2026-08-31)
+
+### Root cause and fix
+
+The immutable history token is ordered by `(published_at, run_id)`, but `publish_atomically_if_not_older` previously advanced `published_at` only when the candidate and current pointer had the same `as_of_date`. A pre-existing lower-ID backfill could therefore publish later with exactly the current high-water timestamp. Given captured generation `(T, 20)`, publishing backfill `(T, 10)` left the generation unchanged and the captured SQL cutoff admitted run 10 because its timestamp equaled `T` and its ID was below 20.
+
+The existing PostgreSQL advisory lock and pointer row lock already serialize publications for one pointer key. After acquiring those locks, the repository now queries the committed `MAX(feature_runs.published_at)` across published runs and assigns the candidate `max(now, high_water + 1 microsecond)`. Naive database timestamps are interpreted as UTC before comparison. Every successful monotonic publication therefore advances publication order even for an older trading date and lower run ID. No schema, dependency, cache format, or API change was added.
+
+### RED/GREEN evidence
+
+The existing lower-ID late-publication regression was strengthened by freezing both publication attempts to the same instant:
+
+```powershell
+backend\venv\Scripts\python.exe -m pytest backend/tests/unit/repositories/test_market_intelligence_repo.py::test_history_generation_tracks_a_lower_run_id_published_late -q
+```
+
+RED result: **1 failed, 2 warnings**. Both `before` and `after` were `PublishedHistoryGeneration(published_at=2026-05-15T21:10:00Z, run_id=2)`, proving the generation did not advance.
+
+GREEN result after the high-water fix: **1 passed, 2 warnings**. The late lower-ID backfill received `T + 1 microsecond`, generation advanced, the latest pointer remained on the newer trading date, and the captured pre-publication cutoff excluded the backfill.
+
+Focused feature-store and Market Intelligence command:
+
+```powershell
+backend\venv\Scripts\python.exe -m pytest backend/tests/unit/repositories/test_feature_run_repo.py backend/tests/unit/repositories/test_market_intelligence_repo.py backend/tests/unit/services/test_market_intelligence_read_cache.py backend/tests/unit/services/test_market_intelligence_read_service.py backend/tests/unit/test_market_intelligence_endpoints.py backend/tests/unit/test_market_intelligence_mvp_endpoints.py -q
+```
+
+Result: **115 passed, 2 warnings**.
+
+Broad Windows-safe Market Intelligence command:
+
+```powershell
+backend\venv\Scripts\python.exe -m pytest backend/tests/unit/market_intelligence backend/tests/unit/services/test_market_intelligence_read_cache.py backend/tests/unit/services/test_market_intelligence_read_service.py backend/tests/unit/test_market_intelligence_endpoints.py backend/tests/unit/test_market_intelligence_mvp_endpoints.py backend/tests/unit/repositories/test_market_intelligence_repo.py backend/tests/unit/use_cases/test_build_sector_intelligence_snapshot.py backend/tests/unit/test_market_intelligence_tasks.py -q
+```
+
+Result: **264 passed, 2 warnings**.
+
+### Self-review
+
+- Confirmed the high-water query runs after the existing PostgreSQL advisory lock and `FOR UPDATE` pointer read.
+- Confirmed the older-backfill rule is unchanged: the run becomes published history while the pointer remains on the newer `as_of_date`.
+- Confirmed the prior same-session revision rule is subsumed because the current pointer publication is part of the global committed high-water.
+- Confirmed history key generation and repository cutoff remain the same immutable pair; only the publication-order guarantee was repaired.
+- Confirmed ordinary feature-store publish, monotonic pointer, same-date revision, Market Intelligence history, cache, and endpoint tests remain green.
+
+The real-Redis environment concern above is unchanged.

@@ -201,23 +201,26 @@ class SqlFeatureRunRepository(FeatureRunRepository):
             else self._session.get(FeatureRun, pointer.run_id)
         )
 
+        publication_high_water = (
+            self._session.query(func.max(FeatureRun.published_at))
+            .filter(
+                FeatureRun.status == RunStatus.PUBLISHED.value,
+                FeatureRun.published_at.isnot(None),
+            )
+            .scalar()
+        )
         published_at = datetime.now(timezone.utc)
-        if (
-            current is not None
-            and current.as_of_date == row.as_of_date
-            and current.published_at is not None
-        ):
-            current_published_at = current.published_at
-            if current_published_at.tzinfo is None:
-                current_published_at = current_published_at.replace(
+        if publication_high_water is not None:
+            if publication_high_water.tzinfo is None:
+                publication_high_water = publication_high_water.replace(
                     tzinfo=timezone.utc
                 )
             else:
-                current_published_at = current_published_at.astimezone(
+                publication_high_water = publication_high_water.astimezone(
                     timezone.utc
                 )
-            if published_at <= current_published_at:
-                published_at = current_published_at + timedelta(microseconds=1)
+            if published_at <= publication_high_water:
+                published_at = publication_high_water + timedelta(microseconds=1)
 
         row.status = RunStatus.PUBLISHED.value
         row.published_at = published_at
