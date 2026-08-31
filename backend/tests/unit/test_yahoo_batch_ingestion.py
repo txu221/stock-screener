@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import pickle
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import sqlite3
 from unittest.mock import MagicMock
 import pandas as pd
@@ -21,7 +21,7 @@ from app.domain.providers.data_plan import (
 )
 from app.config import settings
 from app.database import Base
-from app.models.stock import StockPrice
+from app.models.stock import StockPrice, StockPriceRevision
 from app.models.stock_universe import (
     StockUniverse,
     UNIVERSE_STATUS_ACTIVE,
@@ -889,13 +889,42 @@ def test_store_in_database_replaces_latest_day_row(monkeypatch):
     db.commit()
     db.close()
 
-    service._store_in_database("AAPL", _price_df(target_day, 110.0))
+    reconciled_at = datetime(2026, 3, 19, 12, tzinfo=timezone.utc)
+    service._store_in_database(
+        "AAPL",
+        _price_df(target_day, 110.0),
+        provider="yahoo",
+        reconciled_at=reconciled_at,
+    )
 
     db = TestingSessionLocal()
     rows = db.query(StockPrice).filter(StockPrice.symbol == "AAPL").all()
+    revisions = (
+        db.query(StockPriceRevision)
+        .filter(StockPriceRevision.symbol == "AAPL")
+        .order_by(StockPriceRevision.revision_number)
+        .all()
+    )
     assert len(rows) == 1
     assert rows[0].close == 110.0
     assert rows[0].adj_close == 109.5
+    assert rows[0].adjustment_factor == pytest.approx(109.5 / 110.0)
+    assert rows[0].provider == "yahoo"
+    assert rows[0].price_basis == "yahoo_adjusted_close_provider_volume"
+    assert rows[0].reconciled_at is not None
+    assert rows[0].revision_number == 1
+    assert [
+        (
+            revision.revision_number,
+            revision.adj_close,
+            revision.provider,
+            revision.price_basis,
+        )
+        for revision in revisions
+    ] == [
+        (0, 90.5, None, "legacy_unversioned"),
+        (1, 109.5, "yahoo", "yahoo_adjusted_close_provider_volume"),
+    ]
     db.close()
 
 
