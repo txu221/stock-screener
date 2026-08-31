@@ -316,6 +316,35 @@ def test_overview_and_etf_radar_use_published_boundary_not_same_day_partial_bar(
     assert radar.freshness_status == "AGING"
 
 
+def test_explicit_published_run_id_pins_all_read_models(session):
+    older = FeatureRun(
+        as_of_date=AS_OF - timedelta(days=1),
+        run_type="daily_snapshot",
+        status="published",
+        published_at=PUBLISHED_AT - timedelta(days=1),
+    )
+    current = FeatureRun(
+        as_of_date=AS_OF,
+        run_type="daily_snapshot",
+        status="published",
+        published_at=PUBLISHED_AT,
+    )
+    session.add_all([older, current])
+    session.flush()
+    session.add(FeatureRunPointer(key="latest_published_market:US", run_id=current.id))
+    session.commit()
+
+    service = MarketIntelligenceReadService(
+        session,
+        completed_sessions=(older.as_of_date, current.as_of_date),
+        published_run_id=older.id,
+    )
+
+    assert service.get_overview().as_of == older.as_of_date
+    assert service.get_movers().as_of == older.as_of_date
+    assert service.get_etf_radar(category="broad_market").as_of == older.as_of_date
+
+
 def test_legacy_completed_session_marks_two_session_lag_stale(session):
     published_date = AS_OF - timedelta(days=2)
     run = FeatureRun(

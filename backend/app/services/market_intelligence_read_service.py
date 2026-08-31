@@ -76,9 +76,11 @@ class MarketIntelligenceReadService:
         *,
         completed_session: date | None = None,
         completed_sessions: Iterable[date] | None = None,
+        published_run_id: int | None = None,
     ):
         self._session = session
         self._completed_session = completed_session
+        self._published_run_id = published_run_id
         self._completed_session_dates = (
             None
             if completed_sessions is None
@@ -191,6 +193,11 @@ class MarketIntelligenceReadService:
         )
 
     def _published_us_run(self) -> FeatureRun | None:
+        if self._published_run_id is not None:
+            run = self._session.get(FeatureRun, self._published_run_id)
+            if run is None or run.status != "published" or run.published_at is None:
+                return None
+            return run
         pointer = self._session.get(FeatureRunPointer, US_PUBLISHED_POINTER)
         if pointer is None:
             return None

@@ -25,7 +25,7 @@ from app.services import redis_pool
 
 logger = logging.getLogger(__name__)
 
-CACHE_FORMAT_VERSION = "v1"
+CACHE_FORMAT_VERSION = "v2"
 MIN_TTL_SECONDS = 60
 MAX_TTL_SECONDS = 7 * 24 * 60 * 60
 _CACHE_KEY_PREFIX = f"market-intelligence:read:{CACHE_FORMAT_VERSION}"
@@ -45,6 +45,8 @@ class MarketIntelligenceCacheKeyParts:
     stable_run_id: int
     stable_trading_date: date
     metric_version: str
+    stable_pointer_revision: datetime | None = None
+    published_generation: str | None = None
     params: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -126,6 +128,8 @@ def build_market_intelligence_cache_key(
         f"run:{int(parts.stable_run_id)}:"
         f"date:{parts.stable_trading_date.isoformat()}:"
         f"metric:{quote(metric_version, safe='')}:"
+        f"revision:{quote(str(_normalize_json_value(parts.stable_pointer_revision)), safe='')}:"
+        f"generation:{quote(str(parts.published_generation), safe='')}:"
         f"params:{quote(_canonical_params(parts.params), safe='')}"
     )
 
@@ -138,11 +142,15 @@ def _cache_ttl_seconds() -> int:
 def _decode_cached_value(raw: Any, *, key: str) -> Any:
     if raw is None:
         return _CACHE_MISS
+
+    def reject_non_finite(value: str) -> None:
+        raise ValueError(f"non-finite JSON constant: {value}")
+
     try:
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
-        return json.loads(raw)
-    except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return json.loads(raw, parse_constant=reject_non_finite)
+    except (TypeError, UnicodeDecodeError, ValueError) as exc:
         logger.warning("Market Intelligence cache JSON is invalid for %s: %s", key, exc)
         return _CACHE_MISS
 

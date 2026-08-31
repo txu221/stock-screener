@@ -8,7 +8,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Literal, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.database import get_db
 from app.domain.market_intelligence.constants import (
@@ -23,6 +23,7 @@ from app.domain.market_intelligence.freshness import (
 )
 from app.domain.market_intelligence.models import IngestionStatus
 from app.domain.market_intelligence.mvp import MVP_METRIC_VERSION
+from app.domain.market_intelligence.ports import PublishedHistoryGeneration
 from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
 from app.infra.db.models.market_intelligence import MarketIntelligenceRunAudit
 from app.infra.db.repositories.market_intelligence_repo import (
@@ -59,6 +60,12 @@ class _StablePublishedIdentity:
     trading_date: date
     metric_version: str
     pointer_revision: datetime | None
+
+
+@dataclass(frozen=True)
+class _StableHistoryIdentity:
+    published: _StablePublishedIdentity
+    published_generation: PublishedHistoryGeneration | None
 
 
 def _mvp_published_identity(db: Session) -> _StablePublishedIdentity | None:
@@ -118,11 +125,91 @@ def _sector_published_identity(db: Session) -> _StablePublishedIdentity | None:
     )
 
 
+def _sector_history_identity(
+    db: Session,
+    metric_version: str,
+) -> _StableHistoryIdentity | None:
+    """Capture the pointer and history high-water mark in one DB statement."""
+    history_run = aliased(FeatureRun)
+    history_audit = aliased(MarketIntelligenceRunAudit)
+    generation_run_id = (
+        db.query(history_run.id)
+        .select_from(history_run)
+        .join(history_audit, history_audit.run_id == history_run.id)
+        .filter(
+            history_run.status == "published",
+            history_run.published_at.isnot(None),
+            history_audit.ingestion_status == IngestionStatus.SUCCEEDED.value,
+            history_audit.metric_version == metric_version,
+        )
+        .order_by(history_run.published_at.desc(), history_run.id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    generation_published_at = (
+        db.query(history_run.published_at)
+        .select_from(history_run)
+        .join(history_audit, history_audit.run_id == history_run.id)
+        .filter(
+            history_run.status == "published",
+            history_run.published_at.isnot(None),
+            history_audit.ingestion_status == IngestionStatus.SUCCEEDED.value,
+            history_audit.metric_version == metric_version,
+        )
+        .order_by(history_run.published_at.desc(), history_run.id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    row = (
+        db.query(
+            FeatureRun.id,
+            FeatureRun.as_of_date,
+            MarketIntelligenceRunAudit.metric_version,
+            FeatureRunPointer.updated_at,
+            generation_run_id.label("generation_run_id"),
+            generation_published_at.label("generation_published_at"),
+        )
+        .join(FeatureRunPointer, FeatureRunPointer.run_id == FeatureRun.id)
+        .join(
+            MarketIntelligenceRunAudit,
+            MarketIntelligenceRunAudit.run_id == FeatureRun.id,
+        )
+        .filter(
+            FeatureRunPointer.key == LATEST_POINTER_KEY,
+            FeatureRun.status == "published",
+            FeatureRun.published_at.isnot(None),
+            MarketIntelligenceRunAudit.ingestion_status
+            == IngestionStatus.SUCCEEDED.value,
+        )
+        .one_or_none()
+    )
+    if row is None:
+        return None
+    published_generation = (
+        None
+        if row.generation_run_id is None or row.generation_published_at is None
+        else PublishedHistoryGeneration(
+            published_at=row.generation_published_at,
+            run_id=int(row.generation_run_id),
+        )
+    )
+    return _StableHistoryIdentity(
+        published=_StablePublishedIdentity(
+            run_id=int(row.id),
+            trading_date=row.as_of_date,
+            metric_version=row.metric_version,
+            pointer_revision=row.updated_at,
+        ),
+        published_generation=published_generation,
+    )
+
+
 def _cache_key_parts(
     identity: _StablePublishedIdentity | None,
     *,
     endpoint: str,
     params: Mapping[str, Any] | None = None,
+    published_generation: str | None = None,
 ) -> MarketIntelligenceCacheKeyParts | None:
     if identity is None:
         return None
@@ -131,8 +218,23 @@ def _cache_key_parts(
         stable_run_id=identity.run_id,
         stable_trading_date=identity.trading_date,
         metric_version=identity.metric_version,
+        stable_pointer_revision=identity.pointer_revision,
+        published_generation=published_generation,
         params=params or {},
     )
+
+
+def _history_generation_cache_token(
+    generation: PublishedHistoryGeneration | None,
+) -> str | None:
+    if generation is None:
+        return None
+    published_at = generation.published_at
+    if published_at.tzinfo is None:
+        published_at = published_at.replace(tzinfo=timezone.utc)
+    else:
+        published_at = published_at.astimezone(timezone.utc)
+    return f"{published_at.isoformat()}#{generation.run_id}"
 
 
 def _cached_response(
@@ -201,7 +303,10 @@ def market_intelligence_overview(
             MarketIntelligenceOverviewResponse,
             key_parts=_cache_key_parts(identity, endpoint="overview"),
             compute=lambda: MarketIntelligenceOverviewResponse.from_domain(
-                MarketIntelligenceReadService(db).get_overview()
+                MarketIntelligenceReadService(
+                    db,
+                    published_run_id=(0 if identity is None else identity.run_id),
+                ).get_overview()
             ),
             is_still_stable=(
                 None
@@ -227,8 +332,12 @@ def market_intelligence_movers(
     db: Session = Depends(get_db),
 ) -> MarketMoversResponse:
     identity = _mvp_published_identity(db)
-    normalized_sector = sector.strip().casefold() if sector is not None else None
-    normalized_search = search.strip().casefold() if search is not None else None
+    normalized_sector = (
+        None if sector is None else (sector.strip().casefold() or None)
+    )
+    normalized_search = (
+        None if search is None else (search.strip().casefold() or None)
+    )
     params = {
         "limit": limit,
         "sector": normalized_sector,
@@ -243,7 +352,10 @@ def market_intelligence_movers(
             MarketMoversResponse,
             key_parts=_cache_key_parts(identity, endpoint="movers", params=params),
             compute=lambda: MarketMoversResponse.from_domain(
-                MarketIntelligenceReadService(db).get_movers(
+                MarketIntelligenceReadService(
+                    db,
+                    published_run_id=(0 if identity is None else identity.run_id),
+                ).get_movers(
                     limit=limit,
                     sector=normalized_sector,
                     direction=direction,
@@ -291,7 +403,10 @@ def market_intelligence_etfs(
                 params={"category": category},
             ),
             compute=lambda: EtfRadarResponse.from_domain(
-                MarketIntelligenceReadService(db).get_etf_radar(category=category)
+                MarketIntelligenceReadService(
+                    db,
+                    published_run_id=(0 if identity is None else identity.run_id),
+                ).get_etf_radar(category=category)
             ),
             is_still_stable=(
                 None
@@ -312,8 +427,12 @@ def latest_sector_intelligence(
     identity = _sector_published_identity(db)
 
     def compute() -> SectorIntelligenceLatestResponse:
-        bundle = SqlMarketIntelligenceRepository(db).get_latest_published(
-            LATEST_POINTER_KEY
+        bundle = (
+            None
+            if identity is None
+            else SqlMarketIntelligenceRepository(db).get_published_by_run_id(
+                identity.run_id
+            )
         )
         if bundle is None:
             raise HTTPException(
@@ -370,15 +489,27 @@ def sector_intelligence_history(
             status_code=422,
             detail="metric_version must not be blank",
         )
-    identity = _sector_published_identity(db)
+    history_identity = _sector_history_identity(db, normalized_metric_version)
+    identity = None if history_identity is None else history_identity.published
+    repository = SqlMarketIntelligenceRepository(db)
+    history_generation = (
+        None
+        if history_identity is None
+        else history_identity.published_generation
+    )
 
     def compute() -> SectorIntelligenceHistoryResponse:
-        bundles = SqlMarketIntelligenceRepository(db).list_published_history(
-            metric_version=normalized_metric_version,
-            symbol=normalized_symbol,
-            date_from=date_from,
-            date_to=date_to,
-            limit=limit,
+        bundles = (
+            ()
+            if history_generation is None
+            else repository.list_published_history(
+                metric_version=normalized_metric_version,
+                symbol=normalized_symbol,
+                date_from=date_from,
+                date_to=date_to,
+                limit=limit,
+                max_generation=history_generation,
+            )
         )
         return SectorIntelligenceHistoryResponse(
             metric_version=normalized_metric_version,
@@ -394,6 +525,7 @@ def sector_intelligence_history(
         key_parts=_cache_key_parts(
             identity,
             endpoint="sectors-history",
+            published_generation=_history_generation_cache_token(history_generation),
             params={
                 "date_from": date_from,
                 "date_to": date_to,
@@ -405,8 +537,12 @@ def sector_intelligence_history(
         compute=compute,
         is_still_stable=(
             None
-            if identity is None
-            else lambda: _sector_published_identity(db) == identity
+            if history_identity is None
+            else lambda: _sector_history_identity(
+                db,
+                normalized_metric_version,
+            )
+            == history_identity
         ),
     )
 

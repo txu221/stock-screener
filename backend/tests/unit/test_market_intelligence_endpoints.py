@@ -39,6 +39,7 @@ from app.domain.market_intelligence.observability import (
     complete_stage_timings,
 )
 from app.domain.market_intelligence.ranking import RANKING_METRICS
+from app.infra.db.models.feature_store import FeatureRunPointer
 from app.infra.db.uow import SqlUnitOfWork
 from app.infra.db.repositories.market_intelligence_repo import (
     SqlMarketIntelligenceRepository,
@@ -209,6 +210,7 @@ def _persist_published(
     key: str,
     *,
     metric_version: str = METRIC_VERSION,
+    keep_latest_pointer: bool = False,
 ) -> int:
     run = _start(uow, trading_date, key)
     uow.market_intelligence.persist_candidate(
@@ -222,7 +224,13 @@ def _persist_published(
         ),
     )
     uow.feature_runs.mark_completed(run.id, RunStats(12, 12, 0, 1.0, 12))
-    uow.feature_runs.publish_atomically(run.id, LATEST_POINTER_KEY)
+    if keep_latest_pointer:
+        uow.feature_runs.publish_atomically_if_not_older(
+            run.id,
+            LATEST_POINTER_KEY,
+        )
+    else:
+        uow.feature_runs.publish_atomically(run.id, LATEST_POINTER_KEY)
     return run.id
 
 
@@ -523,6 +531,7 @@ async def test_sector_reads_use_stable_pointer_cache_but_health_never_does(
     assert all(parts.stable_run_id == run_id for parts in observed)
     assert all(parts.stable_trading_date == MONDAY for parts in observed)
     assert all(parts.metric_version == METRIC_VERSION for parts in observed)
+    assert all(parts.stable_pointer_revision is not None for parts in observed)
     assert observed[1].params["symbol"] == "XLK"
     assert observed[1].params["limit"] == 10
 
@@ -554,6 +563,7 @@ async def test_history_normalizes_metric_version_for_query_and_parameter_key(
     assert response.json()["metric_version"] == METRIC_VERSION
     assert len(response.json()["items"]) == 1
     assert observed[0].metric_version == METRIC_VERSION
+    assert observed[0].stable_pointer_revision is not None
     assert observed[0].params["metric_version"] == METRIC_VERSION
 
 
@@ -594,3 +604,232 @@ async def test_pointer_revision_recheck_rejects_aba_repoint(client, monkeypatch)
 
     assert response.status_code == 200
     assert stability_results == [False]
+
+
+@pytest.mark.asyncio
+async def test_latest_compute_stays_pinned_during_same_timestamp_aba_swap(
+    client,
+    monkeypatch,
+) -> None:
+    from app.api.v1 import market_intelligence as module
+    from app.infra.db.models.feature_store import FeatureRunPointer
+
+    with SqlUnitOfWork(SessionLocal) as uow:
+        run_a_id = _persist_published(uow, MONDAY, "9" * 64)
+        run_d_id = _persist_published(uow, TUESDAY, "a" * 64)
+        uow.commit()
+    revision_a = NOW
+    revision_d = revision_a
+    revision_a2 = revision_a
+    with SessionLocal() as session:
+        pointer = session.get(FeatureRunPointer, LATEST_POINTER_KEY)
+        pointer.run_id = run_a_id
+        pointer.updated_at = revision_a
+        session.commit()
+    stability_results = []
+
+    def coordinated_cache(key_parts, compute, **kwargs):
+        assert key_parts.stable_run_id == run_a_id
+        with SessionLocal() as session:
+            pointer = session.get(FeatureRunPointer, LATEST_POINTER_KEY)
+            pointer.run_id = run_d_id
+            pointer.updated_at = revision_d
+            session.commit()
+        value = compute()
+        with SessionLocal() as session:
+            pointer = session.get(FeatureRunPointer, LATEST_POINTER_KEY)
+            pointer.run_id = run_a_id
+            pointer.updated_at = revision_a2
+            session.commit()
+        stability_results.append(kwargs["is_still_stable"]())
+        return value
+
+    monkeypatch.setattr(
+        module,
+        "cached_market_intelligence_payload",
+        coordinated_cache,
+    )
+
+    response = await client.get("/api/v1/market-intelligence/sectors/latest")
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == run_a_id
+    assert stability_results == [True]
+
+
+def test_history_generation_advances_for_older_backfill_without_pointer_move() -> None:
+    with SqlUnitOfWork(SessionLocal) as uow:
+        latest_id = _persist_published(uow, TUESDAY, "b" * 64)
+        uow.commit()
+    with SessionLocal() as session:
+        repository = SqlMarketIntelligenceRepository(session)
+        before = repository.get_published_history_generation(METRIC_VERSION)
+
+    with SqlUnitOfWork(SessionLocal) as uow:
+        backfill_id = _persist_published(
+            uow,
+            MONDAY,
+            "c" * 64,
+            keep_latest_pointer=True,
+        )
+        uow.commit()
+
+    with SessionLocal() as session:
+        pointer = session.get(FeatureRunPointer, LATEST_POINTER_KEY)
+        repository = SqlMarketIntelligenceRepository(session)
+        after = repository.get_published_history_generation(METRIC_VERSION)
+
+    assert pointer.run_id == latest_id
+    assert before is not None and before.run_id == latest_id
+    assert after is not None and after.run_id == backfill_id
+    assert after != before
+
+
+@pytest.mark.asyncio
+async def test_history_compute_is_bounded_to_generation_during_older_backfill(
+    client,
+    monkeypatch,
+) -> None:
+    from app.api.v1 import market_intelligence as module
+
+    with SqlUnitOfWork(SessionLocal) as uow:
+        latest_id = _persist_published(uow, TUESDAY, "d" * 64)
+        uow.commit()
+    stability_results = []
+    captured_generations = []
+
+    def coordinated_cache(key_parts, compute, **kwargs):
+        captured_generations.append(key_parts.published_generation)
+        with SqlUnitOfWork(SessionLocal) as uow:
+            _persist_published(
+                uow,
+                MONDAY,
+                "e" * 64,
+                keep_latest_pointer=True,
+            )
+            uow.commit()
+        value = compute()
+        stability_results.append(kwargs["is_still_stable"]())
+        return value
+
+    monkeypatch.setattr(
+        module,
+        "cached_market_intelligence_payload",
+        coordinated_cache,
+    )
+
+    response = await client.get("/api/v1/market-intelligence/sectors/history")
+
+    assert response.status_code == 200
+    assert [item["run_id"] for item in response.json()["items"]] == [latest_id]
+    assert len(captured_generations) == 1
+    assert captured_generations[0].endswith(f"#{latest_id}")
+    assert stability_results == [False]
+    with SessionLocal() as session:
+        pointer = session.get(FeatureRunPointer, LATEST_POINTER_KEY)
+        generation = SqlMarketIntelligenceRepository(
+            session
+        ).get_published_history_generation(METRIC_VERSION)
+    assert pointer.run_id == latest_id
+    assert generation is not None and generation.run_id > latest_id
+
+
+@pytest.mark.asyncio
+async def test_empty_history_generation_stays_empty_during_first_publication(
+    client,
+    monkeypatch,
+) -> None:
+    from app.api.v1 import market_intelligence as module
+
+    future_metric_version = "market_intelligence_v2"
+    with SqlUnitOfWork(SessionLocal) as uow:
+        _persist_published(uow, TUESDAY, "1" * 64)
+        uow.commit()
+    stability_results = []
+
+    def coordinated_cache(key_parts, compute, **kwargs):
+        assert key_parts.published_generation is None
+        with SqlUnitOfWork(SessionLocal) as uow:
+            _persist_published(
+                uow,
+                MONDAY,
+                "2" * 64,
+                metric_version=future_metric_version,
+                keep_latest_pointer=True,
+            )
+            uow.commit()
+        value = compute()
+        stability_results.append(kwargs["is_still_stable"]())
+        return value
+
+    monkeypatch.setattr(
+        module,
+        "cached_market_intelligence_payload",
+        coordinated_cache,
+    )
+
+    response = await client.get(
+        "/api/v1/market-intelligence/sectors/history",
+        params={"metric_version": future_metric_version},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert stability_results == [False]
+
+
+@pytest.mark.asyncio
+async def test_history_generation_is_stable_during_same_timestamp_aba_swap(
+    client,
+    monkeypatch,
+) -> None:
+    from app.api.v1 import market_intelligence as module
+
+    with SqlUnitOfWork(SessionLocal) as uow:
+        run_a_id = _persist_published(uow, MONDAY, "f" * 64)
+        run_d_id = _persist_published(uow, TUESDAY, "0" * 64)
+        uow.commit()
+    revision_a = NOW
+    revision_d = revision_a
+    revision_a2 = revision_a
+    with SessionLocal() as session:
+        pointer = session.get(FeatureRunPointer, LATEST_POINTER_KEY)
+        pointer.run_id = run_a_id
+        pointer.updated_at = revision_a
+        session.commit()
+    stability_results = []
+
+    def coordinated_cache(key_parts, compute, **kwargs):
+        assert key_parts.stable_run_id == run_a_id
+        assert key_parts.stable_pointer_revision.replace(tzinfo=None) == revision_a.replace(
+            tzinfo=None
+        )
+        assert key_parts.published_generation.endswith(f"#{run_d_id}")
+        with SessionLocal() as session:
+            pointer = session.get(FeatureRunPointer, LATEST_POINTER_KEY)
+            pointer.run_id = run_d_id
+            pointer.updated_at = revision_d
+            session.commit()
+        value = compute()
+        with SessionLocal() as session:
+            pointer = session.get(FeatureRunPointer, LATEST_POINTER_KEY)
+            pointer.run_id = run_a_id
+            pointer.updated_at = revision_a2
+            session.commit()
+        stability_results.append(kwargs["is_still_stable"]())
+        return value
+
+    monkeypatch.setattr(
+        module,
+        "cached_market_intelligence_payload",
+        coordinated_cache,
+    )
+
+    response = await client.get("/api/v1/market-intelligence/sectors/history")
+
+    assert response.status_code == 200
+    assert [item["run_id"] for item in response.json()["items"]] == [
+        run_d_id,
+        run_a_id,
+    ]
+    assert stability_results == [True]

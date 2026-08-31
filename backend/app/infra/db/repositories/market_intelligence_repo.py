@@ -29,6 +29,7 @@ from app.domain.market_intelligence.models import (
 from app.domain.market_intelligence.ports import (
     MarketIntelligenceIdempotencyConflict,
     MarketIntelligenceRepository,
+    PublishedHistoryGeneration,
 )
 from app.domain.market_intelligence.observability import (
     MarketIntelligenceErrorCategory,
@@ -373,6 +374,32 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             else self._load_bundle(run_id, include_evidence=False)
         )
 
+    def get_published_by_run_id(
+        self,
+        run_id: int,
+    ) -> MarketIntelligenceRunBundle | None:
+        """Load one immutable successful publication without following a pointer."""
+        published_run_id = (
+            self._session.query(FeatureRun.id)
+            .join(
+                MarketIntelligenceRunAudit,
+                MarketIntelligenceRunAudit.run_id == FeatureRun.id,
+            )
+            .filter(
+                FeatureRun.id == run_id,
+                FeatureRun.status == RunStatus.PUBLISHED.value,
+                FeatureRun.published_at.isnot(None),
+                MarketIntelligenceRunAudit.ingestion_status
+                == IngestionStatus.SUCCEEDED.value,
+            )
+            .scalar()
+        )
+        return (
+            None
+            if published_run_id is None
+            else self._load_bundle(published_run_id, include_evidence=False)
+        )
+
     def list_published_history(
         self,
         *,
@@ -381,6 +408,7 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
         date_from: date | None = None,
         date_to: date | None = None,
         limit: int = 60,
+        max_generation: PublishedHistoryGeneration | None = None,
     ) -> tuple[MarketIntelligenceRunBundle, ...]:
         if limit <= 0:
             return ()
@@ -402,6 +430,16 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
                 MarketIntelligenceSectorSnapshot,
                 MarketIntelligenceSectorSnapshot.run_id == FeatureRun.id,
             ).filter(MarketIntelligenceSectorSnapshot.symbol == symbol.upper())
+        if max_generation is not None:
+            query = query.filter(
+                or_(
+                    FeatureRun.published_at < max_generation.published_at,
+                    and_(
+                        FeatureRun.published_at == max_generation.published_at,
+                        FeatureRun.id <= max_generation.run_id,
+                    ),
+                )
+            )
         if date_from is not None:
             query = query.filter(FeatureRun.as_of_date >= date_from)
         if date_to is not None:
@@ -428,6 +466,34 @@ class SqlMarketIntelligenceRepository(MarketIntelligenceRepository):
             if len(bundles) == limit:
                 break
         return tuple(bundles)
+
+    def get_published_history_generation(
+        self,
+        metric_version: str,
+    ) -> PublishedHistoryGeneration | None:
+        """Return the newest immutable publication boundary for one history."""
+        row = (
+            self._session.query(FeatureRun.published_at, FeatureRun.id)
+            .join(
+                MarketIntelligenceRunAudit,
+                MarketIntelligenceRunAudit.run_id == FeatureRun.id,
+            )
+            .filter(
+                FeatureRun.status == RunStatus.PUBLISHED.value,
+                FeatureRun.published_at.isnot(None),
+                MarketIntelligenceRunAudit.ingestion_status
+                == IngestionStatus.SUCCEEDED.value,
+                MarketIntelligenceRunAudit.metric_version == metric_version,
+            )
+            .order_by(FeatureRun.published_at.desc(), FeatureRun.id.desc())
+            .first()
+        )
+        if row is None:
+            return None
+        return PublishedHistoryGeneration(
+            published_at=_aware(row.published_at),
+            run_id=int(row.id),
+        )
 
     def _load_bundle(
         self,

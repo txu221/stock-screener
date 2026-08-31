@@ -96,6 +96,7 @@ def _seed_pulse_and_etfs(factory):
         session.add_all(_prices("SPY", spy))
         session.add_all(_prices("QQQ", qqq, current_volume=3_000_000))
         session.commit()
+        return run.id
 
 
 def _seed_mover(factory):
@@ -286,9 +287,37 @@ async def test_movers_cache_uses_stable_pointer_and_normalized_parameters(
     assert observed[0].stable_run_id == run_id
     assert observed[0].stable_trading_date == AS_OF
     assert observed[0].metric_version == "market_intelligence_mvp_v1"
+    assert observed[0].stable_pointer_revision is not None
     assert build_market_intelligence_cache_key(observed[0]) == (
         build_market_intelligence_cache_key(observed[1])
     )
+
+
+@pytest.mark.asyncio
+async def test_movers_canonicalizes_blank_optional_filters_to_none(
+    mvp_client,
+    monkeypatch,
+):
+    from app.api.v1 import market_intelligence as module
+
+    client, factory = mvp_client
+    _seed_mover(factory)
+    observed = []
+
+    def capture(key_parts, compute, **_kwargs):
+        observed.append(key_parts)
+        return compute()
+
+    monkeypatch.setattr(module, "cached_market_intelligence_payload", capture)
+
+    response = await client.get(
+        "/api/v1/market-intelligence/movers",
+        params={"sector": "   ", "search": "   "},
+    )
+
+    assert response.status_code == 200
+    assert observed[0].params["sector"] is None
+    assert observed[0].params["search"] is None
 
 
 @pytest.mark.asyncio
@@ -349,3 +378,101 @@ async def test_cached_mvp_read_refreshes_completed_session_freshness(
     assert first.json()["freshness_status"] == "FRESH"
     assert second.json()["expected_session"] == (AS_OF + timedelta(days=1)).isoformat()
     assert second.json()["freshness_status"] == "AGING"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cached_json",
+    (b"NaN", b'{"pulse":[Infinity]}', b'{"nested":{"value":-Infinity}}'),
+)
+async def test_overview_nonfinite_cached_json_falls_back_without_http_500(
+    mvp_client,
+    monkeypatch,
+    cached_json,
+):
+    from app.services import market_intelligence_read_cache as cache_module
+
+    client, factory = mvp_client
+    _seed_pulse_and_etfs(factory)
+
+    class NonFiniteRedis:
+        def __init__(self):
+            self.value = cached_json
+            self.writes = 0
+
+        def get(self, _key):
+            return self.value
+
+        def setex(self, _key, _ttl, value):
+            self.writes += 1
+            self.value = value.encode("utf-8")
+
+    redis = NonFiniteRedis()
+    monkeypatch.setattr(cache_module, "get_redis_client", lambda: redis)
+    monkeypatch.setattr(
+        "app.api.v1.market_intelligence._completed_us_sessions",
+        lambda: (AS_OF,),
+    )
+
+    response = await client.get("/api/v1/market-intelligence/overview")
+
+    assert response.status_code == 200
+    assert response.json()["as_of"] == AS_OF.isoformat()
+    assert redis.writes == 1
+
+
+@pytest.mark.asyncio
+async def test_overview_compute_stays_pinned_during_same_timestamp_aba_swap(
+    mvp_client,
+    monkeypatch,
+):
+    from app.api.v1 import market_intelligence as module
+
+    client, factory = mvp_client
+    run_a_id = _seed_pulse_and_etfs(factory)
+    revision_a = datetime(2026, 8, 26, 22, 5, tzinfo=timezone.utc)
+    revision_d = revision_a
+    revision_a2 = revision_a
+    with factory() as session:
+        pointer = session.get(FeatureRunPointer, "latest_published_market:US")
+        pointer.updated_at = revision_a
+        run_d = FeatureRun(
+            as_of_date=AS_OF + timedelta(days=1),
+            run_type="daily_snapshot",
+            status="published",
+            published_at=PUBLISHED_AT + timedelta(days=1),
+        )
+        session.add(run_d)
+        session.commit()
+        run_d_id = run_d.id
+
+    stability_results = []
+
+    def coordinated_cache(key_parts, compute, **kwargs):
+        assert key_parts.stable_run_id == run_a_id
+        with factory() as session:
+            pointer = session.get(FeatureRunPointer, "latest_published_market:US")
+            pointer.run_id = run_d_id
+            pointer.updated_at = revision_d
+            session.commit()
+        value = compute()
+        with factory() as session:
+            pointer = session.get(FeatureRunPointer, "latest_published_market:US")
+            pointer.run_id = run_a_id
+            pointer.updated_at = revision_a2
+            session.commit()
+        stability_results.append(kwargs["is_still_stable"]())
+        return value
+
+    monkeypatch.setattr(
+        module,
+        "cached_market_intelligence_payload",
+        coordinated_cache,
+    )
+    monkeypatch.setattr(module, "_completed_us_sessions", lambda: (AS_OF,))
+
+    response = await client.get("/api/v1/market-intelligence/overview")
+
+    assert response.status_code == 200
+    assert response.json()["as_of"] == AS_OF.isoformat()
+    assert stability_results == [True]

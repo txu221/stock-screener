@@ -527,3 +527,116 @@ def test_history_filters_metric_version_and_keeps_newest_revision_per_session(en
 
     assert [bundle.run_id for bundle in history] == [revision.id]
     assert history[0].snapshots[0].ranks["relative_return_vs_spy_20d"].current_rank == 2
+
+
+def test_history_generation_and_bound_include_backfill_without_repointing(engine) -> None:
+    factory = sessionmaker(bind=engine)
+    latest_date = AS_OF
+    backfill_date = date(2026, 5, 14)
+    with SqlUnitOfWork(factory) as uow:
+        latest = _start(uow, as_of=latest_date, input_hash="4" * 64)
+        uow.market_intelligence.persist_candidate(
+            latest.id,
+            _audit(key="4" * 64, target_session=latest_date),
+            (),
+            (),
+            (_snapshot(trading_date=latest_date),),
+        )
+        _publish(uow, latest.id)
+        uow.commit()
+
+    with SqlUnitOfWork(factory) as uow:
+        before = uow.market_intelligence.get_published_history_generation(
+            METRIC_VERSION
+        )
+        backfill = _start(uow, as_of=backfill_date, input_hash="5" * 64)
+        uow.market_intelligence.persist_candidate(
+            backfill.id,
+            _audit(key="5" * 64, target_session=backfill_date),
+            (),
+            (),
+            (_snapshot(trading_date=backfill_date),),
+        )
+        uow.feature_runs.mark_completed(
+            backfill.id,
+            RunStats(12, 12, 0, 1.0, passed_symbols=12),
+        )
+        uow.feature_runs.publish_atomically_if_not_older(
+            backfill.id,
+            LATEST_POINTER_KEY,
+        )
+        uow.commit()
+
+    with SqlUnitOfWork(factory) as uow:
+        pointer = uow.session.get(FeatureRunPointer, LATEST_POINTER_KEY)
+        after = uow.market_intelligence.get_published_history_generation(
+            METRIC_VERSION
+        )
+        bounded = uow.market_intelligence.list_published_history(
+            metric_version=METRIC_VERSION,
+            max_generation=before,
+        )
+        current = uow.market_intelligence.list_published_history(
+            metric_version=METRIC_VERSION,
+        )
+
+    assert pointer is not None and pointer.run_id == latest.id
+    assert before is not None and before.run_id == latest.id
+    assert after is not None and after.run_id == backfill.id
+    assert [bundle.run_id for bundle in bounded] == [latest.id]
+    assert [bundle.run_id for bundle in current] == [latest.id, backfill.id]
+
+
+def test_history_generation_tracks_a_lower_run_id_published_late(engine) -> None:
+    factory = sessionmaker(bind=engine)
+    backfill_date = date(2026, 5, 14)
+    with SqlUnitOfWork(factory) as uow:
+        backfill = _start(uow, as_of=backfill_date, input_hash="6" * 64)
+        uow.market_intelligence.persist_candidate(
+            backfill.id,
+            _audit(key="6" * 64, target_session=backfill_date),
+            (),
+            (),
+            (_snapshot(trading_date=backfill_date),),
+        )
+        uow.feature_runs.mark_completed(
+            backfill.id,
+            RunStats(12, 12, 0, 1.0, passed_symbols=12),
+        )
+        uow.commit()
+
+    with SqlUnitOfWork(factory) as uow:
+        latest = _start(uow, as_of=AS_OF, input_hash="7" * 64)
+        uow.market_intelligence.persist_candidate(
+            latest.id,
+            _audit(key="7" * 64),
+            (),
+            (),
+            (_snapshot(),),
+        )
+        _publish(uow, latest.id)
+        uow.commit()
+
+    with SqlUnitOfWork(factory) as uow:
+        before = uow.market_intelligence.get_published_history_generation(
+            METRIC_VERSION
+        )
+        uow.feature_runs.publish_atomically_if_not_older(
+            backfill.id,
+            LATEST_POINTER_KEY,
+        )
+        uow.commit()
+
+    with SqlUnitOfWork(factory) as uow:
+        pointer = uow.session.get(FeatureRunPointer, LATEST_POINTER_KEY)
+        after = uow.market_intelligence.get_published_history_generation(
+            METRIC_VERSION
+        )
+        bounded = uow.market_intelligence.list_published_history(
+            metric_version=METRIC_VERSION,
+            max_generation=before,
+        )
+
+    assert pointer is not None and pointer.run_id == latest.id
+    assert after != before
+    assert [bundle.run_id for bundle in bounded] == [latest.id]

@@ -80,7 +80,9 @@ def test_key_contains_stable_identity_and_normalizes_request_parameters(cache_mo
     second_key = module.build_market_intelligence_cache_key(second)
 
     assert first_key == second_key
-    assert first_key.startswith("market-intelligence:read:v1:movers:")
+    assert first_key.startswith(
+        f"market-intelligence:read:{module.CACHE_FORMAT_VERSION}:movers:"
+    )
     assert ":run:101:" in first_key
     assert ":date:2026-08-26:" in first_key
     assert ":metric:market_intelligence_v1:" in first_key
@@ -101,6 +103,39 @@ def test_endpoint_identity_and_parameters_create_distinct_keys(cache_module):
     )
 
     assert len({base, endpoint_changed, params_changed}) == 3
+
+
+def test_pointer_revision_and_publication_generation_create_distinct_keys(
+    cache_module,
+):
+    module, _ = cache_module
+    revision_a = date(2026, 8, 26)
+    revision_d = date(2026, 8, 27)
+
+    def parts(*, revision, generation):
+        return module.MarketIntelligenceCacheKeyParts(
+            endpoint="sectors-history",
+            stable_run_id=101,
+            stable_trading_date=date(2026, 8, 26),
+            metric_version="market_intelligence_v1",
+            stable_pointer_revision=revision,
+            published_generation=f"2026-08-26T21:00:00+00:00#{generation}",
+            params={"limit": 60},
+        )
+
+    base = module.build_market_intelligence_cache_key(
+        parts(revision=revision_a, generation=101)
+    )
+    aba_revision = module.build_market_intelligence_cache_key(
+        parts(revision=revision_d, generation=101)
+    )
+    older_backfill = module.build_market_intelligence_cache_key(
+        parts(revision=revision_a, generation=104)
+    )
+
+    assert len({base, aba_revision, older_backfill}) == 3
+    assert ":revision:2026-08-26:" in base
+    assert ":generation:2026-08-26T21%3A00%3A00%2B00%3A00%23101:" in base
 
 
 def test_a_success_b_partial_c_failed_d_success_cache_transition(cache_module):
@@ -188,6 +223,39 @@ def test_schema_invalid_cached_json_falls_back_and_repairs_entry(
     )
 
     assert result == {"ok": True}
+    assert json.loads(redis.values[key]) == {"ok": True}
+
+
+@pytest.mark.parametrize(
+    "cached_json",
+    (
+        b"NaN",
+        b"Infinity",
+        b"-Infinity",
+        b'{"nested":[1,NaN]}',
+        b'{"nested":{"value":Infinity}}',
+        b'{"nested":{"value":-Infinity}}',
+    ),
+)
+def test_nonstandard_nonfinite_json_is_a_miss_and_is_repaired(
+    cache_module,
+    cached_json,
+):
+    module, redis = cache_module
+    parts = _parts(module)
+    key = module.build_market_intelligence_cache_key(parts)
+    redis.values[key] = cached_json
+    calls = 0
+
+    def compute():
+        nonlocal calls
+        calls += 1
+        return {"ok": True}
+
+    result = module.cached_market_intelligence_payload(parts, compute)
+
+    assert result == {"ok": True}
+    assert calls == 1
     assert json.loads(redis.values[key]) == {"ok": True}
 
 
@@ -343,6 +411,53 @@ def test_compute_exception_releases_keyed_lock_for_retry(cache_module):
             lambda: (_ for _ in ()).throw(RuntimeError("database failed")),
         )
 
+    assert module._local_cache_lock_count() == 0
+    assert module.cached_market_intelligence_payload(parts, lambda: {"ok": True}) == {
+        "ok": True
+    }
+    assert module._local_cache_lock_count() == 0
+
+
+def test_concurrent_failed_flight_propagates_and_releases_all_waiters(cache_module):
+    module, _ = cache_module
+    parts = _parts(module)
+    start = threading.Barrier(6)
+    compute_started = threading.Event()
+    release_compute = threading.Event()
+    calls = 0
+    errors: list[BaseException] = []
+    guard = threading.Lock()
+
+    def compute():
+        nonlocal calls
+        with guard:
+            calls += 1
+        compute_started.set()
+        assert release_compute.wait(timeout=2)
+        raise RuntimeError("database failed")
+
+    def worker() -> None:
+        start.wait(timeout=2)
+        try:
+            module.cached_market_intelligence_payload(parts, compute)
+        except BaseException as exc:
+            with guard:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    assert compute_started.wait(timeout=2)
+    time.sleep(0.05)
+    release_compute.set()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert calls == 1
+    assert len(errors) == 6
+    assert all(isinstance(exc, RuntimeError) for exc in errors)
+    assert [str(exc) for exc in errors] == ["database failed"] * 6
     assert module._local_cache_lock_count() == 0
     assert module.cached_market_intelligence_payload(parts, lambda: {"ok": True}) == {
         "ok": True

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import abc
 from collections.abc import Sequence
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime
 
 from .models import (
     BarRejection,
@@ -19,6 +20,14 @@ from .observability import MarketIntelligenceErrorCategory
 
 class MarketIntelligenceIdempotencyConflict(RuntimeError):
     """A concurrent run already persisted the same deterministic input."""
+
+
+@dataclass(frozen=True)
+class PublishedHistoryGeneration:
+    """Immutable boundary identifying the newest member of published history."""
+
+    published_at: datetime
+    run_id: int
 
 
 class MarketIntelligenceRepository(abc.ABC):
@@ -86,6 +95,13 @@ class MarketIntelligenceRepository(abc.ABC):
         ...
 
     @abc.abstractmethod
+    def get_published_by_run_id(
+        self,
+        run_id: int,
+    ) -> MarketIntelligenceRunBundle | None:
+        ...
+
+    @abc.abstractmethod
     def list_published_history(
         self,
         *,
@@ -94,5 +110,13 @@ class MarketIntelligenceRepository(abc.ABC):
         date_from: date | None = None,
         date_to: date | None = None,
         limit: int = 60,
+        max_generation: PublishedHistoryGeneration | None = None,
     ) -> tuple[MarketIntelligenceRunBundle, ...]:
+        ...
+
+    @abc.abstractmethod
+    def get_published_history_generation(
+        self,
+        metric_version: str,
+    ) -> PublishedHistoryGeneration | None:
         ...
