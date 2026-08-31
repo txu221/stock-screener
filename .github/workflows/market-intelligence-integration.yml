@@ -10,6 +10,7 @@ on:
       - frontend/**
       - docs/market-intelligence-spec.md
       - docs/market-intelligence-mvp-report.md
+      - docs/market-intelligence-slo.md
       - docs/phase2-integration-report.md
   workflow_dispatch:
     inputs:
@@ -220,6 +221,17 @@ jobs:
             tests/integration/market_intelligence/test_postgres_api.py \
             -q 2>&1 | tee "$RUNNER_TEMP/phase2-postgresql.log"
 
+      - name: Record PostgreSQL 16 uncached Market Intelligence SLO evidence
+        working-directory: backend
+        env:
+          MARKET_INTELLIGENCE_SLO_ARTIFACT_DIR: ${{ runner.temp }}/phase2-evidence
+        run: |
+          set -o pipefail
+          python -m pytest \
+            tests/integration/market_intelligence/test_postgres_performance_slo.py \
+            -k postgresql_16_uncached_read_baseline_and_opt_in_slo \
+            -q -s 2>&1 | tee "$RUNNER_TEMP/phase2-slo.log"
+
       - name: Run real Redis connectivity test
         working-directory: backend
         run: |
@@ -266,6 +278,7 @@ jobs:
           } > "$RUNNER_TEMP/phase2-evidence/run-metadata.txt"
           cp "$RUNNER_TEMP"/phase2-*.log "$RUNNER_TEMP/phase2-evidence/" 2>/dev/null || true
           cp docs/phase2-integration-report.md "$RUNNER_TEMP/phase2-evidence/"
+          cp docs/market-intelligence-slo.md "$RUNNER_TEMP/phase2-evidence/"
 
       - name: Upload integration evidence
         if: always()
