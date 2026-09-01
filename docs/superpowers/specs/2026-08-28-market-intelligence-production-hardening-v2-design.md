@@ -1,6 +1,6 @@
 # Market Intelligence Production Hardening v2 Design
 
-Date: 2026-08-28  
+Date: 2026-08-28
 Status: Approved by the Production Hardening v2 master execution directive
 
 ## Goal
