@@ -50,6 +50,26 @@ DEFAULT_MIN_PRICE = 5.0
 DEFAULT_MIN_AVERAGE_DOLLAR_VOLUME = float(
     resolve_default_scan_filters("US")["minVolume"] or 0
 )
+_PRICE_READ_COLUMNS = (
+    StockPrice.symbol,
+    StockPrice.date,
+    StockPrice.open,
+    StockPrice.high,
+    StockPrice.low,
+    StockPrice.close,
+    StockPrice.volume,
+    StockPrice.adj_close,
+    StockPrice.adjustment_factor,
+    StockPrice.dividend_cash,
+    StockPrice.split_ratio,
+    StockPrice.provider,
+    StockPrice.source_timestamp,
+    StockPrice.normalization_version,
+    StockPrice.price_basis,
+    StockPrice.content_hash,
+    StockPrice.revision_number,
+    StockPrice.reconciled_at,
+)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -94,12 +114,12 @@ class MarketIntelligenceReadService:
         *,
         as_of: date,
         calendar_days: int,
-    ) -> dict[str, list[StockPrice]]:
+    ) -> dict[str, list[object]]:
         normalized = tuple(dict.fromkeys(symbols))
         if not normalized:
             return {}
         rows = (
-            self._session.query(StockPrice)
+            self._session.query(*_PRICE_READ_COLUMNS)
             .filter(
                 StockPrice.symbol.in_(normalized),
                 StockPrice.date >= as_of - timedelta(days=calendar_days),
@@ -108,7 +128,7 @@ class MarketIntelligenceReadService:
             .order_by(StockPrice.symbol.asc(), StockPrice.date.asc())
             .all()
         )
-        grouped: dict[str, list[StockPrice]] = defaultdict(list)
+        grouped: dict[str, list[object]] = defaultdict(list)
         for row in rows:
             grouped[row.symbol].append(row)
         return dict(grouped)

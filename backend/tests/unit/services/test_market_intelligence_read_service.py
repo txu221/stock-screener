@@ -212,6 +212,24 @@ def test_movers_use_latest_published_sp500_snapshot_and_backend_metrics(session)
     assert result.sectors[0].decliners == 1
 
 
+def test_price_reads_do_not_materialize_stock_price_entities(session):
+    session.add_all(_prices("AAPL", [100.0, 101.0], reconciled=True))
+    session.commit()
+    session.expunge_all()
+
+    grouped = MarketIntelligenceReadService(
+        session,
+        completed_session=AS_OF,
+    )._price_rows(("AAPL",), as_of=AS_OF, calendar_days=2)
+
+    assert [row.symbol for row in grouped["AAPL"]] == ["AAPL", "AAPL"]
+    assert [row.adj_close for row in grouped["AAPL"]] == [100.0, 101.0]
+    assert not any(
+        isinstance(instance, StockPrice)
+        for instance in session.identity_map.values()
+    )
+
+
 def test_movers_return_transparent_empty_result_without_published_pointer(session):
     result = MarketIntelligenceReadService(session).get_movers()
 
