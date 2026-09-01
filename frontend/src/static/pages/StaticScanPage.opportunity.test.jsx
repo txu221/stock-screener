@@ -179,6 +179,7 @@ describe('StaticScanPage', () => {
     renderPage();
 
     expect(await screen.findByRole('heading', { name: 'Daily Scan' })).toBeInTheDocument();
+    await waitFor(() => expect(filterPanelSpy).toHaveBeenCalled());
     act(() => filterPanelSpy.mock.lastCall[0].onOpenLogicBuilder());
     await user.click(screen.getByRole('button', { name: /add named setup/i }));
     await user.click(screen.getAllByRole('combobox')[1]);
