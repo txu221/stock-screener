@@ -102,6 +102,31 @@ def test_changed_provider_history_appends_revision_and_updates_current_materiali
     assert revisions[0].content_hash != revisions[1].content_hash
 
 
+def test_return_to_prior_provider_history_appends_revision_and_restores_current():
+    db = _session()
+    first = _mapping(adjusted_close=50.0)
+    second = _mapping(adjusted_close=52.0)
+    persist_stock_price_mappings(db, {"SPLT": [first]})
+    db.commit()
+    persist_stock_price_mappings(db, {"SPLT": [second]})
+    db.commit()
+
+    result = persist_stock_price_mappings(db, {"SPLT": [first]})
+    db.commit()
+
+    current = db.query(StockPrice).one()
+    revisions = (
+        db.query(StockPriceRevision)
+        .order_by(StockPriceRevision.revision_number)
+        .all()
+    )
+    assert result == {"inserted": 0, "updated": 1}
+    assert current.adj_close == 50.0
+    assert current.revision_number == 2
+    assert [revision.revision_number for revision in revisions] == [0, 1, 2]
+    assert revisions[0].content_hash == revisions[2].content_hash
+
+
 def test_changed_source_timestamp_appends_revision_and_updates_current_materialization():
     db = _session()
     first = _mapping()
@@ -174,3 +199,22 @@ def test_reingest_after_current_row_delete_continues_retained_revision_sequence(
     assert result == {"inserted": 1, "updated": 0}
     assert current.revision_number == 1
     assert [revision.revision_number for revision in revisions] == [0, 1]
+
+
+def test_reingest_latest_revision_after_current_delete_restores_without_new_revision():
+    db = _session()
+    mapping = _mapping(adjusted_close=50.0)
+    persist_stock_price_mappings(db, {"SPLT": [mapping]})
+    db.commit()
+    db.delete(db.query(StockPrice).one())
+    db.commit()
+
+    result = persist_stock_price_mappings(db, {"SPLT": [mapping]})
+    db.commit()
+
+    current = db.query(StockPrice).one()
+    revisions = db.query(StockPriceRevision).all()
+    assert result == {"inserted": 1, "updated": 0}
+    assert current.adj_close == 50.0
+    assert current.revision_number == 0
+    assert len(revisions) == 1

@@ -85,23 +85,35 @@ def persist_stock_price_mappings(
             # reconciled analytical row. Preserve the stable materialization
             # until an equally proven revision arrives.
             continue
-        known_hashes = {revision.content_hash for revision in prior_revisions if revision.content_hash}
-        if current is not None and current.content_hash:
-            known_hashes.add(current.content_hash)
-        if incoming["content_hash"] in known_hashes:
+        if current is not None and incoming["content_hash"] == current.content_hash:
             continue
 
         if current is None:
-            revision_number = (
-                max(revision.revision_number for revision in prior_revisions) + 1
+            latest_revision = (
+                max(prior_revisions, key=lambda revision: revision.revision_number)
                 if prior_revisions
-                else 0
+                else None
+            )
+            restoring_latest = (
+                latest_revision is not None
+                and incoming["content_hash"] == latest_revision.content_hash
+            )
+            revision_number = (
+                latest_revision.revision_number
+                if restoring_latest
+                else (
+                    latest_revision.revision_number + 1
+                    if latest_revision is not None
+                    else 0
+                )
             )
             incoming["revision_number"] = revision_number
             current = StockPrice(**incoming)
             db.add(current)
             current_by_pair[pair] = current
             inserted += 1
+            if restoring_latest:
+                continue
         else:
             if not prior_revisions and not current.content_hash:
                 legacy = _legacy_revision_mapping(current)
