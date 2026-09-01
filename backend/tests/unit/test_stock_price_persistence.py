@@ -117,3 +117,60 @@ def test_changed_source_timestamp_appends_revision_and_updates_current_materiali
     assert current.revision_number == 1
     assert current.source_timestamp == second["source_timestamp"].replace(tzinfo=None)
     assert db.query(StockPriceRevision).count() == 2
+
+
+def test_unproven_refresh_cannot_downgrade_reconciled_current_price():
+    db = _session()
+    persist_stock_price_mappings(db, {"SPLT": [_mapping()]})
+    db.commit()
+    unproven = stock_price_row_from_ohlcv(
+        symbol="SPLT",
+        row_date=DAY,
+        row={
+            "Open": 101.0,
+            "High": 103.0,
+            "Low": 99.0,
+            "Close": 101.0,
+            "Adj Close": 51.0,
+            "Volume": 2_000_000,
+        },
+        source_timestamp=SOURCE_TIMESTAMP,
+        normalization_version="canonical_price_adjustment_v2",
+        reconciled_at=SOURCE_TIMESTAMP,
+    )
+    assert unproven is not None
+
+    result = persist_stock_price_mappings(db, {"SPLT": [unproven]})
+    db.commit()
+
+    current = db.query(StockPrice).one()
+    assert result == {"inserted": 0, "updated": 0}
+    assert current.close == 100.0
+    assert current.adj_close == 50.0
+    assert current.provider == "yahoo"
+    assert current.price_basis == "yahoo_adjusted_close_provider_volume"
+    assert db.query(StockPriceRevision).count() == 1
+
+
+def test_reingest_after_current_row_delete_continues_retained_revision_sequence():
+    db = _session()
+    persist_stock_price_mappings(db, {"SPLT": [_mapping(adjusted_close=50.0)]})
+    db.commit()
+    db.delete(db.query(StockPrice).one())
+    db.commit()
+
+    result = persist_stock_price_mappings(
+        db,
+        {"SPLT": [_mapping(adjusted_close=52.0)]},
+    )
+    db.commit()
+
+    current = db.query(StockPrice).one()
+    revisions = (
+        db.query(StockPriceRevision)
+        .order_by(StockPriceRevision.revision_number)
+        .all()
+    )
+    assert result == {"inserted": 1, "updated": 0}
+    assert current.revision_number == 1
+    assert [revision.revision_number for revision in revisions] == [0, 1]

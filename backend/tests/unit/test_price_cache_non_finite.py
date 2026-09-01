@@ -5,9 +5,11 @@ from datetime import date
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from app.models.stock import StockPrice
 from app.services.price_cache_service import PriceCacheService
+from app.services.price_row_normalization import CorporateActionReconciliationError
 
 
 def _price_frame(closes: list[float], days: list[date]) -> pd.DataFrame:
@@ -118,6 +120,34 @@ def test_store_batch_in_cache_skips_non_finite_close_rows():
     assert captured_rows[0].price_basis == "raw_ohlcv_unreconciled"
 
 
+def test_store_batch_quarantines_corporate_action_anomaly_before_redis_or_database():
+    payload = _price_frame(
+        [100.0, 100.0],
+        [date(2026, 6, 24), date(2026, 6, 25)],
+    )
+    payload["Adj Close"] = [100.0, 10.0]
+    payload["Dividends"] = 0.0
+    payload["Stock Splits"] = 0.0
+
+    class FailingRedis:
+        def pipeline(self):
+            raise AssertionError("quarantined data must not reach Redis")
+
+    service = PriceCacheService(
+        redis_client=FailingRedis(),
+        session_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("quarantined data must not reach the database")
+        ),
+    )
+
+    with pytest.raises(CorporateActionReconciliationError):
+        service.store_batch_in_cache(
+            {"SPY": payload},
+            also_store_db=True,
+            provider_by_symbol={"SPY": "yahoo"},
+        )
+
+
 def test_direct_cn_and_krx_fallbacks_are_labeled_as_yahoo_only_after_yahoo_fetch():
     service = PriceCacheService(redis_client=None, session_factory=lambda: None)
     data = _price_frame([101.0], [date(2026, 6, 25)])
@@ -154,6 +184,28 @@ def test_fetch_full_and_cache_uses_cleaned_price_frame_for_redis_db_and_return()
     assert captured["db"]["Close"].tolist() == [101.0]
 
 
+def test_direct_yahoo_full_refresh_quarantines_action_anomaly_before_cache_write():
+    service = PriceCacheService(redis_client=None, session_factory=lambda: None)
+    anomalous = _price_frame(
+        [100.0, 100.0],
+        [date(2026, 6, 24), date(2026, 6, 25)],
+    )
+    anomalous["Adj Close"] = [100.0, 10.0]
+    anomalous["Dividends"] = 0.0
+    anomalous["Stock Splits"] = 0.0
+    service._fetch_direct_historical_data_with_provider = (  # type: ignore[assignment]
+        lambda symbol, period: (anomalous, "yahoo")
+    )
+    service._store_recent_in_redis = (  # type: ignore[assignment]
+        lambda *_args, **_kwargs: pytest.fail("anomaly reached Redis")
+    )
+    service._store_in_database = (  # type: ignore[assignment]
+        lambda *_args, **_kwargs: pytest.fail("anomaly reached the database")
+    )
+
+    assert service._fetch_full_and_cache("SPY", "2y") is None
+
+
 def test_incremental_merge_uses_cleaned_price_frame_for_redis_db_and_return():
     service = PriceCacheService(redis_client=None, session_factory=lambda: None)
     cached = _price_frame([100.0], [date(2026, 6, 24)])
@@ -178,6 +230,37 @@ def test_incremental_merge_uses_cleaned_price_frame_for_redis_db_and_return():
     assert result["Close"].tolist() == [100.0, 101.0]
     assert captured["redis"]["Close"].tolist() == [100.0, 101.0]
     assert captured["db"]["Close"].tolist() == [101.0]
+
+
+def test_direct_yahoo_incremental_refresh_quarantines_action_anomaly():
+    service = PriceCacheService(redis_client=None, session_factory=lambda: None)
+    cached = _price_frame([100.0], [date(2026, 6, 23)])
+    anomalous = _price_frame(
+        [100.0, 100.0],
+        [date(2026, 6, 24), date(2026, 6, 25)],
+    )
+    anomalous["Adj Close"] = [100.0, 10.0]
+    anomalous["Dividends"] = 0.0
+    anomalous["Stock Splits"] = 0.0
+    service._fetch_direct_historical_data_with_provider = (  # type: ignore[assignment]
+        lambda symbol, period: (anomalous, "yahoo")
+    )
+    service._store_recent_in_redis = (  # type: ignore[assignment]
+        lambda *_args, **_kwargs: pytest.fail("anomaly reached Redis")
+    )
+    service._store_in_database = (  # type: ignore[assignment]
+        lambda *_args, **_kwargs: pytest.fail("anomaly reached the database")
+    )
+
+    result = service._fetch_incremental_and_merge(
+        "SPY",
+        "2y",
+        cached,
+        date(2026, 6, 23),
+    )
+
+    assert result is not None
+    assert result["Close"].tolist() == [100.0]
 
 
 def test_get_many_falls_back_to_db_when_redis_payload_normalizes_away():

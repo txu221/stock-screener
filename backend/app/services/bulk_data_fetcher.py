@@ -571,7 +571,8 @@ class BulkDataFetcher:
                 if df is not None and not df.empty:
                     results[symbol] = {
                         'symbol': symbol, 'price_data': df, 'info': None,
-                        'fundamentals': None, 'has_error': False, 'error': None
+                        'fundamentals': None, 'has_error': False, 'error': None,
+                        'provider': 'yahoo',
                     }
                 else:
                     error = download_errors.get(symbol) or 'No data returned'
@@ -591,7 +592,8 @@ class BulkDataFetcher:
                             if not df.empty:
                                 results[symbol] = {
                                     'symbol': symbol, 'price_data': df, 'info': None,
-                                    'fundamentals': None, 'has_error': False, 'error': None
+                                    'fundamentals': None, 'has_error': False, 'error': None,
+                                    'provider': 'yahoo',
                                 }
                             else:
                                 error = download_errors.get(symbol) or 'No data after filtering NaN rows'

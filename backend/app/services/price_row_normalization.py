@@ -8,6 +8,11 @@ from typing import Any, Mapping
 import pandas as pd
 
 from app.domain.market_intelligence.price_provenance import price_row_content_hash
+from app.domain.market_intelligence.corporate_actions import (
+    CorporateActionEvidence,
+    CorporateActionReconciliationError,
+    validate_corporate_action_sequence,
+)
 from app.infra.serialization import finite_float_or_none
 
 OHLC_COLUMNS = ("Open", "High", "Low", "Close")
@@ -101,6 +106,46 @@ def _finite_or_none(value: Any) -> float | None:
     return finite_float_or_none(value)
 
 
+def _canonical_provider_name(provider: str | None) -> str | None:
+    if provider is None:
+        return None
+    normalized = str(provider).strip().lower()
+    if not normalized:
+        return None
+    if normalized in {"yahoo", "yfinance"}:
+        return "yahoo"
+    return normalized
+
+
+def validate_corporate_action_frames(
+    batch_data: Mapping[str, pd.DataFrame],
+    *,
+    provider_by_symbol: Mapping[str, str] | None = None,
+) -> None:
+    """Reject incoherent Yahoo action evidence before Redis or DB publication.
+
+    Large adjustment-factor transitions are valid only when either adjacent
+    provider row carries a split or dividend. The conservative bounds detect
+    isolated factor corruption while allowing ordinary rounding drift.
+    """
+    providers = provider_by_symbol or {}
+    for symbol, data in batch_data.items():
+        if _canonical_provider_name(providers.get(symbol)) != "yahoo":
+            continue
+        evidence = tuple(
+            CorporateActionEvidence(
+                symbol=symbol,
+                trading_date=pd.Timestamp(index_value).date(),
+                close=row.get("Close"),
+                adjusted_close=row.get("Adj Close"),
+                dividend_cash=row.get("Dividends"),
+                split_ratio=row.get("Stock Splits"),
+            )
+            for index_value, row in data.sort_index().iterrows()
+        )
+        validate_corporate_action_sequence(evidence)
+
+
 def stock_price_row_from_ohlcv(
     *,
     symbol: str,
@@ -121,7 +166,7 @@ def stock_price_row_from_ohlcv(
     if ohlc is None:
         return None
     open_, high, low, close = ohlc
-    provider_name = (str(provider).strip() or None) if provider is not None else None
+    provider_name = _canonical_provider_name(provider)
     adj_close = (
         finite_float_or_none(row.get("Adj Close"))
         if provider_name == "yahoo"

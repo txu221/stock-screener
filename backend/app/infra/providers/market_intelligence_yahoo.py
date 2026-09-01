@@ -10,6 +10,11 @@ from typing import Any
 
 import pandas as pd
 
+from app.domain.market_intelligence.corporate_actions import (
+    CorporateActionEvidence,
+    CorporateActionReconciliationError,
+    validate_corporate_action_sequence,
+)
 from app.domain.market_intelligence.models import (
     ProviderBatchResult,
     ProviderSymbolFailure,
@@ -105,6 +110,40 @@ def _batch_schema_error(
         error = _frame_schema_error(symbol, entry.get("price_data"))
         if error is not None:
             return error
+    return None
+
+
+def _batch_corporate_action_error(
+    results: Mapping[str, Any],
+    requested: Sequence[str],
+    *,
+    as_of: date,
+) -> str | None:
+    try:
+        for symbol in requested:
+            entry = results[symbol]
+            if bool(entry.get("has_error")):
+                continue
+            frame = entry["price_data"]
+            evidence = tuple(
+                CorporateActionEvidence(
+                    symbol=symbol,
+                    trading_date=timestamp.date(),
+                    close=row["Close"],
+                    adjusted_close=row["Adj Close"],
+                    dividend_cash=row["Dividends"],
+                    split_ratio=row["Stock Splits"],
+                )
+                for timestamp, (_, row) in zip(
+                    _utc_normalized_index(frame.index),
+                    frame.iterrows(),
+                    strict=True,
+                )
+                if timestamp.date() <= as_of
+            )
+            validate_corporate_action_sequence(evidence)
+    except CorporateActionReconciliationError as exc:
+        return str(exc)
     return None
 
 
@@ -269,6 +308,20 @@ class YahooMarketIntelligenceProvider:
                 rows=(),
                 symbol_failures=(),
                 request_failure=_schema_drift(schema_error),
+            )
+        action_error = _batch_corporate_action_error(
+            results,
+            requested,
+            as_of=as_of,
+        )
+        if action_error is not None:
+            return batch_result(
+                rows=(),
+                symbol_failures=(),
+                request_failure=RequestFailure(
+                    code="CORPORATE_ACTION_RECONCILIATION_FAILURE",
+                    message=action_error,
+                ),
             )
 
         rows: list[RawBar] = []

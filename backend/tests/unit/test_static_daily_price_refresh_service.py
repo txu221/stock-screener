@@ -158,7 +158,7 @@ def test_static_daily_price_refresh_service_fetches_stale_and_no_history_groups(
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(
-            store_batch_in_cache=lambda payload, also_store_db=True, market=None: stored_batches.append(
+            store_batch_in_cache=lambda payload, also_store_db=True, market=None, **_kwargs: stored_batches.append(
                 {
                     "symbols": sorted(payload.keys()),
                     "also_store_db": also_store_db,
@@ -266,7 +266,7 @@ def test_static_daily_price_refresh_refetches_fresh_rows_with_missing_or_zero_vo
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(
-            store_batch_in_cache=lambda payload, also_store_db=True, market=None: stored_batches.append(
+            store_batch_in_cache=lambda payload, also_store_db=True, market=None, **_kwargs: stored_batches.append(
                 {
                     "symbols": sorted(payload.keys()),
                     "also_store_db": also_store_db,
@@ -500,7 +500,7 @@ def test_static_daily_price_refresh_service_filters_to_selected_market() -> None
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(
-            store_batch_in_cache=lambda payload, also_store_db=True, market=None: stored_batches.append(
+            store_batch_in_cache=lambda payload, also_store_db=True, market=None, **_kwargs: stored_batches.append(
                 {
                     "symbols": sorted(payload.keys()),
                     "also_store_db": also_store_db,
@@ -585,7 +585,7 @@ def test_static_daily_price_refresh_includes_us_key_market_data_symbols() -> Non
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(
-            store_batch_in_cache=lambda payload, also_store_db=True, market=None: stored_batches.append(
+            store_batch_in_cache=lambda payload, also_store_db=True, market=None, **_kwargs: stored_batches.append(
                 {
                     "symbols": sorted(payload.keys()),
                     "also_store_db": also_store_db,
@@ -1091,7 +1091,7 @@ def test_static_daily_price_refresh_retries_rate_limited_failures() -> None:
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(
-            store_batch_in_cache=lambda payload, also_store_db=True, market=None: stored_batches.append(
+            store_batch_in_cache=lambda payload, also_store_db=True, market=None, **_kwargs: stored_batches.append(
                 {
                     "symbols": sorted(payload.keys()),
                     "also_store_db": also_store_db,
@@ -1164,7 +1164,7 @@ def test_static_daily_price_refresh_retries_no_history_rate_limits_with_bootstra
     service = StaticDailyPriceRefreshService(
         session_factory=session_factory,
         price_cache=SimpleNamespace(
-            store_batch_in_cache=lambda payload, also_store_db=True, market=None: stored_batches.append(
+            store_batch_in_cache=lambda payload, also_store_db=True, market=None, **_kwargs: stored_batches.append(
                 {
                     "symbols": sorted(payload.keys()),
                     "also_store_db": also_store_db,

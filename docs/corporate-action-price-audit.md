@@ -1,6 +1,6 @@
 # Corporate-Action Price Audit
 
-Date: 2026-08-28  
+Date: 2026-08-28
 Scope: current `feat/market-intelligence-engine` at `6d75e8a4`
 
 ## Executive Finding
@@ -58,3 +58,16 @@ Yahoo Adj Close generally reflects cash distributions as well as splits. Existin
 ## Audit Conclusion
 
 Repository-selection and Phase 1 architecture remain valid. The minimum safe hardening is an additive extension of the existing price persistence boundary, not a parallel Market Intelligence price store and not provider calls from API reads.
+
+## Hardening v2 remediation status
+
+The audit gaps above describe the pre-hardening base at `6d75e8a4`. Hardening
+v2 additively implemented the v2 `stock_prices` provenance fields and immutable
+revision ledger. Batch refreshes now preserve per-symbol Yahoo provenance,
+provider-less data cannot downgrade a reconciled row, and delete/re-ingest
+continues the retained revision sequence. Yahoo batches with negative action
+values or an extreme adjustment-factor discontinuity lacking adjacent
+split/dividend evidence are rejected before Redis or PostgreSQL writes, with
+stable category `CORPORATE_ACTION_RECONCILIATION_FAILURE`; the previous
+reconciled current row remains available. Legacy rows remain explicitly partial
+until proven by a v2 refresh.

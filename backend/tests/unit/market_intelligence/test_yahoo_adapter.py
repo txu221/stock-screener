@@ -201,6 +201,39 @@ def test_missing_required_columns_are_request_level_schema_drift() -> None:
 
     assert result.request_failure is not None
     assert result.request_failure.code == "PROVIDER_SCHEMA_DRIFT"
+
+
+def test_unexplained_adjustment_discontinuity_is_corporate_action_failure() -> None:
+    sessions = [AS_OF - timedelta(days=2), AS_OF - timedelta(days=1), AS_OF]
+    anomalous = pd.DataFrame(
+        {
+            "Open": [100.0, 100.0, 100.0],
+            "High": [101.0, 101.0, 101.0],
+            "Low": [99.0, 99.0, 99.0],
+            "Close": [100.0, 100.0, 100.0],
+            "Adj Close": [100.0, 10.0, 10.0],
+            "Volume": [1_000_000.0] * 3,
+            "Dividends": [0.0] * 3,
+            "Stock Splits": [0.0] * 3,
+        },
+        index=pd.DatetimeIndex(sessions, tz="UTC"),
+    )
+    payload = _all_success()
+    payload["XLK"] = _success("XLK", frame=anomalous)
+    fetcher = Mock()
+    fetcher.fetch_batch_prices.return_value = payload
+
+    result = YahooMarketIntelligenceProvider(
+        fetcher,
+        clock=lambda: NOW,
+    ).fetch(MARKET_INTELLIGENCE_UNIVERSE, AS_OF)
+
+    assert result.request_failure is not None
+    assert (
+        result.request_failure.code
+        == "CORPORATE_ACTION_RECONCILIATION_FAILURE"
+    )
+    assert result.rows == ()
     assert result.rows == ()
     assert result.symbol_failures == ()
 

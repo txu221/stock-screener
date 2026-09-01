@@ -168,12 +168,16 @@ class CacheManager:
                 )
 
                 batch_to_store = {}
+                provider_by_symbol = {}
                 batch_failed = 0
                 for symbol, data in bulk_data.items():
                     if not data.get('has_error') and data.get('price_data') is not None:
                         price_df = data['price_data']
                         if price_df is not None and not price_df.empty:
                             batch_to_store[symbol] = price_df
+                            provider = str(data.get("provider") or "").strip().lower()
+                            if provider:
+                                provider_by_symbol[symbol] = provider
                             stats['successful'] += 1
                             logger.debug(f"✓ {symbol}: Cached {len(price_df)} rows")
                         else:
@@ -192,6 +196,7 @@ class CacheManager:
                     self.price_cache.store_batch_in_cache(
                         batch_to_store,
                         also_store_db=True,
+                        provider_by_symbol=provider_by_symbol,
                     )
 
                 # Progress logging

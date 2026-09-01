@@ -13,7 +13,7 @@ docs/learning_loop/adr_ll2_e1_canonical_price_contract_v1.md
 import json
 import logging
 import pickle
-from typing import Any, Optional, Dict, List, Callable
+from typing import Any, Optional, Dict, List, Callable, Mapping
 from datetime import datetime, timedelta, date, time, timezone
 import pandas as pd
 from sqlalchemy.orm import Session
@@ -42,6 +42,7 @@ from .price_row_normalization import (
     normalize_price_batch,
     normalize_price_frame,
     stock_price_row_from_ohlcv,
+    validate_corporate_action_frames,
 )
 from .stock_price_persistence import persist_stock_price_mappings
 from .redis_pool import get_redis_client, get_bulk_redis_client, is_redis_enabled
@@ -544,6 +545,10 @@ class PriceCacheService:
             if data is None:
                 logger.warning("Failed to fetch finite price data for %s", symbol)
                 return None
+            validate_corporate_action_frames(
+                {symbol: data},
+                provider_by_symbol={symbol: provider} if provider else None,
+            )
 
             logger.info(f"Fetched {symbol}: {len(data)} rows")
 
@@ -698,6 +703,10 @@ class PriceCacheService:
             if new_data is None:
                 logger.warning(f"Failed to fetch finite incremental data for {symbol}")
                 return cached_data  # Return stale cache as fallback
+            validate_corporate_action_frames(
+                {symbol: new_data},
+                provider_by_symbol={symbol: provider} if provider else None,
+            )
 
             # Filter new_data to only dates after last_cached_date
             # Ensure timezone compatibility for comparison
@@ -1595,6 +1604,7 @@ class PriceCacheService:
         batch_data: Dict[str, pd.DataFrame],
         also_store_db: bool = True,
         market: str | None = None,
+        provider_by_symbol: Mapping[str, str] | None = None,
     ) -> int:
         """
         Store multiple symbols' price data in cache using Redis pipeline.
@@ -1614,6 +1624,10 @@ class PriceCacheService:
         batch_data = normalize_price_batch(batch_data)
         if not batch_data:
             return 0
+        validate_corporate_action_frames(
+            batch_data,
+            provider_by_symbol=provider_by_symbol,
+        )
 
         stored = 0
 
@@ -1689,6 +1703,7 @@ class PriceCacheService:
             self._store_batch_in_database(
                 batch_data,
                 reconciled_at=datetime.now(timezone.utc),
+                provider_by_symbol=provider_by_symbol,
             )
 
         return stored
@@ -1698,6 +1713,7 @@ class PriceCacheService:
         batch_data: Dict[str, pd.DataFrame],
         *,
         reconciled_at: datetime | None = None,
+        provider_by_symbol: Mapping[str, str] | None = None,
     ) -> None:
         """
         Store multiple symbols' price data in database in a single transaction.
@@ -1713,6 +1729,10 @@ class PriceCacheService:
         batch_data = normalize_price_batch(batch_data)
         if not batch_data:
             return
+        validate_corporate_action_frames(
+            batch_data,
+            provider_by_symbol=provider_by_symbol,
+        )
 
         db = self._session_factory()
 
@@ -1740,6 +1760,7 @@ class PriceCacheService:
                             source_timestamp=self._source_timestamp_for_row(row_date),
                             normalization_version=CANONICAL_PRICE_NORMALIZATION_VERSION,
                             reconciled_at=reconciled_at,
+                            provider=(provider_by_symbol or {}).get(symbol),
                         )
                         if price_dict is None:
                             continue
@@ -1805,15 +1826,29 @@ class PriceCacheService:
         *,
         also_store_db: bool,
         market: str | None,
+        provider_by_symbol: Mapping[str, str] | None = None,
     ) -> int:
         if market is None:
-            return self.store_batch_in_cache(batch_data, also_store_db=also_store_db)
+            return self.store_batch_in_cache(
+                batch_data,
+                also_store_db=also_store_db,
+                provider_by_symbol=provider_by_symbol,
+            )
         try:
-            return self.store_batch_in_cache(batch_data, also_store_db=also_store_db, market=market)
+            return self.store_batch_in_cache(
+                batch_data,
+                also_store_db=also_store_db,
+                market=market,
+                provider_by_symbol=provider_by_symbol,
+            )
         except TypeError as exc:
             if "market" not in str(exc):
                 raise
-            return self.store_batch_in_cache(batch_data, also_store_db=also_store_db)
+            return self.store_batch_in_cache(
+                batch_data,
+                also_store_db=also_store_db,
+                provider_by_symbol=provider_by_symbol,
+            )
 
     def get_many(
         self,
@@ -2117,6 +2152,7 @@ class PriceCacheService:
                 )
                 bulk_results.update(provider_results)
             batch_to_store_by_market: dict[str | None, Dict[str, pd.DataFrame]] = {}
+            provider_by_symbol_by_market: dict[str | None, dict[str, str]] = {}
             for symbol, data in bulk_results.items():
                 if not data.get('has_error') and data.get('price_data') is not None:
                     price_df = data['price_data']
@@ -2130,6 +2166,11 @@ class PriceCacheService:
                     if symbol_market is None:
                         symbol_market = active_market_by_symbol.get(symbol)
                     batch_to_store_by_market.setdefault(symbol_market, {})[symbol] = price_df
+                    provider = str(data.get("provider") or "").strip().lower()
+                    if provider:
+                        provider_by_symbol_by_market.setdefault(symbol_market, {})[
+                            symbol
+                        ] = provider
                 else:
                     cached_data[symbol] = None
                     yfinance_failed += 1
@@ -2138,6 +2179,7 @@ class PriceCacheService:
                     batch_to_store,
                     also_store_db=True,
                     market=group_market,
+                    provider_by_symbol=provider_by_symbol_by_market.get(group_market),
                 )
 
         logger.info("yfinance batch fetch complete: %d success, %d failed", yfinance_success, yfinance_failed)

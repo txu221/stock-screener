@@ -9,10 +9,12 @@ import pandas as pd
 import pytest
 
 from app.services.price_row_normalization import (
+    CorporateActionReconciliationError,
     drop_non_finite_close_rows,
     normalize_price_batch,
     normalize_price_frame,
     stock_price_row_from_ohlcv,
+    validate_corporate_action_frames,
 )
 
 
@@ -127,6 +129,65 @@ def test_normalize_price_batch_filters_symbols_with_insufficient_clean_rows():
 
     assert list(cleaned) == ["AAPL"]
     assert cleaned["AAPL"]["Close"].tolist() == [101.0, 102.0]
+
+
+def test_corporate_action_validation_rejects_negative_action_evidence():
+    payload = _ohlcv_frame(
+        [100.0, 101.0],
+        [date(2026, 6, 24), date(2026, 6, 25)],
+    )
+    payload["Adj Close"] = payload["Close"]
+    payload["Dividends"] = [0.0, -0.5]
+    payload["Stock Splits"] = [0.0, 0.0]
+
+    with pytest.raises(
+        CorporateActionReconciliationError,
+        match="negative Dividends",
+    ) as exc_info:
+        validate_corporate_action_frames(
+            {"SPY": payload},
+            provider_by_symbol={"SPY": "yahoo"},
+        )
+
+    assert exc_info.value.market_intelligence_stage == "corporate_action_reconciliation"
+    assert (
+        exc_info.value.market_intelligence_failure_category
+        == "CORPORATE_ACTION_RECONCILIATION_FAILURE"
+    )
+
+
+def test_corporate_action_validation_rejects_unexplained_factor_discontinuity():
+    payload = _ohlcv_frame(
+        [100.0, 100.0, 100.0],
+        [date(2026, 6, 23), date(2026, 6, 24), date(2026, 6, 25)],
+    )
+    payload["Adj Close"] = [100.0, 10.0, 10.0]
+    payload["Dividends"] = 0.0
+    payload["Stock Splits"] = 0.0
+
+    with pytest.raises(
+        CorporateActionReconciliationError,
+        match="unexplained adjustment-factor discontinuity",
+    ):
+        validate_corporate_action_frames(
+            {"SPY": payload},
+            provider_by_symbol={"SPY": "yfinance"},
+        )
+
+
+def test_corporate_action_validation_allows_discontinuity_with_action_evidence():
+    payload = _ohlcv_frame(
+        [100.0, 100.0, 100.0],
+        [date(2026, 6, 23), date(2026, 6, 24), date(2026, 6, 25)],
+    )
+    payload["Adj Close"] = [100.0, 10.0, 10.0]
+    payload["Dividends"] = 0.0
+    payload["Stock Splits"] = [0.0, 10.0, 0.0]
+
+    validate_corporate_action_frames(
+        {"SPY": payload},
+        provider_by_symbol={"SPY": "yahoo"},
+    )
 
 
 @pytest.mark.parametrize("case", CORPORATE_ACTION_FIXTURE["cases"], ids=lambda case: case["name"])

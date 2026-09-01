@@ -31,6 +31,7 @@ def test_classify_price_refresh_batch_returns_shared_batch_outcome():
             "7203.T": {
                 "has_error": False,
                 "price_data": SimpleNamespace(empty=False),
+                "provider": "yfinance",
             },
         },
         market_for_symbol=lambda _symbol: "JP",
@@ -40,6 +41,7 @@ def test_classify_price_refresh_batch_returns_shared_batch_outcome():
     assert outcome.successes == ("7203.T",)
     assert outcome.failures == ("0143.T",)
     assert outcome.failure_kinds == {"0143.T": "no_price_data"}
+    assert outcome.provider_by_symbol == {"7203.T": "yfinance"}
     assert outcome.refreshed_by_market == Counter({"JP": 1})
     assert outcome.failed_by_market == Counter({"JP": 1})
 
@@ -286,7 +288,13 @@ def test_batch_executor_persists_tracks_and_accumulates_in_one_canonical_path():
     timeline = []
 
     class PriceCache:
-        def store_batch_in_cache(self, price_data, *, also_store_db):
+        def store_batch_in_cache(
+            self,
+            price_data,
+            *,
+            also_store_db,
+            provider_by_symbol=None,
+        ):
             timeline.append(("store", tuple(price_data), also_store_db))
 
     executor = executor_type(
@@ -330,6 +338,79 @@ def test_batch_executor_persists_tracks_and_accumulates_in_one_canonical_path():
     assert summary.processed == 2
 
 
+def test_batch_executor_carries_yahoo_provenance_into_price_persistence():
+    from datetime import date
+
+    import pandas as pd
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database import Base
+    from app.models.stock import StockPrice, StockPriceRevision
+    from app.services.price_cache_service import PriceCacheService
+    from app.services.price_refresh_execution import PriceRefreshBatchExecutor
+    from app.services.price_refresh_planning import PriceRefreshJob, PriceRefreshJobKind
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    target_day = date(2026, 8, 31)
+    frame = pd.DataFrame(
+        {
+            "Open": [110.0],
+            "High": [112.0],
+            "Low": [109.0],
+            "Close": [111.0],
+            "Adj Close": [109.5],
+            "Volume": [2_000_000],
+            "Dividends": [0.0],
+            "Stock Splits": [0.0],
+        },
+        index=pd.to_datetime([target_day]),
+    )
+    frame.index.name = "Date"
+    cache = PriceCacheService(redis_client=None, session_factory=session_factory)
+    executor = PriceRefreshBatchExecutor(
+        fetch_with_backoff=lambda _fetcher, symbols, **_kwargs: {
+            symbol: {
+                "has_error": False,
+                "price_data": frame,
+                "provider": "yfinance",
+            }
+            for symbol in symbols
+        },
+        track_symbol_failures=lambda *_args, **_kwargs: None,
+        raise_if_transient_database_error=lambda _exc: None,
+    )
+
+    executor.run(
+        bulk_fetcher=object(),
+        price_cache=cache,
+        db=None,
+        jobs=(
+            PriceRefreshJob(
+                kind=PriceRefreshJobKind.NO_HISTORY,
+                symbols=("SPY",),
+                period="2y",
+            ),
+        ),
+        total=1,
+        batch_size=1,
+        market="US",
+        market_for_symbol=lambda _symbol: "US",
+    )
+
+    with session_factory() as session:
+        current = session.query(StockPrice).filter_by(symbol="SPY").one()
+        revisions = session.query(StockPriceRevision).filter_by(symbol="SPY").all()
+    assert current.adj_close == 109.5
+    assert current.provider == "yahoo"
+    assert current.price_basis == "yahoo_adjusted_close_provider_volume"
+    assert current.normalization_version == "canonical_price_adjustment_v2"
+    assert current.reconciled_at is not None
+    assert len(revisions) == 1
+
+
 def test_batch_executor_reports_partial_summary_and_unresolved_symbols():
     import app.services.price_refresh_execution as module
     from app.services.price_refresh_planning import PriceRefreshJob, PriceRefreshJobKind
@@ -340,7 +421,13 @@ def test_batch_executor_reports_partial_summary_and_unresolved_symbols():
     class PriceCache:
         stores = 0
 
-        def store_batch_in_cache(self, _price_data, *, also_store_db):
+        def store_batch_in_cache(
+            self,
+            _price_data,
+            *,
+            also_store_db,
+            provider_by_symbol=None,
+        ):
             assert also_store_db is True
             self.stores += 1
             if self.stores == 2:

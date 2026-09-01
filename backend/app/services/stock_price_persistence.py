@@ -8,7 +8,10 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy.orm import Session
 
 from app.models.stock import StockPrice, StockPriceRevision
-from app.services.price_row_normalization import price_row_content_hash
+from app.services.price_row_normalization import (
+    RECONCILED_PRICE_BASIS,
+    price_row_content_hash,
+)
 
 
 def persist_stock_price_mappings(
@@ -73,6 +76,15 @@ def persist_stock_price_mappings(
         incoming["content_hash"] = incoming.get("content_hash") or price_row_content_hash(incoming)
         current = current_by_pair.get(pair)
         prior_revisions = revisions_by_pair.setdefault(pair, [])
+        if (
+            current is not None
+            and current.price_basis == RECONCILED_PRICE_BASIS
+            and incoming.get("price_basis") != RECONCILED_PRICE_BASIS
+        ):
+            # A provider-less/native refresh is not enough evidence to replace a
+            # reconciled analytical row. Preserve the stable materialization
+            # until an equally proven revision arrives.
+            continue
         known_hashes = {revision.content_hash for revision in prior_revisions if revision.content_hash}
         if current is not None and current.content_hash:
             known_hashes.add(current.content_hash)
@@ -80,7 +92,11 @@ def persist_stock_price_mappings(
             continue
 
         if current is None:
-            revision_number = 0
+            revision_number = (
+                max(revision.revision_number for revision in prior_revisions) + 1
+                if prior_revisions
+                else 0
+            )
             incoming["revision_number"] = revision_number
             current = StockPrice(**incoming)
             db.add(current)
