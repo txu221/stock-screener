@@ -67,6 +67,11 @@ Warm-ups occur before SQL capture begins and are excluded. Every measured
 family/request must capture at least one relevant PostgreSQL `SELECT` or the test
 fails. The baseline JSON contains:
 
+The warm-up also populates the bounded, full-evidence-keyed SHA-256 verification
+memo used by production reads. This models a long-running worker after its first
+request. A changed row produces a different evidence key and is rehashed; the
+memo does not cache response payloads or suppress PostgreSQL reads.
+
 - per-family sample count, p50, p95, and worst API latency;
 - per-request API latency, query count, aggregate SQL time, and API-minus-SQL
   time;

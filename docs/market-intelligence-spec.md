@@ -806,3 +806,10 @@ the exact full-coverage disclosure, “Historical analytical returns use
 corporate-action-adjusted prices.” Partial coverage instead shows the limitation
 that legacy or unverified rows may be included. It never upgrades the label from
 the presence of `adj_close` alone.
+
+Content-hash verification uses a bounded process-local memo keyed by the entire
+hash-defining evidence tuple, not by symbol/date or stored hash alone. The first
+observation of a row recomputes SHA-256; identical evidence can reuse that
+result, while any provider value, action value, timestamp, normalization field,
+or stored hash change is compared against the appropriate full-evidence hash.
+This is not a response cache and cannot hide a same-pointer price revision.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime
+from functools import lru_cache
 import math
 from types import MappingProxyType
 from typing import Iterable, Mapping, Protocol, Sequence
@@ -19,6 +20,22 @@ CORPORATE_ACTION_ADJUSTED_QUALITY = "corporate_action_adjusted"
 
 _RECONCILED_PRICE_BASIS = "yahoo_adjusted_close_provider_volume"
 _RECONCILED_NORMALIZATION_VERSION = "canonical_price_adjustment_v2"
+_PRICE_HASH_FIELDS = (
+    "symbol",
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "adj_close",
+    "adjustment_factor",
+    "dividend_cash",
+    "split_ratio",
+    "provider",
+    "source_timestamp",
+    "normalization_version",
+)
 
 PULSE_SYMBOLS = ("SPY", "QQQ", "DIA", "IWM")
 
@@ -67,6 +84,12 @@ class DailyPriceLike(Protocol):
     volume: int | None
 
 
+@lru_cache(maxsize=65_536)
+def _verified_price_content_hash(evidence_values: tuple[object, ...]) -> str:
+    """Memoize hashes by every field that defines immutable row evidence."""
+    return price_row_content_hash(dict(zip(_PRICE_HASH_FIELDS, evidence_values)))
+
+
 def _has_reconciled_price_provenance(row: object) -> bool:
     content_hash = getattr(row, "content_hash", None)
     revision_number = getattr(row, "revision_number", None)
@@ -84,27 +107,16 @@ def _has_reconciled_price_provenance(row: object) -> bool:
     ):
         return False
 
-    hash_evidence = {
-        field: getattr(row, field, None)
-        for field in (
-            "symbol",
-            "date",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "adj_close",
-            "adjustment_factor",
-            "dividend_cash",
-            "split_ratio",
-            "provider",
-            "source_timestamp",
-            "normalization_version",
-        )
-    }
+    evidence_values = tuple(
+        getattr(row, field, None) for field in _PRICE_HASH_FIELDS
+    )
     try:
-        expected_hash = price_row_content_hash(hash_evidence)
+        try:
+            expected_hash = _verified_price_content_hash(evidence_values)
+        except TypeError:
+            expected_hash = price_row_content_hash(
+                dict(zip(_PRICE_HASH_FIELDS, evidence_values))
+            )
     except (TypeError, ValueError):
         return False
 

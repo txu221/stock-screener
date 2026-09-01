@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -11,8 +11,10 @@ from app.domain.market_intelligence.mvp import (
     PULSE_SYMBOLS,
     EtfStrengthItem,
     calculate_price_metrics,
+    classify_price_history_quality,
     score_and_rank_etfs,
 )
+from app.domain.market_intelligence.price_provenance import price_row_content_hash
 
 
 def test_mvp_fixed_universes_and_version_are_explicit():
@@ -62,6 +64,57 @@ def test_flow_pressure_copy_discloses_derived_proxy_semantics():
         "OHLCV-derived pressure proxy. "
         "Not measured institutional or exchange net flow."
     )
+
+
+def test_price_provenance_verification_cache_is_bound_to_complete_row_evidence(
+    monkeypatch,
+):
+    import app.domain.market_intelligence.mvp as module
+
+    timestamp = datetime(2026, 8, 31, 21, 0, tzinfo=timezone.utc)
+    evidence = {
+        "symbol": "SPY",
+        "date": date(2026, 8, 31),
+        "open": 100.0,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.0,
+        "volume": 1_000_000,
+        "adj_close": 100.0,
+        "adjustment_factor": 1.0,
+        "dividend_cash": 0.0,
+        "split_ratio": 0.0,
+        "provider": "yahoo",
+        "source_timestamp": timestamp,
+        "normalization_version": "canonical_price_adjustment_v2",
+    }
+    row = SimpleNamespace(
+        **evidence,
+        price_basis="yahoo_adjusted_close_provider_volume",
+        content_hash=price_row_content_hash(evidence),
+        revision_number=0,
+        reconciled_at=timestamp,
+    )
+    original = module.price_row_content_hash
+    calls = []
+
+    def counted(values):
+        calls.append(values)
+        return original(values)
+
+    module._verified_price_content_hash.cache_clear()
+    monkeypatch.setattr(module, "price_row_content_hash", counted)
+
+    assert classify_price_history_quality([row]) == "corporate_action_adjusted"
+    assert classify_price_history_quality([row]) == "corporate_action_adjusted"
+    assert len(calls) == 1
+
+    row.high = 102.0
+    assert (
+        classify_price_history_quality([row])
+        == "partial_corporate_action_adjustment"
+    )
+    assert len(calls) == 2
 
 
 def test_price_metrics_use_rows_as_sessions_and_exclude_today_from_rvol():

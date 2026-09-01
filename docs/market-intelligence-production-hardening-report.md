@@ -228,6 +228,10 @@ tolerance. Fully proven history is
 `partial_corporate_action_adjustment`. Full coverage shows exactly:
 “Historical analytical returns use corporate-action-adjusted prices.” Partial
 coverage warns that legacy or unverified rows may be included.
+Hash results are memoized only by the complete hash-defining evidence tuple in a
+bounded process-local cache. Any source/action/value/version change produces a
+new key, and a changed stored hash is still compared with the correct expected
+hash; this optimization cannot hide a same-pointer provider revision.
 
 ## 25. Backend tests
 
