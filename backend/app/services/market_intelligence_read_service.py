@@ -50,6 +50,10 @@ DEFAULT_MIN_PRICE = 5.0
 DEFAULT_MIN_AVERAGE_DOLLAR_VOLUME = float(
     resolve_default_scan_filters("US")["minVolume"] or 0
 )
+# Movers need the current session plus 20 prior sessions for RVOL20. Forty-two
+# calendar days normally contain about 30 US sessions, preserving a generous
+# closure/missing-row buffer without loading price history unused by metrics.
+MOVER_PRICE_CALENDAR_DAYS = 42
 _PRICE_READ_COLUMNS = (
     StockPrice.symbol,
     StockPrice.date,
@@ -325,7 +329,7 @@ class MarketIntelligenceReadService:
         grouped = self._price_rows(
             eligible_metadata,
             as_of=run.as_of_date,
-            calendar_days=60,
+            calendar_days=MOVER_PRICE_CALENDAR_DAYS,
         )
         price_history_quality = classify_price_history_quality(
             row for rows in grouped.values() for row in rows

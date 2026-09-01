@@ -230,6 +230,34 @@ def test_price_reads_do_not_materialize_stock_price_entities(session):
     )
 
 
+def test_movers_quality_excludes_rows_outside_the_rvol_metric_window(session):
+    run = _published_run(session)
+    session.add(_universe("AAPL"))
+    session.add(_feature(run.id, "AAPL"))
+    session.add_all(_prices("AAPL", [100.0] * 20 + [101.0], reconciled=True))
+    session.add(
+        StockPrice(
+            symbol="AAPL",
+            date=AS_OF - timedelta(days=43),
+            open=90.0,
+            high=90.0,
+            low=90.0,
+            close=90.0,
+            adj_close=90.0,
+            volume=1_000_000,
+        )
+    )
+    session.commit()
+
+    result = MarketIntelligenceReadService(
+        session,
+        completed_session=AS_OF,
+    ).get_movers()
+
+    assert result.eligible_count == 1
+    assert result.price_history_quality == "corporate_action_adjusted"
+
+
 def test_movers_return_transparent_empty_result_without_published_pointer(session):
     result = MarketIntelligenceReadService(session).get_movers()
 
