@@ -442,6 +442,7 @@ jobs:
             -q 2>&1 | tee "$RUNNER_TEMP/phase2-live-yahoo.log"
 
       - name: Run real Celery broker-worker task and idempotent rerun
+        if: always()
         working-directory: backend
         run: |
           set -o pipefail

@@ -61,21 +61,50 @@ def _close(value: float | None, expected: float | None) -> bool:
 def _manual_metrics(symbol_bars, spy_bars, sessions: tuple[date, ...]) -> dict[str, Any]:
     bars = {bar.trading_date: bar for bar in symbol_bars}
     spy = {bar.trading_date: bar for bar in spy_bars}
-    current = bars[sessions[-1]]
+    current = bars.get(sessions[-1]) if sessions else None
+    spy_current = spy.get(sessions[-1]) if sessions else None
 
-    returns: dict[int, float] = {}
-    spy_returns: dict[int, float] = {}
+    returns: dict[int, float | None] = {}
+    spy_returns: dict[int, float | None] = {}
     for offset in (1, 5, 20, 60):
-        anchor = sessions[-1 - offset]
-        returns[offset] = current.adjusted_close / bars[anchor].adjusted_close - 1.0
+        anchor = sessions[-1 - offset] if len(sessions) > offset else None
+        symbol_anchor = bars.get(anchor) if anchor is not None else None
+        spy_anchor = spy.get(anchor) if anchor is not None else None
+        returns[offset] = (
+            current.adjusted_close / symbol_anchor.adjusted_close - 1.0
+            if current is not None
+            and symbol_anchor is not None
+            and symbol_anchor.adjusted_close > 0
+            else None
+        )
         spy_returns[offset] = (
-            spy[sessions[-1]].adjusted_close / spy[anchor].adjusted_close - 1.0
+            spy_current.adjusted_close / spy_anchor.adjusted_close - 1.0
+            if spy_current is not None
+            and spy_anchor is not None
+            and spy_anchor.adjusted_close > 0
+            else None
         )
 
-    previous_twenty = [bars[session].provider_volume for session in sessions[-21:-1]]
-    rvol20 = current.provider_volume / (sum(previous_twenty) / 20.0)
+    rvol_window = (
+        tuple(bars.get(session) for session in sessions[-21:])
+        if len(sessions) >= 21
+        else ()
+    )
+    if len(rvol_window) != 21 or any(bar is None for bar in rvol_window):
+        rvol20 = None
+    else:
+        previous_average = sum(
+            bar.provider_volume for bar in rvol_window[:-1] if bar is not None
+        ) / 20.0
+        rvol20 = (
+            rvol_window[-1].provider_volume / previous_average
+            if previous_average != 0 and rvol_window[-1] is not None
+            else None
+        )
 
-    def pressure(bar) -> float:
+    def pressure(bar) -> float | None:
+        if bar is None:
+            return None
         spread = bar.adjusted_high - bar.adjusted_low
         if spread == 0:
             return 0.0
@@ -84,21 +113,37 @@ def _manual_metrics(symbol_bars, spy_bars, sessions: tuple[date, ...]) -> dict[s
         ) / spread
 
     def cmf(count: int) -> float | None:
-        window = [bars[session] for session in sessions[-count:]]
-        denominator = sum(bar.provider_volume for bar in window)
+        if len(sessions) < count:
+            return None
+        window = tuple(bars.get(session) for session in sessions[-count:])
+        if any(bar is None for bar in window):
+            return None
+        denominator = sum(
+            bar.provider_volume for bar in window if bar is not None
+        )
         if denominator == 0:
             return None
-        return sum(pressure(bar) * bar.provider_volume for bar in window) / denominator
+        return sum(
+            pressure(bar) * bar.provider_volume
+            for bar in window
+            if bar is not None
+        ) / denominator
+
+    def relative(value: float | None, benchmark: float | None) -> float | None:
+        if value is None or benchmark is None:
+            return None
+        result = value - benchmark
+        return result if math.isfinite(result) else None
 
     return {
         "return_1d": returns[1],
         "return_5d": returns[5],
         "return_20d": returns[20],
         "return_60d": returns[60],
-        "relative_return_vs_spy_1d": returns[1] - spy_returns[1],
-        "relative_return_vs_spy_5d": returns[5] - spy_returns[5],
-        "relative_return_vs_spy_20d": returns[20] - spy_returns[20],
-        "relative_return_vs_spy_60d": returns[60] - spy_returns[60],
+        "relative_return_vs_spy_1d": relative(returns[1], spy_returns[1]),
+        "relative_return_vs_spy_5d": relative(returns[5], spy_returns[5]),
+        "relative_return_vs_spy_20d": relative(returns[20], spy_returns[20]),
+        "relative_return_vs_spy_60d": relative(returns[60], spy_returns[60]),
         "rvol20": rvol20,
         "flow_pressure_1d_proxy": pressure(current),
         "cmf_5d_proxy": cmf(5),

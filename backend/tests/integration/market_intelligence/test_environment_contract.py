@@ -142,3 +142,7 @@ def test_yahoo_canary_workflow_is_weekday_manual_and_production_read_only() -> N
         "github.event_name == 'push' || inputs.run_live_yahoo == true"
         not in integration_workflow
     )
+    celery_step = integration_workflow.split(
+        "- name: Run real Celery broker-worker task and idempotent rerun", 1
+    )[1].split("- name: Upload optional live evidence", 1)[0]
+    assert "if: always()" in celery_step
