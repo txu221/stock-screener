@@ -619,3 +619,190 @@ A shallower drawdown has the higher raw value and therefore the stronger percent
 The Today page displays raw completed-session pulse values and sector leadership; it does not invent a Market Status classification without approved deterministic breadth rules. Sectors render exactly the 11 ranked ETFs and keep SPY benchmark-only. Rank movement always combines number, arrow, and `IMPROVED`/`DECLINED`/`UNCHANGED` text. Flow Pressure uses the exact disclosure: `OHLCV-derived pressure proxy. Not measured institutional or exchange net flow.`
 
 MVP v1 does not add AI, news, options flow, institutional flow, actual ETF fund flow, predictions, recommendations, alerts, backtesting, OTC coverage, new authentication, or a second application/API. No dependency was added for the MVP.
+
+## 19. Production Hardening v2 contract
+
+Production Hardening v2 closes the MVP's three declared system risks without
+adding a product surface or expanding the universe: corporate-action-aware
+analytical history, persisted lightweight observability, and an evidence-based
+read/cache SLO.
+
+### 19.1 Corporate-action price basis and provenance
+
+The shared `stock_prices` boundary now keeps raw provider OHLCV separate from
+the analytical series. Raw OHLC remains appropriate for display; historical
+returns, momentum, relative strength, drawdown, and moving-average-like
+analytics use provider adjusted close only when the row proves all v2
+provenance fields.
+
+The v2 normalization contract is:
+
+```text
+normalization_version = canonical_price_adjustment_v2
+analysis price basis  = yahoo_adjusted_close_provider_volume
+adjustment_factor     = provider_adj_close / raw_close
+```
+
+Each reconciled row records raw OHLCV, provider adjusted close, adjustment
+factor, Yahoo provider identity, source timestamp, cash dividend, split ratio,
+normalization version, reconciliation timestamp, content hash, and revision
+number. Missing or non-Yahoo adjusted-close evidence is retained as
+`raw_ohlcv_unreconciled`; it is never relabeled reconciled by copying raw close.
+The scheduled/batch refresh path carries the actual provider for every symbol;
+a provider-less or native fallback cannot replace a currently reconciled row.
+Before Redis or PostgreSQL receives a Yahoo batch, negative action values and an
+extreme adjacent adjustment-factor discontinuity without split/dividend
+evidence raise `CORPORATE_ACTION_RECONCILIATION_FAILURE`. The entire affected
+batch is rejected, so the last reconciled materialization remains unchanged.
+
+Deterministic 2-for-1, 3-for-1, and reverse-split fixtures prove that an
+adjusted analytical return does not report the mechanical split as a price
+loss/gain. Yahoo adjusted close can incorporate cash-distribution adjustments,
+so these fields are described as provider-adjusted analytical return (a
+total-return proxy), not guaranteed pure price return. Cash dividend evidence is
+stored separately; no synthetic dividend is inferred.
+
+### 19.2 Historical revisions and old snapshots
+
+`stock_price_revisions` is an append-only evidence ledger. A content-hash change
+from a later provider download appends a new revision and advances the current
+row; the previous evidence remains queryable. Database triggers reject UPDATE or
+DELETE of revision evidence. The ledger deliberately has no parent foreign key,
+so deleting a separate current `stock_prices` row cannot cascade-delete its
+evidence and the recorded parent identifier remains auditable. Current-row plus
+revision writes share one transaction. Replaying identical evidence is
+idempotent.
+If a current row is independently deleted while its immutable revisions remain,
+re-ingestion continues at `max(revision_number) + 1`; it never collides with or
+reuses revision zero.
+
+Existing Market Intelligence snapshots remain immutable and retain the metric
+and normalization version under which they were calculated. V1 snapshots are
+not silently rewritten to v2 semantics. A deliberate recalculation must create
+a new auditable run/revision and follow the existing atomic publication policy.
+
+### 19.3 Observability and error taxonomy
+
+Pipeline version `market_intelligence_pipeline_v2` persists and emits structured
+fields for run/task identity, trading date, metric and normalization versions,
+provider, stage, duration, universe coverage, rejection coverage, publication
+status, retry status, and reuse status. The complete stage timing envelope is:
+
+```text
+provider_fetch_ms
+normalization_ms
+validation_ms
+calculation_ms
+persistence_ms
+publication_ms
+total_ms
+```
+
+The persisted timing envelope is deliberately pre-commit evidence because it
+is written inside the transaction it describes. `persistence_ms` covers
+candidate/lifecycle persistence before pointer publication; `publication_ms`
+covers the atomic pointer swap; persisted `total_ms` ends immediately before
+final stats/observability writes and commit. The structured completion log also
+emits `persisted_duration_ms`, `commit_ms`, and a committed `duration_ms` that
+ends only after `uow.commit()` returns. Logs always carry
+`normalization_version`, `expected_symbols`, `received_symbols`,
+`valid_symbols`, and `rejected_symbols` fields.
+
+Stable failure categories are `PROVIDER_FAILURE`, `PROVIDER_SCHEMA_DRIFT`,
+`INVALID_MARKET_DATA`, `DATABASE_FAILURE`, `LOCK_TIMEOUT`,
+`PUBLICATION_FAILURE`, `CELERY_DELIVERY_FAILURE`, `STALE_DATA`,
+`INSUFFICIENT_HISTORY`, and
+`CORPORATE_ACTION_RECONCILIATION_FAILURE`. Categories come from the failed
+boundary and typed condition, not exception-message parsing. Provider schema
+drift remains a request-level failure and is not fabricated as missing-symbol or
+bad-row evidence.
+
+Celery observability distinguishes dispatch, start, published-result reuse,
+force refresh, completion, failure, and broker redelivery. Delivery retries do
+not create duplicate logical snapshots.
+
+### 19.4 Health, readiness, and completed-session freshness
+
+The persisted sector health response adds latest-success age,
+latest-attempt age, provider latency, failure category, consecutive failures,
+last successful trading date, the completed-session stale threshold, pipeline
+version, stage timings, and publication/retry/reuse state. Its aggregate is read
+under one repository statement so a concurrent publication cannot combine
+different PostgreSQL `READ COMMITTED` snapshots.
+
+Freshness is based on completed US market sessions:
+
+- `FRESH`: snapshot equals the latest completed session;
+- `AGING`: exactly one completed session behind;
+- `STALE`: at least two completed sessions behind;
+- `UNAVAILABLE`: no usable snapshot/session relationship.
+
+Weekends and market holidays therefore do not age a Friday snapshot merely
+because wall-clock hours elapsed. `/livez` is process liveness. Readiness checks
+PostgreSQL and the persisted Market Intelligence snapshot; Redis degradation is
+reported without making the application dead, and Yahoo is never called from a
+health/readiness request.
+The readiness snapshot component uses the same completed-session classifier:
+`FRESH` is ready, while `AGING`, `STALE`, and `UNAVAILABLE` are soft-degraded
+warnings. A stale-but-present snapshot is never reported as healthy merely
+because a pointer exists.
+
+### 19.5 Stable read cache and performance SLO
+
+Redis is an optional pointer-versioned read-through cache only for responses
+whose complete source generation is immutable (the sector latest/history
+snapshot family). Versioned keys bind the endpoint, canonical parameters,
+metric version, and immutable published generation. Partial and failed attempts
+do not advance that generation or overwrite a stable sector payload. Redis
+read, decode, schema, or write failure falls back to PostgreSQL instead of
+returning HTTP 500. Per-key in-process single-flight limits same-process
+sector-cache misses without adding a distributed-lock dependency.
+
+Overview, Movers, and ETF reads are pinned to the published feature-run ID but
+also consume mutable `stock_prices`. They therefore bypass the Redis response
+cache until a future price-generation token can prove that both the feature run
+and every analytical price revision are immutable. A same-pointer provider
+revision is visible on the next request instead of remaining stale for the TTL.
+
+Successful publications receive a transaction-serialized monotonically
+increasing publication timestamp. This prevents same-session and A-to-D-to-A
+pointer changes, as well as late lower-ID historical publications, from reusing
+an old cache generation. Cache format version is `v2`; configured TTL is bounded
+between 60 seconds and seven days.
+
+The dedicated PostgreSQL 16 workflow mounts production routes, migrates through
+Alembic head, seeds a deterministic 500-equity/60-sector-session dataset,
+bypasses Redis, and records 20 measured requests after one warm-up for overview,
+Movers, ETFs, sector latest/history/health. Every seeded price row contains a
+valid v2 factor, action fields, provider/source/reconciliation evidence,
+revision zero, and a recomputable content hash, so the benchmark executes the
+current full provenance-validation path. The enforced ceiling remains a common
+unrounded p95 below 1000 ms; the final reviewed-head run is authoritative.
+Historical run `33449989745` passed the pre-closeout path and remains useful only
+as comparison evidence. The 182-SELECT sector-history N+1 shape remains a
+documented optimization follow-up.
+
+### 19.6 Provider drift, canary, and UI quality disclosure
+
+The Yahoo adapter validates required columns, dtypes, fixed symbol coverage,
+date order, duplicate timestamps, timezone normalization, adjusted-close
+presence, volume, action columns, and adjustment consistency. A schema-contract
+failure is typed as `PROVIDER_SCHEMA_DRIFT` or
+`CORPORATE_ACTION_RECONCILIATION_FAILURE` before canonical row validation.
+
+The live Yahoo contract remains excluded from deterministic tests. A weekday,
+manual-capable GitHub Actions canary runs once after the US close with read-only
+repository permission. It invokes only the live provider contract test, has no
+PostgreSQL, Redis, Celery, migration, deployment, or production-write path, and
+serves only as an observability signal.
+
+MVP read responses derive `price_history_quality` from actual rows. The reader
+recomputes each content hash and requires the stored adjustment factor to match
+`adjusted_close / raw_close` within a strict floating-point tolerance. Fully
+proven v2 history is `corporate_action_adjusted`; any legacy, malformed,
+internally inconsistent, missing, or unverified provenance is
+`partial_corporate_action_adjustment`. The UI displays
+the exact full-coverage disclosure, “Historical analytical returns use
+corporate-action-adjusted prices.” Partial coverage instead shows the limitation
+that legacy or unverified rows may be included. It never upgrades the label from
+the presence of `adj_close` alone.

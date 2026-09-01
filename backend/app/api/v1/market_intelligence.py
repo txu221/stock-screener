@@ -299,21 +299,12 @@ def market_intelligence_overview(
 ) -> MarketIntelligenceOverviewResponse:
     identity = _mvp_published_identity(db)
     return _refresh_mvp_freshness(
-        _cached_response(
-            MarketIntelligenceOverviewResponse,
-            key_parts=_cache_key_parts(identity, endpoint="overview"),
-            compute=lambda: MarketIntelligenceOverviewResponse.from_domain(
-                MarketIntelligenceReadService(
-                    db,
-                    published_run_id=(0 if identity is None else identity.run_id),
-                ).get_overview()
-            ),
-            is_still_stable=(
-                None
-                if identity is None
-                else lambda: _mvp_published_identity(db) == identity
-            ),
-        ),
+        MarketIntelligenceOverviewResponse.from_domain(
+            MarketIntelligenceReadService(
+                db,
+                published_run_id=(0 if identity is None else identity.run_id),
+            ).get_overview()
+        )
     )
 
 
@@ -338,39 +329,21 @@ def market_intelligence_movers(
     normalized_search = (
         None if search is None else (search.strip().casefold() or None)
     )
-    params = {
-        "limit": limit,
-        "sector": normalized_sector,
-        "direction": direction,
-        "min_price": min_price,
-        "min_rvol": min_rvol,
-        "market_cap_group": market_cap_group,
-        "search": normalized_search,
-    }
     return _refresh_mvp_freshness(
-        _cached_response(
-            MarketMoversResponse,
-            key_parts=_cache_key_parts(identity, endpoint="movers", params=params),
-            compute=lambda: MarketMoversResponse.from_domain(
-                MarketIntelligenceReadService(
-                    db,
-                    published_run_id=(0 if identity is None else identity.run_id),
-                ).get_movers(
-                    limit=limit,
-                    sector=normalized_sector,
-                    direction=direction,
-                    min_price=min_price,
-                    min_rvol=min_rvol,
-                    market_cap_group=market_cap_group,
-                    search=normalized_search,
-                )
-            ),
-            is_still_stable=(
-                None
-                if identity is None
-                else lambda: _mvp_published_identity(db) == identity
+        MarketMoversResponse.from_domain(
+            MarketIntelligenceReadService(
+                db,
+                published_run_id=(0 if identity is None else identity.run_id),
+            ).get_movers(
+                limit=limit,
+                sector=normalized_sector,
+                direction=direction,
+                min_price=min_price,
+                min_rvol=min_rvol,
+                market_cap_group=market_cap_group,
+                search=normalized_search,
             )
-        ),
+        )
     )
 
 
@@ -395,25 +368,12 @@ def market_intelligence_etfs(
 ) -> EtfRadarResponse:
     identity = _mvp_published_identity(db)
     return _refresh_mvp_freshness(
-        _cached_response(
-            EtfRadarResponse,
-            key_parts=_cache_key_parts(
-                identity,
-                endpoint="etfs",
-                params={"category": category},
-            ),
-            compute=lambda: EtfRadarResponse.from_domain(
-                MarketIntelligenceReadService(
-                    db,
-                    published_run_id=(0 if identity is None else identity.run_id),
-                ).get_etf_radar(category=category)
-            ),
-            is_still_stable=(
-                None
-                if identity is None
-                else lambda: _mvp_published_identity(db) == identity
-            ),
-        ),
+        EtfRadarResponse.from_domain(
+            MarketIntelligenceReadService(
+                db,
+                published_run_id=(0 if identity is None else identity.run_id),
+            ).get_etf_radar(category=category)
+        )
     )
 
 

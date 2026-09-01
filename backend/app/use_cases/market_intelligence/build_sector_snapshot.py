@@ -101,6 +101,10 @@ class BuildSectorSnapshotResult:
     idempotency_key: str
     reused: bool = False
     failure_category: MarketIntelligenceErrorCategory | None = None
+    expected_symbols: int = len(MARKET_INTELLIGENCE_UNIVERSE)
+    received_symbols: int | None = None
+    valid_symbols: int | None = None
+    rejected_symbols: int | None = None
 
 
 @dataclass(frozen=True)
@@ -331,6 +335,10 @@ class BuildSectorSnapshotUseCase:
                         publication_status="PUBLISHED",
                         retry_status=retry_status,
                         reuse_status="PUBLISHED_RESULT_REUSED",
+                        expected_symbols=result.expected_symbols,
+                        received_symbols=result.received_symbols,
+                        valid_symbols=result.valid_symbols,
+                        rejected_symbols=result.rejected_symbols,
                     )
                     return result
 
@@ -388,6 +396,10 @@ class BuildSectorSnapshotUseCase:
                         ),
                         retry_status=retry_status,
                         reuse_status="IDEMPOTENT_RESULT_REUSED",
+                        expected_symbols=result.expected_symbols,
+                        received_symbols=result.received_symbols,
+                        valid_symbols=result.valid_symbols,
+                        rejected_symbols=result.rejected_symbols,
                     )
                     return result
 
@@ -486,13 +498,22 @@ class BuildSectorSnapshotUseCase:
                     retry_status=retry_status,
                     reuse_status=reuse_status,
                 )
+                commit_started = self._monotonic()
                 uow.commit()
+                commit_finished = self._monotonic()
+                commit_ms = elapsed_milliseconds(commit_started, commit_finished)
+                committed_duration_ms = elapsed_milliseconds(
+                    total_started,
+                    commit_finished,
+                )
+                coverage = self._coverage_counts(prepared)
                 result = BuildSectorSnapshotResult(
                     run_id=run.id,
                     ingestion_status=candidate.ingestion_status,
                     published=candidate.publishable,
                     idempotency_key=prepared.idempotency_key,
                     failure_category=audit.failure_category,
+                    **coverage,
                 )
                 self._log_run(
                     event="market_intelligence_run_completed",
@@ -500,13 +521,16 @@ class BuildSectorSnapshotUseCase:
                     run_id=run.id,
                     provider=batch.provider,
                     stage="completed",
-                    duration_ms=final_timings["total_ms"],
+                    duration_ms=committed_duration_ms,
+                    persisted_duration_ms=final_timings["total_ms"],
+                    commit_ms=commit_ms,
                     publication_status=publication_status,
                     retry_status=retry_status,
                     reuse_status=reuse_status,
                     symbol_count=len(candidate.usable_symbols),
                     snapshot_count=len(candidate.snapshots),
                     failure_category=audit.failure_category,
+                    **coverage,
                 )
                 return result
         except MarketIntelligenceIdempotencyConflict:
@@ -685,6 +709,27 @@ class BuildSectorSnapshotUseCase:
         return "INITIAL"
 
     @staticmethod
+    def _coverage_counts(prepared: _PreparedAttempt) -> dict[str, int]:
+        expected = frozenset(MARKET_INTELLIGENCE_UNIVERSE)
+        received = expected.intersection(prepared.validation.received_symbols)
+        valid = {
+            bar.symbol
+            for bar in prepared.validation.canonical_bars
+            if bar.symbol in expected
+        }
+        rejected = {
+            rejection.symbol
+            for rejection in prepared.validation.rejections
+            if rejection.symbol in expected
+        }
+        return {
+            "expected_symbols": len(expected),
+            "received_symbols": len(received),
+            "valid_symbols": len(valid),
+            "rejected_symbols": len(rejected),
+        }
+
+    @staticmethod
     def _run_stats(
         candidate: CandidateSnapshot,
         *,
@@ -749,6 +794,12 @@ class BuildSectorSnapshotUseCase:
         symbol_count: int | None = None,
         snapshot_count: int | None = None,
         failure_category: MarketIntelligenceErrorCategory | None = None,
+        expected_symbols: int | None = len(MARKET_INTELLIGENCE_UNIVERSE),
+        received_symbols: int | None = None,
+        valid_symbols: int | None = None,
+        rejected_symbols: int | None = None,
+        persisted_duration_ms: float | None = None,
+        commit_ms: float | None = None,
         level: int = logging.INFO,
         exc_info: bool = False,
     ) -> None:
@@ -762,6 +813,7 @@ class BuildSectorSnapshotUseCase:
                 "as_of_date": command.as_of.isoformat(),
                 "pipeline_version": PIPELINE_VERSION,
                 "metric_version": METRIC_VERSION,
+                "normalization_version": NORMALIZATION_VERSION,
                 "provider": provider,
                 "stage": stage,
                 "duration_ms": duration_ms,
@@ -773,6 +825,12 @@ class BuildSectorSnapshotUseCase:
                 "failure_category": (
                     None if failure_category is None else failure_category.value
                 ),
+                "expected_symbols": expected_symbols,
+                "received_symbols": received_symbols,
+                "valid_symbols": valid_symbols,
+                "rejected_symbols": rejected_symbols,
+                "persisted_duration_ms": persisted_duration_ms,
+                "commit_ms": commit_ms,
             },
             exc_info=exc_info,
         )
@@ -781,6 +839,10 @@ class BuildSectorSnapshotUseCase:
     def _result_from_existing(
         bundle: MarketIntelligenceRunBundle,
     ) -> BuildSectorSnapshotResult:
+        expected = frozenset(MARKET_INTELLIGENCE_UNIVERSE)
+        counters = getattr(bundle.audit, "counters", {}) or {}
+        canonical_bars = getattr(bundle, "canonical_bars", ()) or ()
+        rejections = getattr(bundle, "rejections", ()) or ()
         return BuildSectorSnapshotResult(
             run_id=bundle.run_id,
             ingestion_status=bundle.audit.ingestion_status,
@@ -788,4 +850,18 @@ class BuildSectorSnapshotUseCase:
             idempotency_key=bundle.audit.idempotency_key,
             reused=True,
             failure_category=bundle.audit.failure_category,
+            expected_symbols=len(expected),
+            received_symbols=int(
+                counters.get("symbols_received", 0)
+            ),
+            valid_symbols=len(
+                {bar.symbol for bar in canonical_bars if bar.symbol in expected}
+            ),
+            rejected_symbols=len(
+                {
+                    rejection.symbol
+                    for rejection in rejections
+                    if rejection.symbol in expected
+                }
+            ),
         )

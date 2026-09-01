@@ -136,6 +136,10 @@ def test_task_logs_redelivered_published_reuse_and_completion(
             published=True,
             idempotency_key="d" * 64,
             reused=True,
+            expected_symbols=12,
+            received_symbols=12,
+            valid_symbols=12,
+            rejected_symbols=0,
         )
     )
     monkeypatch.setattr(module, "get_market_intelligence_runner", lambda: runner)
@@ -170,6 +174,11 @@ def test_task_logs_redelivered_published_reuse_and_completion(
     assert completed.publication_status == "PUBLISHED"
     assert completed.retry_status == "BROKER_REDELIVERED"
     assert completed.reuse_status == "PUBLISHED_RESULT_REUSED"
+    assert completed.normalization_version == "market_intelligence_adjusted_ohlcv_v2"
+    assert completed.expected_symbols == 12
+    assert completed.received_symbols == 12
+    assert completed.valid_symbols == 12
+    assert completed.rejected_symbols == 0
 
 
 def test_task_logs_force_refresh_state(monkeypatch, caplog) -> None:

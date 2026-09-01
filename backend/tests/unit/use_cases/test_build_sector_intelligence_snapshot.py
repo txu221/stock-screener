@@ -743,7 +743,9 @@ def test_feature_run_lifecycle_failure_is_database_failure(
     assert failure.stage == "persistence"
 
 
-def test_lifecycle_time_is_persistence_and_pointer_swap_time_is_publication() -> None:
+def test_lifecycle_time_is_persistence_and_pointer_swap_time_is_publication(
+    caplog,
+) -> None:
     as_of = date(2026, 5, 15)
 
     class _ControlledTimer:
@@ -777,14 +779,22 @@ def test_lifecycle_time_is_persistence_and_pointer_swap_time_is_publication() ->
                 "publish_atomically_if_not_older",
                 0.3,
             )
+            original_commit = uow.commit
+
+            def timed_commit():
+                timer.advance(0.4)
+                return original_commit()
+
+            uow.commit = timed_commit
             return uow
 
-    result = _runner(
-        _batch(as_of),
-        _sessions(as_of),
-        uow_factory=lambda: _TimedUow(SessionLocal),
-        monotonic=timer,
-    ).execute(_command(as_of))
+    with caplog.at_level(logging.INFO):
+        result = _runner(
+            _batch(as_of),
+            _sessions(as_of),
+            uow_factory=lambda: _TimedUow(SessionLocal),
+            monotonic=timer,
+        ).execute(_command(as_of))
 
     with SessionLocal() as session:
         audit = session.get(MarketIntelligenceRunAudit, result.run_id)
@@ -796,6 +806,20 @@ def test_lifecycle_time_is_persistence_and_pointer_swap_time_is_publication() ->
     )
     assert audit.stage_timings_json["persistence_ms"] == pytest.approx(300.0)
     assert audit.stage_timings_json["publication_ms"] == pytest.approx(300.0)
+    assert audit.stage_timings_json["total_ms"] == pytest.approx(600.0)
+    completed = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "market_intelligence_run_completed"
+    )
+    assert completed.duration_ms == pytest.approx(1000.0)
+    assert completed.persisted_duration_ms == pytest.approx(600.0)
+    assert completed.commit_ms == pytest.approx(400.0)
+    assert completed.normalization_version == "market_intelligence_adjusted_ohlcv_v2"
+    assert completed.expected_symbols == 12
+    assert completed.received_symbols == 12
+    assert completed.valid_symbols == 12
+    assert completed.rejected_symbols == 0
 
 
 def test_provider_history_outside_session_reference_is_rejected_not_silently_cropped() -> None:

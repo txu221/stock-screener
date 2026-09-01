@@ -12,6 +12,8 @@ on:
       - docs/market-intelligence-spec.md
       - docs/market-intelligence-mvp-report.md
       - docs/market-intelligence-slo.md
+      - docs/market-intelligence-production-hardening-report.md
+      - docs/corporate-action-price-audit.md
       - docs/phase2-integration-report.md
   workflow_dispatch:
     inputs:

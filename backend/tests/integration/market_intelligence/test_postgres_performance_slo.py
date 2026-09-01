@@ -34,6 +34,7 @@ from app.domain.market_intelligence.constants import (
     PRICE_BASIS,
 )
 from app.domain.market_intelligence.mvp import ETF_UNIVERSE
+from app.domain.market_intelligence.price_provenance import price_row_content_hash
 from app.infra.db.models.feature_store import (
     FeatureRun,
     FeatureRunPointer,
@@ -557,6 +558,7 @@ def _seed_representative_dataset(engine: Engine) -> dict[str, int]:
             symbol for symbol in ETF_UNIVERSE if symbol not in stock_symbols
         ]
         price_rows = []
+        reconciled_at = datetime(2026, 8, 31, 21, 0, tzinfo=timezone.utc)
         for symbol_index, symbol in enumerate(all_price_symbols):
             base_price = 20.0 + symbol_index % 120
             daily_slope = ((symbol_index % 9) - 4) * 0.0007
@@ -564,18 +566,32 @@ def _seed_representative_dataset(engine: Engine) -> dict[str, int]:
                 close = base_price * (1.0 + daily_slope * day_index)
                 normal_volume = 1_000_000 + symbol_index * 100 + day_index * 50
                 volume = normal_volume * (2 + symbol_index % 3) if day_index == len(price_sessions) - 1 else normal_volume
-                price_rows.append(
-                    {
-                        "symbol": symbol,
-                        "date": trading_date,
-                        "open": close,
-                        "high": close * 1.005,
-                        "low": close * 0.995,
-                        "close": close,
-                        "adj_close": close,
-                        "volume": volume,
-                    }
+                source_timestamp = datetime.combine(
+                    trading_date,
+                    datetime.min.time(),
+                    tzinfo=timezone.utc,
                 )
+                price_row = {
+                    "symbol": symbol,
+                    "date": trading_date,
+                    "open": close,
+                    "high": close * 1.005,
+                    "low": close * 0.995,
+                    "close": close,
+                    "adj_close": close,
+                    "volume": volume,
+                    "adjustment_factor": 1.0,
+                    "dividend_cash": 0.0,
+                    "split_ratio": 0.0,
+                    "provider": "yahoo",
+                    "source_timestamp": source_timestamp,
+                    "normalization_version": "canonical_price_adjustment_v2",
+                    "price_basis": "yahoo_adjusted_close_provider_volume",
+                    "revision_number": 0,
+                    "reconciled_at": reconciled_at,
+                }
+                price_row["content_hash"] = price_row_content_hash(price_row)
+                price_rows.append(price_row)
         session.bulk_insert_mappings(StockPrice, price_rows)
         session.commit()
 

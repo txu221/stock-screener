@@ -3,6 +3,8 @@ Tests for /livez, /readyz, and /health endpoints.
 """
 import pytest
 import pytest_asyncio
+from datetime import date
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 import httpx
 
@@ -96,6 +98,26 @@ class TestReadyz:
         assert data["checks"]["redis"] == "ok"
         assert "warning" in data["checks"]["market_intelligence_snapshot"]
         yahoo.assert_not_called()
+
+    async def test_degraded_when_stable_snapshot_is_stale(self, client):
+        mock_redis = MagicMock()
+        mock_redis.ping.return_value = True
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_engine = MagicMock()
+        mock_engine.connect.return_value = mock_conn
+        with patch("app.main.get_redis_client", return_value=mock_redis), \
+             patch("app.main.engine", mock_engine), \
+             patch("app.main.table_exists", return_value=True), \
+             patch("app.main._check_market_intelligence_snapshot", return_value="STALE"):
+            response = await client.get("/readyz")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "degraded"
+        assert response.json()["checks"]["market_intelligence_snapshot"] == (
+            "warning: stale"
+        )
 
     async def test_degraded_when_stable_snapshot_check_errors(self, client):
         mock_redis = MagicMock()
@@ -196,3 +218,55 @@ class TestHealthDeprecated:
         health_data = health_response.json()
         assert "checks" in health_data
         assert "status" in health_data
+
+
+def test_snapshot_readiness_stays_fresh_across_holiday_weekend(monkeypatch):
+    from app import main as module
+
+    bundle = SimpleNamespace(audit=SimpleNamespace(target_session=date(2026, 7, 2)))
+    calendar = SimpleNamespace(
+        last_completed_trading_day=lambda market: date(2026, 7, 2),
+        trading_days=lambda market, start, end: (
+            date(2026, 6, 30),
+            date(2026, 7, 1),
+            date(2026, 7, 2),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.infra.db.repositories.market_intelligence_repo."
+        "SqlMarketIntelligenceRepository.get_latest_published",
+        lambda _repo, _key: bundle,
+    )
+    monkeypatch.setattr(
+        "app.wiring.bootstrap.get_market_calendar_service",
+        lambda: calendar,
+    )
+    monkeypatch.setattr(module, "SessionLocal", MagicMock())
+
+    assert module._check_market_intelligence_snapshot() == "FRESH"
+
+
+def test_snapshot_readiness_marks_two_completed_sessions_behind_stale(monkeypatch):
+    from app import main as module
+
+    bundle = SimpleNamespace(audit=SimpleNamespace(target_session=date(2026, 6, 30)))
+    calendar = SimpleNamespace(
+        last_completed_trading_day=lambda market: date(2026, 7, 2),
+        trading_days=lambda market, start, end: (
+            date(2026, 6, 30),
+            date(2026, 7, 1),
+            date(2026, 7, 2),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.infra.db.repositories.market_intelligence_repo."
+        "SqlMarketIntelligenceRepository.get_latest_published",
+        lambda _repo, _key: bundle,
+    )
+    monkeypatch.setattr(
+        "app.wiring.bootstrap.get_market_calendar_service",
+        lambda: calendar,
+    )
+    monkeypatch.setattr(module, "SessionLocal", MagicMock())
+
+    assert module._check_market_intelligence_snapshot() == "STALE"

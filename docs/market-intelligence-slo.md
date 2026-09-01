@@ -10,10 +10,17 @@ where the highest p95 was 717.408 ms and the highest single request was
 721.843 ms. The threshold leaves 282.592 ms (39.4%) above the highest measured
 p95 for shared-runner variation without hiding a full-second regression.
 
-The baseline job succeeded, but the new enforcement settings have not yet run
-in CI. A second Actions run must demonstrate that the configured enforcement
-passes on PostgreSQL 16 and that the integration-test trigger lookup fix works
-when multiple generated schemas contain the same trigger name.
+Historical GitHub Actions run
+[`33449989745`](https://github.com/txu221/stock-screener/actions/runs/33449989745)
+then passed with enforcement enabled on the pre-closeout fixture. The same run also passed the complete
+PostgreSQL/Redis integration job in the accumulated multi-schema environment,
+including the relation-scoped trigger lookup.
+
+The closeout fixture now gives every synthetic price row the complete v2
+provider, source timestamp, adjustment factor, action fields, normalization,
+price basis, revision, reconciliation timestamp, and recomputable content hash.
+The final reviewed-head run must therefore measure full provenance verification;
+it supersedes the historical latency table for completion evidence.
 
 No index was added. Any index change requires a captured PostgreSQL plan showing
 a specific scan, sort, lookup, or buffer cost and measured before/after evidence.
@@ -39,6 +46,8 @@ The migrated database receives a deterministic synthetic S&P-universe workload:
 - 90 price sessions for the equities and fixed ETF universe;
 - 60 published sector-intelligence sessions with all 12 fixed symbols;
 - both production publication pointers targeting the latest successful run.
+- full valid v2 corporate-action provenance on every synthetic price row, so
+  read-quality classification cannot short-circuit on the first legacy row.
 
 ## Request and SQL measurement
 
@@ -194,3 +203,27 @@ more enforced runs.
 Recorder bookkeeping measured 22.024551 ms total across 4,040 SELECTs, or
 0.005452 ms/SELECT. This is included in API time and excluded from SQL time;
 the event-dispatch and timer components listed earlier remain unisolated.
+
+## Enforced verification run
+
+Run `33449989745` measured commit `f98e4a03` on PostgreSQL 16.15 with the same
+database, Alembic head, deterministic dataset, one excluded warm-up, and 20
+samples per family. The artifact records `status=completed`,
+`slo.enforced=true`, and `slo.p95_threshold_ms=1000.0`; no family violated the
+unrounded threshold.
+
+| Family | p50 ms | p95 ms | worst ms |
+| --- | ---: | ---: | ---: |
+| overview | 39.183 | 39.816 | 40.115 |
+| movers | 668.927 | 681.450 | 686.844 |
+| ETFs | 67.638 | 70.996 | 75.763 |
+| sectors/latest | 8.162 | 8.580 | 8.840 |
+| sectors/history | 183.102 | 202.283 | 530.799 |
+| sectors/health | 21.065 | 21.712 | 21.789 |
+
+The slowest captured SELECT was again the Movers price load at 53.611 ms.
+Its replayed plan used `uix_symbol_date`, returned 21,500 rows against 21,552
+estimated, completed in 7.428 ms, hit 1,601 shared buffers, and performed no
+shared reads or temporary I/O. This second run confirms the no-new-index
+decision and leaves the sector-history N+1 shape as an application batching
+follow-up rather than an index problem.

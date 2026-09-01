@@ -10,7 +10,11 @@ from datetime import date
 from celery.signals import before_task_publish
 
 from app.celery_app import celery_app
-from app.domain.market_intelligence.constants import METRIC_VERSION
+from app.domain.market_intelligence.constants import (
+    MARKET_INTELLIGENCE_UNIVERSE,
+    METRIC_VERSION,
+    NORMALIZATION_VERSION,
+)
 from app.domain.market_intelligence.observability import (
     PIPELINE_VERSION,
     MarketIntelligenceErrorCategory,
@@ -48,6 +52,10 @@ def _task_log_extra(
     retry_status: str = "INITIAL",
     reuse_status: str = "NEW",
     failure_category: str | None = None,
+    expected_symbols: int | None = len(MARKET_INTELLIGENCE_UNIVERSE),
+    received_symbols: int | None = None,
+    valid_symbols: int | None = None,
+    rejected_symbols: int | None = None,
 ) -> dict:
     return {
         "event": event,
@@ -56,6 +64,7 @@ def _task_log_extra(
         "as_of_date": as_of_date,
         "pipeline_version": PIPELINE_VERSION,
         "metric_version": METRIC_VERSION,
+        "normalization_version": NORMALIZATION_VERSION,
         "provider": "yahoo",
         "stage": stage,
         "duration_ms": duration_ms,
@@ -65,6 +74,23 @@ def _task_log_extra(
         "retry_status": retry_status,
         "reuse_status": reuse_status,
         "failure_category": failure_category,
+        "expected_symbols": expected_symbols,
+        "received_symbols": received_symbols,
+        "valid_symbols": valid_symbols,
+        "rejected_symbols": rejected_symbols,
+    }
+
+
+def _result_coverage(result) -> dict[str, int | None]:
+    return {
+        "expected_symbols": getattr(
+            result,
+            "expected_symbols",
+            len(MARKET_INTELLIGENCE_UNIVERSE),
+        ),
+        "received_symbols": getattr(result, "received_symbols", None),
+        "valid_symbols": getattr(result, "valid_symbols", None),
+        "rejected_symbols": getattr(result, "rejected_symbols", None),
     }
 
 
@@ -210,6 +236,7 @@ def calculate_sector_intelligence_snapshot(
                     publication_status="PUBLISHED",
                     retry_status=retry_status,
                     reuse_status=reuse_status,
+                    **_result_coverage(result),
                 ),
             )
 
@@ -240,6 +267,7 @@ def calculate_sector_intelligence_snapshot(
                     retry_status=retry_status,
                     reuse_status=reuse_status,
                     failure_category=category_value,
+                    **_result_coverage(result),
                 ),
             )
             return payload
@@ -256,6 +284,7 @@ def calculate_sector_intelligence_snapshot(
                 publication_status=publication_status,
                 retry_status=retry_status,
                 reuse_status=reuse_status,
+                **_result_coverage(result),
             ),
         )
         return payload

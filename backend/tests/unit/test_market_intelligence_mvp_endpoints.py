@@ -258,28 +258,21 @@ async def test_mvp_query_validation_is_explicit(mvp_client, path, params):
 
 
 @pytest.mark.asyncio
-async def test_movers_cache_uses_stable_pointer_and_normalized_parameters(
+async def test_mvp_reads_bypass_redis_until_price_generation_is_immutable(
     mvp_client,
     monkeypatch,
 ):
     from app.api.v1 import market_intelligence as module
-    from app.services.market_intelligence_read_cache import (
-        build_market_intelligence_cache_key,
-    )
 
     client, factory = mvp_client
-    run_id = _seed_mover(factory)
-    observed = []
-
-    def capture(key_parts, compute, **_kwargs):
-        observed.append(key_parts)
-        return compute()
+    _seed_mover(factory)
 
     monkeypatch.setattr(
         module,
         "cached_market_intelligence_payload",
-        capture,
-        raising=False,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("mutable price-derived reads must bypass Redis")
+        ),
     )
 
     first = await client.get(
@@ -292,18 +285,10 @@ async def test_movers_cache_uses_stable_pointer_and_normalized_parameters(
     )
 
     assert first.status_code == second.status_code == 200
-    assert len(observed) == 2
-    assert observed[0].stable_run_id == run_id
-    assert observed[0].stable_trading_date == AS_OF
-    assert observed[0].metric_version == "market_intelligence_mvp_v1"
-    assert observed[0].stable_pointer_revision is not None
-    assert build_market_intelligence_cache_key(observed[0]) == (
-        build_market_intelligence_cache_key(observed[1])
-    )
 
 
 @pytest.mark.asyncio
-async def test_movers_canonicalizes_blank_optional_filters_to_none(
+async def test_same_pointer_price_revision_is_visible_without_stale_cache(
     mvp_client,
     monkeypatch,
 ):
@@ -311,13 +296,46 @@ async def test_movers_canonicalizes_blank_optional_filters_to_none(
 
     client, factory = mvp_client
     _seed_mover(factory)
-    observed = []
+    monkeypatch.setattr(
+        module,
+        "cached_market_intelligence_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("mutable price-derived reads must bypass Redis")
+        ),
+    )
 
-    def capture(key_parts, compute, **_kwargs):
-        observed.append(key_parts)
-        return compute()
+    first = await client.get("/api/v1/market-intelligence/movers")
+    with factory() as session:
+        current = (
+            session.query(StockPrice)
+            .filter(StockPrice.symbol == "AAPL", StockPrice.date == AS_OF)
+            .one()
+        )
+        current.adj_close = 121.0
+        session.commit()
+    second = await client.get("/api/v1/market-intelligence/movers")
 
-    monkeypatch.setattr(module, "cached_market_intelligence_payload", capture)
+    assert first.status_code == second.status_code == 200
+    assert first.json()["gainers"][0]["change_1d"] == pytest.approx(0.10)
+    assert second.json()["gainers"][0]["change_1d"] == pytest.approx(0.21)
+
+
+@pytest.mark.asyncio
+async def test_movers_accepts_blank_optional_filters_without_cache(
+    mvp_client,
+    monkeypatch,
+):
+    from app.api.v1 import market_intelligence as module
+
+    client, factory = mvp_client
+    _seed_mover(factory)
+    monkeypatch.setattr(
+        module,
+        "cached_market_intelligence_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("mutable price-derived reads must bypass Redis")
+        ),
+    )
 
     response = await client.get(
         "/api/v1/market-intelligence/movers",
@@ -325,8 +343,6 @@ async def test_movers_canonicalizes_blank_optional_filters_to_none(
     )
 
     assert response.status_code == 200
-    assert observed[0].params["sector"] is None
-    assert observed[0].params["search"] is None
 
 
 @pytest.mark.asyncio
@@ -334,28 +350,22 @@ async def test_unpublished_mvp_read_bypasses_cache_storage(mvp_client, monkeypat
     from app.api.v1 import market_intelligence as module
 
     client, _ = mvp_client
-    observed = []
-
-    def capture(key_parts, compute, **_kwargs):
-        observed.append(key_parts)
-        return compute()
-
     monkeypatch.setattr(
         module,
         "cached_market_intelligence_payload",
-        capture,
-        raising=False,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("mutable price-derived reads must bypass Redis")
+        ),
     )
 
     response = await client.get("/api/v1/market-intelligence/overview")
 
     assert response.status_code == 200
     assert response.json()["unavailable_reason"] == "no_published_us_feature_run"
-    assert observed == [None]
 
 
 @pytest.mark.asyncio
-async def test_cached_mvp_read_refreshes_completed_session_freshness(
+async def test_mvp_read_refreshes_completed_session_freshness(
     mvp_client,
     monkeypatch,
 ):
@@ -363,16 +373,14 @@ async def test_cached_mvp_read_refreshes_completed_session_freshness(
 
     client, factory = mvp_client
     _seed_pulse_and_etfs(factory)
-    cached_payload = None
     completed_sessions = [AS_OF]
-
-    def in_process_cache(_key_parts, compute, **_kwargs):
-        nonlocal cached_payload
-        if cached_payload is None:
-            cached_payload = compute()
-        return cached_payload
-
-    monkeypatch.setattr(module, "cached_market_intelligence_payload", in_process_cache)
+    monkeypatch.setattr(
+        module,
+        "cached_market_intelligence_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("mutable price-derived reads must bypass Redis")
+        ),
+    )
     monkeypatch.setattr(
         module,
         "_completed_us_sessions",
@@ -394,7 +402,7 @@ async def test_cached_mvp_read_refreshes_completed_session_freshness(
     "cached_json",
     (b"NaN", b'{"pulse":[Infinity]}', b'{"nested":{"value":-Infinity}}'),
 )
-async def test_overview_nonfinite_cached_json_falls_back_without_http_500(
+async def test_overview_ignores_legacy_nonfinite_redis_payload(
     mvp_client,
     monkeypatch,
     cached_json,
@@ -427,56 +435,25 @@ async def test_overview_nonfinite_cached_json_falls_back_without_http_500(
 
     assert response.status_code == 200
     assert response.json()["as_of"] == AS_OF.isoformat()
-    assert redis.writes == 1
+    assert redis.writes == 0
 
 
 @pytest.mark.asyncio
-async def test_overview_compute_stays_pinned_during_same_timestamp_aba_swap(
+async def test_overview_bypasses_cache_during_same_pointer_identity(
     mvp_client,
     monkeypatch,
 ):
     from app.api.v1 import market_intelligence as module
 
     client, factory = mvp_client
-    run_a_id = _seed_pulse_and_etfs(factory)
-    revision_a = datetime(2026, 8, 26, 22, 5, tzinfo=timezone.utc)
-    revision_d = revision_a
-    revision_a2 = revision_a
-    with factory() as session:
-        pointer = session.get(FeatureRunPointer, "latest_published_market:US")
-        pointer.updated_at = revision_a
-        run_d = FeatureRun(
-            as_of_date=AS_OF + timedelta(days=1),
-            run_type="daily_snapshot",
-            status="published",
-            published_at=PUBLISHED_AT + timedelta(days=1),
-        )
-        session.add(run_d)
-        session.commit()
-        run_d_id = run_d.id
-
-    stability_results = []
-
-    def coordinated_cache(key_parts, compute, **kwargs):
-        assert key_parts.stable_run_id == run_a_id
-        with factory() as session:
-            pointer = session.get(FeatureRunPointer, "latest_published_market:US")
-            pointer.run_id = run_d_id
-            pointer.updated_at = revision_d
-            session.commit()
-        value = compute()
-        with factory() as session:
-            pointer = session.get(FeatureRunPointer, "latest_published_market:US")
-            pointer.run_id = run_a_id
-            pointer.updated_at = revision_a2
-            session.commit()
-        stability_results.append(kwargs["is_still_stable"]())
-        return value
+    _seed_pulse_and_etfs(factory)
 
     monkeypatch.setattr(
         module,
         "cached_market_intelligence_payload",
-        coordinated_cache,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("mutable price-derived reads must bypass Redis")
+        ),
     )
     monkeypatch.setattr(module, "_completed_us_sessions", lambda: (AS_OF,))
 
@@ -484,4 +461,3 @@ async def test_overview_compute_stays_pinned_during_same_timestamp_aba_swap(
 
     assert response.status_code == 200
     assert response.json()["as_of"] == AS_OF.isoformat()
-    assert stability_results == [True]
