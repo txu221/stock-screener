@@ -17,6 +17,7 @@ from app.models.stock_universe import StockUniverse
 from app.services.market_intelligence_read_service import (
     MarketIntelligenceReadService,
 )
+from app.services.price_row_normalization import price_row_content_hash
 
 
 AS_OF = date(2026, 8, 26)
@@ -109,31 +110,34 @@ def _prices(
 ) -> list[StockPrice]:
     volumes = volumes or [1_000_000] * len(closes)
     start = AS_OF - timedelta(days=len(closes) - 1)
-    return [
-        StockPrice(
-            symbol=symbol,
-            date=start + timedelta(days=index),
-            open=close,
-            high=close,
-            low=close,
-            close=close,
-            adj_close=close,
-            volume=volumes[index],
-            provider="yahoo" if reconciled else None,
-            source_timestamp=PUBLISHED_AT if reconciled else None,
-            normalization_version=(
+    rows: list[StockPrice] = []
+    for index, close in enumerate(closes):
+        price = float(close)
+        values = {
+            "symbol": symbol,
+            "date": start + timedelta(days=index),
+            "open": price,
+            "high": price,
+            "low": price,
+            "close": price,
+            "adj_close": price,
+            "volume": volumes[index],
+            "provider": "yahoo" if reconciled else None,
+            "source_timestamp": PUBLISHED_AT if reconciled else None,
+            "normalization_version": (
                 "canonical_price_adjustment_v2" if reconciled else None
             ),
-            price_basis=(
+            "price_basis": (
                 "yahoo_adjusted_close_provider_volume" if reconciled else None
             ),
-            content_hash="a" * 64 if reconciled else None,
-            revision_number=0 if reconciled else None,
-            reconciled_at=PUBLISHED_AT if reconciled else None,
-            adjustment_factor=1.0 if reconciled else None,
-        )
-        for index, close in enumerate(closes)
-    ]
+            "revision_number": 0 if reconciled else None,
+            "reconciled_at": PUBLISHED_AT if reconciled else None,
+            "adjustment_factor": 1.0 if reconciled else None,
+        }
+        if reconciled:
+            values["content_hash"] = price_row_content_hash(values)
+        rows.append(StockPrice(**values))
+    return rows
 
 
 def test_movers_use_latest_published_sp500_snapshot_and_backend_metrics(session):
@@ -288,6 +292,61 @@ def test_overview_quality_is_partial_when_provenance_hash_is_invalid(session):
     _published_run(session)
     rows = _prices("SPY", [100.0, 101.0], reconciled=True)
     rows[-1].content_hash = "z" * 64
+    session.add_all(rows)
+    session.commit()
+
+    overview = MarketIntelligenceReadService(
+        session, completed_session=AS_OF
+    ).get_overview()
+
+    assert (
+        overview.price_history_quality
+        == "partial_corporate_action_adjustment"
+    )
+
+
+def test_overview_quality_is_partial_when_content_hash_is_stale(session):
+    _published_run(session)
+    rows = _prices("SPY", [100.0, 101.0], reconciled=True)
+    rows[-1].volume += 1
+    session.add_all(rows)
+    session.commit()
+
+    overview = MarketIntelligenceReadService(
+        session, completed_session=AS_OF
+    ).get_overview()
+
+    assert (
+        overview.price_history_quality
+        == "partial_corporate_action_adjustment"
+    )
+
+
+def test_overview_quality_is_partial_when_adjustment_factor_is_inconsistent(session):
+    _published_run(session)
+    rows = _prices("SPY", [100.0, 101.0], reconciled=True)
+    rows[-1].adjustment_factor = 0.9
+    rows[-1].content_hash = price_row_content_hash(
+        {
+            field: getattr(rows[-1], field)
+            for field in (
+                "symbol",
+                "date",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "adj_close",
+                "adjustment_factor",
+                "dividend_cash",
+                "split_ratio",
+                "provider",
+                "source_timestamp",
+                "normalization_version",
+            )
+        }
+    )
     session.add_all(rows)
     session.commit()
 

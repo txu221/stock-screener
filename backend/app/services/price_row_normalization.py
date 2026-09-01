@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from hashlib import sha256
-import json
 from typing import Any, Mapping
 
 import pandas as pd
 
+from app.domain.market_intelligence.price_provenance import price_row_content_hash
 from app.infra.serialization import finite_float_or_none
 
 OHLC_COLUMNS = ("Open", "High", "Low", "Close")
@@ -100,36 +99,6 @@ def _timestamp_or_none(value: datetime | str | None) -> datetime | None:
 
 def _finite_or_none(value: Any) -> float | None:
     return finite_float_or_none(value)
-
-
-def price_row_content_hash(evidence: Mapping[str, Any]) -> str:
-    """Return a stable hash for the provider evidence carried by one price row."""
-    content = {
-        "symbol": evidence.get("symbol"),
-        "date": evidence.get("date").isoformat() if isinstance(evidence.get("date"), date) else evidence.get("date"),
-        "open": evidence.get("open"),
-        "high": evidence.get("high"),
-        "low": evidence.get("low"),
-        "close": evidence.get("close"),
-        "volume": evidence.get("volume"),
-        "adj_close": evidence.get("adj_close"),
-        "adjustment_factor": evidence.get("adjustment_factor"),
-        "dividend_cash": evidence.get("dividend_cash"),
-        "split_ratio": evidence.get("split_ratio"),
-        "provider": evidence.get("provider"),
-        "source_timestamp": _timestamp_as_utc_iso(evidence.get("source_timestamp")),
-        "normalization_version": evidence.get("normalization_version"),
-    }
-    return sha256(
-        json.dumps(content, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    ).hexdigest()
-
-
-def _timestamp_as_utc_iso(value: Any) -> str | None:
-    timestamp = _timestamp_or_none(value)
-    if timestamp is None:
-        return None
-    return timestamp.astimezone(timezone.utc).isoformat()
 
 
 def stock_price_row_from_ohlcv(

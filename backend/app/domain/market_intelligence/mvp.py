@@ -8,6 +8,8 @@ import math
 from types import MappingProxyType
 from typing import Iterable, Mapping, Protocol, Sequence
 
+from app.domain.market_intelligence.price_provenance import price_row_content_hash
+
 
 MVP_METRIC_VERSION = "market_intelligence_mvp_v1"
 ETF_STRENGTH_VERSION = "etf_strength_v1"
@@ -68,6 +70,44 @@ class DailyPriceLike(Protocol):
 def _has_reconciled_price_provenance(row: object) -> bool:
     content_hash = getattr(row, "content_hash", None)
     revision_number = getattr(row, "revision_number", None)
+    close = _finite_positive(getattr(row, "close", None))
+    adjusted_close = _finite_positive(getattr(row, "adj_close", None))
+    adjustment_factor = _finite_positive(getattr(row, "adjustment_factor", None))
+    if close is None or adjusted_close is None or adjustment_factor is None:
+        return False
+    expected_factor = adjusted_close / close
+    if not math.isclose(
+        adjustment_factor,
+        expected_factor,
+        rel_tol=1e-9,
+        abs_tol=1e-12,
+    ):
+        return False
+
+    hash_evidence = {
+        field: getattr(row, field, None)
+        for field in (
+            "symbol",
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "adj_close",
+            "adjustment_factor",
+            "dividend_cash",
+            "split_ratio",
+            "provider",
+            "source_timestamp",
+            "normalization_version",
+        )
+    }
+    try:
+        expected_hash = price_row_content_hash(hash_evidence)
+    except (TypeError, ValueError):
+        return False
+
     return (
         getattr(row, "provider", None) == "yahoo"
         and getattr(row, "source_timestamp", None) is not None
@@ -76,15 +116,10 @@ def _has_reconciled_price_provenance(row: object) -> bool:
         and getattr(row, "price_basis", None) == _RECONCILED_PRICE_BASIS
         and isinstance(content_hash, str)
         and len(content_hash) == 64
-        and all(
-            character in "0123456789abcdef"
-            for character in content_hash.lower()
-        )
+        and content_hash == expected_hash
         and isinstance(revision_number, int)
         and revision_number >= 0
         and getattr(row, "reconciled_at", None) is not None
-        and _finite_positive(getattr(row, "adj_close", None)) is not None
-        and _finite_positive(getattr(row, "adjustment_factor", None)) is not None
     )
 
 
