@@ -1,11 +1,14 @@
 # MARKET INTELLIGENCE PRODUCTION HARDENING v2 COMPLETE
 
-Status: local closeout verification complete; final GitHub Actions evidence pending
+Status: implementation and closeout verification complete. The implementation
+evidence is recorded below; the later documentation-only head and its checks are
+reported in the final delivery response to avoid a self-referential commit SHA.
 
 ## 1. Final SHA
 
-The final branch SHA will be recorded after the closeout documentation commit
-and final GitHub Actions run.
+The final implementation SHA is `7306ed23d908b5bdbcb282d3a0ac205ea05ebe1f`.
+The later closeout commit changes documentation/evidence only; the exact final
+branch head is reported by `git status` and the final delivery response.
 
 ## 2. Draft PR state
 
@@ -51,11 +54,14 @@ total-return index.
 
 Every distinct provider row is content-addressed. A changed historical download
 appends a numbered revision and updates the current row within one transaction;
-identical evidence is idempotent. ORM guards and a PostgreSQL trigger reject
-revision UPDATE/DELETE. The ledger has no parent foreign key, so deleting a
-current price row cannot cascade-delete historical evidence.
-Re-ingesting after an independently deleted current row continues at the
-retained ledger's maximum revision plus one, avoiding a revision-zero collision.
+only evidence identical to the current materialized row is idempotent. A
+provider sequence A-to-B-to-A therefore records revision 2 and restores A as
+current instead of confusing historical recurrence with replay. ORM guards and
+a PostgreSQL trigger reject revision UPDATE/DELETE. The ledger has no parent
+foreign key, so deleting a current price row cannot cascade-delete historical
+evidence. Re-ingesting evidence equal to the retained latest revision rebuilds
+the missing current materialization without duplicating the ledger; a retained
+older revision reappearing after a newer one receives the next revision number.
 An unproven provider-less/native refresh cannot downgrade a reconciled current
 row.
 
@@ -136,18 +142,18 @@ rows.
 
 ## 16. API p50/p95
 
-Historical GitHub Actions run `33449989745` excluded one warm-up and measured 20
-requests per family before the closeout fixture exercised full v2 hash
-verification:
+GitHub Actions run `33567003218` excluded one warm-up and measured 20 requests
+per family against PostgreSQL 16.15 with full valid v2 provenance on every
+synthetic price row:
 
 | Family | p50 ms | p95 ms | Worst ms |
 | --- | ---: | ---: | ---: |
-| Overview | 39.183 | 39.816 | 40.115 |
-| Movers | 668.927 | 681.450 | 686.844 |
-| ETFs | 67.638 | 70.996 | 75.763 |
-| Sectors latest | 8.162 | 8.580 | 8.840 |
-| Sectors history | 183.102 | 202.283 | 530.799 |
-| Sectors health | 21.065 | 21.712 | 21.789 |
+| Overview | 43.391 | 44.384 | 44.661 |
+| Movers | 444.842 | 799.767 | 802.126 |
+| ETFs | 98.201 | 101.175 | 107.270 |
+| Sectors latest | 8.067 | 8.378 | 8.803 |
+| Sectors history | 182.192 | 183.733 | 185.859 |
+| Sectors health | 21.129 | 21.630 | 21.636 |
 
 These are comparison-only in-process production-router/PostgreSQL measurements. They include
 routing, dependency overrides, ORM materialization, application logic, SQL, and
@@ -157,17 +163,24 @@ serialization, but exclude network/TLS/Uvicorn and real authentication.
 
 All six read families enforce a common unrounded p95 below 1000 ms in the
 dedicated PostgreSQL 16 job. The threshold was selected after the first
-20-sample baseline and leaves conservative shared-runner headroom without hiding
-a full-second regression. Run `33449989745` passed the earlier path; final-head
-full-provenance evidence is pending the closeout push and is authoritative.
+20-sample baseline and still leaves 200.233 ms (25.0%) above the final
+full-provenance maximum p95 without hiding a full-second regression. Run
+`33567003218` completed with enforcement enabled and is the authoritative
+implementation evidence.
 
 ## 18. Query optimizations
 
-The slowest observed query was the Movers price load. `EXPLAIN (ANALYZE,
-BUFFERS, FORMAT JSON)` used existing index `uix_symbol_date`, returned 21,500
-rows, completed in 7.428 ms in the enforced run, hit 1,601 shared buffers, and
-used no shared reads or temporary I/O. Evidence did not justify another index,
-so none was added. Sector history's 182 SELECTs/request is a documented N+1
+The slowest observed query was the Movers price load. The reader now projects
+only the 18 fields required by metrics/provenance and does not materialize
+`StockPrice` ORM entities. Its RVOL20 input is bounded to 42 calendar days,
+returning 15,500 rows/31 sessions per equity instead of 21,500 rows while still
+retaining ten sessions beyond the required current plus 20 prior sessions.
+`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` used `ix_stock_prices_date`, completed
+in 21.500 ms, hit 1,114 shared buffers, and used no shared reads. Its explicit
+ordering performed a 3,928 kB external merge sort (491 temporary blocks read,
+492 written), but SQL was only 14.0% of Movers API time. Evidence did not justify
+another write-amplifying index for a query selecting 500 of 528 symbols, so none
+was added. Sector history's 182 SELECTs/request remains a documented N+1
 follow-up; it meets the initial SLO but should be batched in a separate change.
 
 ## 19. Cache strategy
@@ -214,7 +227,12 @@ close on weekdays and supports manual dispatch. It has read-only repository
 permission, persists no application data, starts no database/Redis/Celery
 service, runs no migration/deployment, and executes only the live Yahoo contract
 test. The heavier Yahoo plus real Celery integration remains explicit manual
-opt-in so normal pushes do not duplicate provider pressure.
+opt-in so normal pushes do not duplicate provider pressure. Manual run
+`33591441325` passed the fixed 12-symbol Yahoo contract and the real
+broker-worker/idempotent-rerun test on implementation commit `7306ed23`.
+The validator uses exact completed-session anchors: a provider history gap
+produces unavailable metrics/PARTIAL evidence rather than a `KeyError`, a
+forward-fill, or a compressed-session calculation.
 
 ## 24. Data-quality UI disclosure
 
@@ -241,58 +259,66 @@ normalization versioning, observability, error taxonomy and timings,
 completed-session freshness, weekend/holiday handling, health/readiness, cache
 generation/invalidation/fallback/stampede behavior, performance harness
 contracts, and UI/API quality labels. The final comprehensive Windows closeout
-selection passed 458 tests, including all 41 Yahoo ingestion tests and every
-review-remediation path. It used an in-process `resource` module shim because
-that Unix-only stdlib module is absent on Windows; no production code, skip, or
-xfail was added.
+selection passed 458 tests before the final read-path changes. The final
+expanded hardening selection passed 525 tests and deselected 16 explicitly
+service-backed/live cases. It includes the hash memo, lightweight price-row
+projection, bounded metric-window quality, retry provider contracts,
+A-to-B-to-A price revisions, deleted-current restoration, and exact-session
+live-validation gaps.
+The complete Linux backend suite is split across four PR jobs and is the final
+no-regression authority. The Windows closeout used an in-process `resource`
+module shim because that Unix-only stdlib module is absent on Windows; no
+production code, skip, or xfail was added.
 
 ## 26. Frontend tests
 
 The final Windows closeout run passed all 37 tests in the 11 Market Intelligence
 frontend test files. ESLint completed with zero errors and four unrelated
-existing warnings. The native-Windows
-full run passed 650 and reported nine unrelated failures: a deterministic legacy
-`D:\\D:\\...` fixture-path defect and contended `App.static` timeouts; the latter
-file passed 9/9 alone. Linux PR CI previously passed the complete frontend test
-and Playwright smoke jobs. Final PR evidence will be recorded after the closeout
-push.
+existing warnings. A pre-existing Static Scan test had read a render spy before
+the corresponding component was guaranteed ready under CI contention; a
+one-line `waitFor` now makes that synchronization explicit, and the file passed
+three consecutive local runs (12/12 tests). The native-Windows full run passed
+650 and still reported the unrelated legacy `D:\\D:\\...` fixture-path defect
+and contended `App.static` timeouts; the latter file passed 9/9 alone. Linux PR
+CI is the final complete frontend and Playwright-smoke authority.
 
 ## 27. Integration tests
 
-Run `33449989745` passed 11 PostgreSQL migration/publication/concurrency/API
-tests, real Redis connectivity, 52 service-independent tests, the real Celery
-worker/idempotent rerun, the live Yahoo contract, the enforced PostgreSQL SLO,
-frontend tests, lint, and production build. The final Windows closeout run also
-passed all 53 currently selected service-independent integration tests (16
-service-backed/live tests deselected by marker). Final Task 8/9 hosted evidence
-will be recorded after the closeout push.
+Run `33567003218` passed PostgreSQL migration/publication/concurrency/API tests,
+real Redis connectivity, the deterministic Market Intelligence suite, all 53
+currently selected service-independent integration tests, the enforced
+full-provenance PostgreSQL SLO, frontend tests, lint, and production build. The
+real Celery worker/idempotent rerun and live Yahoo contract both passed in
+manual opt-in run `33591441325`.
 
 ## 28. GitHub Actions
 
 The Market Intelligence workflow supplies PostgreSQL 16, Redis 7, real Alembic
 migrations, transaction/concurrency tests, deterministic tests, a dedicated
 measured SLO job, optional real Celery/Yahoo validation, frontend checks, and
-failure-safe artifacts. Run `33449989745` is fully green. Final workflow IDs will
-be recorded after closeout.
+failure-safe artifacts. Final implementation run `33567003218` is green on
+commit `7306ed23`; manual run `33591441325` supplies the opt-in Yahoo/Celery
+evidence without adding provider pressure to normal pushes.
 
 ## 29. PR CI
 
-General PR CI at `f98e4a03` passed quality gates, frontend lint/test/Playwright,
-assistant compose smoke, and three of four backend shards. The one failure was a
-stale Yahoo test that omitted the now-required explicit provider provenance; no
-production defect existed. Commit `b46da482` updates that test and proves
-append-only legacy plus Yahoo revisions. Final all-green PR CI evidence is
-pending the closeout push.
+General PR CI validates assistant compose, four complete backend-unit shards,
+backend quality gates, frontend lint/test, and Playwright smoke. A stale Yahoo
+test was updated earlier to supply the now-required explicit provider
+provenance, and the final Static Scan render-spy test now waits for component
+readiness rather than racing it. PR CI run `33567008342` is fully green on
+commit `7306ed23`.
 
 ## 30. Production build
 
 The final Windows build compiled 2,515 modules successfully in 1 minute 32
-seconds. Final Linux PR build evidence will be recorded after closeout.
+seconds. Linux run `33567003218` also passed the production build, and PR run
+`33567008342` passed frontend lint, tests, and Playwright smoke.
 
 ## 31. Security
 
 No credential, token, device identifier, or machine-local state is included.
-The final local scan examined 81 changed/untracked files and found zero files
+The final local scan examined 86 changed/untracked files and found zero files
 matching high-confidence private-key, AWS access-key, GitHub token, Slack token,
 or JWT patterns. `git diff --check` reported no whitespace error. No production
 permission is granted to the Yahoo canary, and checkout credentials are not
@@ -300,8 +326,10 @@ persisted there.
 
 ## 32. Dependency assessment
 
-`npm audit --json` reports the unchanged baseline of 21 package nodes: 1
-critical, 16 high, 3 moderate, and 1 low. The critical Vitest issue is dev-only;
+`npm audit --json` reports 22 package nodes: 1 critical, 17 high, 3 moderate,
+and 1 low. This is one additional `browserslist` advisory compared with the
+earlier evidence, despite an unchanged lockfile, so it is an advisory-feed
+change rather than a hardening dependency change. The critical Vitest issue is dev-only;
 `npm audit --omit=dev` reports zero critical, six high, two moderate. Direct
 runtime follow-ups are Axios and React Router; remaining production-graph
 findings include Node-only Axios transitive paths and Recharts/Lodash. Full
@@ -312,8 +340,9 @@ manifest or lockfile.
 
 ## 33. Files changed
 
-Relative to hardening base `6d75e8a4`, the closeout range changes 81 files with
-10,769 insertions and 491 deletions. Scope is limited to additive
+Relative to hardening base `6d75e8a4`, the implementation range through
+`7306ed23` changes 86 files with 11,140 insertions and 514 deletions. Scope is
+limited to additive
 migrations/models, existing Market Intelligence provider,
 pipeline/read/cache/API/task seams, targeted React disclosure, CI workflows,
 fixtures/tests, and documentation. It adds no new application, authentication,
@@ -321,7 +350,7 @@ market universe, page, or external dependency.
 
 ## 34. Commits
 
-The 26-commit hardening series begins at `07fed279` and uses small design,
+The 32-commit implementation series begins at `07fed279` and uses small design,
 schema, normalization, provider, observability, health, cache, SLO, regression,
 UI-quality, review-fix, and closeout-documentation commits. The exact ordered
 list remains available from `git log --oneline 6d75e8a4..HEAD`.
@@ -332,8 +361,6 @@ list remains available from `git log --oneline 6d75e8a4..HEAD`.
   does not eliminate provider outage or policy risk.
 - Yahoo adjusted close is a provider-adjusted total-return proxy, not an
   independently reconciled pure-price or official total-return index.
-- The scheduled read-only canary needs its first post-commit scheduled/manual
-  execution.
 - Sector history performs 182 SELECTs/request and should be batched even though
   it meets the initial SLO.
 - The SLO excludes network, TLS, reverse proxy, Uvicorn scheduling, and real auth
@@ -341,7 +368,7 @@ list remains available from `git log --oneline 6d75e8a4..HEAD`.
 - The existing Windows fixture-path and contended full-frontend-suite failures
   remain platform baseline items; Linux CI is authoritative for final
   no-regression evidence.
-- The 21 npm advisories remain recorded technical debt; this phase intentionally
+- The 22 npm advisories remain recorded technical debt; this phase intentionally
   did not mix dependency upgrades with correctness changes.
 - Universe coverage was not expanded, and no AI, news, options, institutional
   flow, prediction, alert, recommendation, or backtest feature was added.

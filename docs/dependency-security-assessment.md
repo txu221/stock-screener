@@ -1,12 +1,15 @@
 # Dependency security assessment
 
-Date: 2026-09-01
+Date: 2026-09-02
 Scope: Market Intelligence Production Hardening v2 on `feat/market-intelligence-engine`
 
 ## Executive assessment
 
-`npm audit --json` reports the existing frontend baseline of 21 vulnerable
-package nodes: 1 critical, 16 high, 3 moderate, and 1 low. The hardening range
+`npm audit --json` reports the current frontend advisory-database view of 22
+vulnerable package nodes: 1 critical, 17 high, 3 moderate, and 1 low. The count
+increased by one high-severity `browserslist` advisory while the lockfile was
+unchanged; this is an advisory-feed change, not a hardening dependency change.
+The hardening range
 from `6d75e8a4` through the assessed commit changes no Python or npm dependency
 manifest or lockfile. `python -m pip check` reports no broken requirements.
 
@@ -36,7 +39,7 @@ Observed totals:
 
 | Scope | Critical | High | Moderate | Low | Total |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Full installed frontend graph | 1 | 16 | 3 | 1 | 21 |
+| Full installed frontend graph | 1 | 17 | 3 | 1 | 22 |
 | `--omit=dev` production graph | 0 | 6 | 2 | 0 | 8 |
 
 The full graph contains 623 packages according to npm metadata: 239 production,
@@ -68,7 +71,7 @@ first isolated remediation batch.
 
 ## High findings limited to development/build/test paths
 
-The remaining high package nodes are `vite`, `rollup`, `postcss`, `nanoid`,
+The remaining high package nodes are `vite`, `rollup`, `postcss`, `browserslist`, `nanoid`,
 `picomatch`, `undici`, `js-yaml`, `flatted`, `minimatch`, and
 `brace-expansion`. They are reached through Vite/Vitest/jsdom/ESLint and related
 build or test tooling. Their reported attack classes include development-server

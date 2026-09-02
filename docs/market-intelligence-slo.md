@@ -2,13 +2,12 @@
 
 ## Current status
 
-The dedicated PostgreSQL 16 job is configured to enforce a common **1000 ms
-p95** ceiling for all six read families. This initial threshold is derived from
-the completed 20-sample baseline in GitHub Actions run
+The dedicated PostgreSQL 16 job enforces a common **1000 ms p95** ceiling for
+all six read families. This initial threshold was derived from the completed
+20-sample baseline in GitHub Actions run
 [`33430844324`](https://github.com/txu221/stock-screener/actions/runs/33430844324),
 where the highest p95 was 717.408 ms and the highest single request was
-721.843 ms. The threshold leaves 282.592 ms (39.4%) above the highest measured
-p95 for shared-runner variation without hiding a full-second regression.
+721.843 ms.
 
 Historical GitHub Actions run
 [`33449989745`](https://github.com/txu221/stock-screener/actions/runs/33449989745)
@@ -16,11 +15,15 @@ then passed with enforcement enabled on the pre-closeout fixture. The same run a
 PostgreSQL/Redis integration job in the accumulated multi-schema environment,
 including the relation-scoped trigger lookup.
 
-The closeout fixture now gives every synthetic price row the complete v2
+The closeout fixture gives every synthetic price row the complete v2
 provider, source timestamp, adjustment factor, action fields, normalization,
 price basis, revision, reconciliation timestamp, and recomputable content hash.
-The final reviewed-head run must therefore measure full provenance verification;
-it supersedes the historical latency table for completion evidence.
+Full-provenance implementation run
+[`33567003218`](https://github.com/txu221/stock-screener/actions/runs/33567003218)
+passed all six enforced families. Its highest p95 was Movers at 799.767 ms, so
+the unchanged ceiling leaves 200.233 ms (25.0%) of measured p95 headroom while
+still rejecting a full-second regression. This run supersedes the historical
+latency table for completion evidence.
 
 No index was added. Any index change requires a captured PostgreSQL plan showing
 a specific scan, sort, lookup, or buffer cost and measured before/after evidence.
@@ -65,12 +68,14 @@ then measured sequentially 20 times:
 
 Warm-ups occur before SQL capture begins and are excluded. Every measured
 family/request must capture at least one relevant PostgreSQL `SELECT` or the test
-fails. The baseline JSON contains:
+fails.
 
 The warm-up also populates the bounded, full-evidence-keyed SHA-256 verification
 memo used by production reads. This models a long-running worker after its first
 request. A changed row produces a different evidence key and is rehashed; the
 memo does not cache response payloads or suppress PostgreSQL reads.
+
+The baseline JSON contains:
 
 - per-family sample count, p50, p95, and worst API latency;
 - per-request API latency, query count, aggregate SQL time, and API-minus-SQL
@@ -232,3 +237,39 @@ estimated, completed in 7.428 ms, hit 1,601 shared buffers, and performed no
 shared reads or temporary I/O. This second run confirms the no-new-index
 decision and leaves the sector-history N+1 shape as an application batching
 follow-up rather than an index problem.
+
+## Final full-provenance enforced run
+
+Run
+[`33567003218`](https://github.com/txu221/stock-screener/actions/runs/33567003218)
+measured final implementation commit `7306ed23` on PostgreSQL 16.15 and Alembic head
+`20260829_0035`. It used the same 47,520-row deterministic dataset, with valid
+v2 provenance and content hashes on every price row. The reader selected only
+the 18 fields required by metrics and provenance instead of materializing full
+`StockPrice` entities. Movers also bounded its RVOL20 input to 42 calendar days,
+which returned 15,500 rows (31 observed sessions per equity) while retaining a
+ten-session buffer beyond the required current plus 20 prior sessions.
+
+| Family | SELECTs/request | p50 ms | p95 ms | worst ms | aggregate SQL ms | aggregate API-minus-SQL ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| overview | 3 | 43.391 | 44.384 | 44.661 | 53.440 | 816.308 |
+| movers | 5 | 444.842 | 799.767 | 802.126 | 1,336.403 | 8,625.304 |
+| ETFs | 3 | 98.201 | 101.175 | 107.270 | 201.407 | 1,777.214 |
+| sectors/latest | 5 | 8.067 | 8.378 | 8.803 | 52.669 | 109.639 |
+| sectors/history | 182 | 182.192 | 183.733 | 185.859 | 1,352.539 | 2,290.186 |
+| sectors/health | 4 | 21.129 | 21.630 | 21.636 | 103.153 | 319.501 |
+
+The slowest captured SELECT was the Movers price projection at 72.334 ms. Its
+replayed plan used `ix_stock_prices_date`, returned 15,500 rows against 15,625
+estimated, completed in 21.500 ms, hit 1,114 shared buffers, and performed no
+shared reads. The final `(symbol, date)` ordering used a 3,928 kB external merge
+sort (491 temporary blocks read and 492 written). SQL remained only 14.0% of
+Movers API time; most cost remained Python row handling, provenance checks, metric
+assembly, and serialization. The measured projection/window changes reduced
+Movers p50 from 668.927 to 464.092 ms without a new index. The small bounded sort
+does not justify another write-amplifying index for a query selecting 500 of 528
+symbols; it remains visible in the artifact for future reassessment.
+
+Recorder after-cursor bookkeeping was 20.230465 ms across 4,040 SELECTs, or
+0.005008 ms/SELECT. The artifact records `status=completed`,
+`slo.enforced=true`, and an unrounded threshold comparison for every family.
