@@ -112,6 +112,28 @@ class FeatureRunRepository(abc.ABC):
         ...
 
     @abc.abstractmethod
+    def update_stats(
+        self,
+        run_id: int,
+        stats: RunStats,
+    ) -> FeatureRunDomain:
+        """Replace measured run statistics before transaction commit."""
+        ...
+
+    @abc.abstractmethod
+    def publish_atomically_if_not_older(
+        self,
+        run_id: int,
+        pointer_key: str,
+    ) -> FeatureRunDomain:
+        """Publish while preventing a named latest pointer from moving backward.
+
+        Implementations must coordinate writers even when the pointer does not
+        yet exist and use a deterministic same-session revision policy.
+        """
+        ...
+
+    @abc.abstractmethod
     def repoint_published(
         self,
         run_id: int,

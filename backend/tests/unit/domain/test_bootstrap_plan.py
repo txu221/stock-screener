@@ -16,6 +16,7 @@ def test_us_bootstrap_plan_includes_us_only_industry_group_seed() -> None:
         "prices",
         "price_warmup",
         "fundamentals",
+        "market_intelligence",
         "market_rs",
         "breadth",
         "exposure",
@@ -25,6 +26,10 @@ def test_us_bootstrap_plan_includes_us_only_industry_group_seed() -> None:
     ]
     assert plan.market_plans[0].stages[1].queue_kind == BootstrapQueueKind.MARKET_JOBS
     assert plan.market_plans[0].stages[3].queue_kind == BootstrapQueueKind.CELERY
+    assert (
+        plan.market_plans[0].stages[5].operation
+        == BootstrapOperation.CALCULATE_SECTOR_INTELLIGENCE_SNAPSHOT
+    )
     assert (
         plan.market_plans[0].stages[-1].operation
         == BootstrapOperation.ENSURE_GROUP_HISTORY

@@ -618,11 +618,15 @@ def weekly_full_refresh(self, market: str | None = None):
             try:
                 batch_results = _fetch_with_backoff(bulk_fetcher, batch_symbols, period="2y", market=market)
                 batch_to_store = {}
+                provider_by_symbol = {}
                 for symbol, data in batch_results.items():
                     if not data.get('has_error') and data.get('price_data') is not None:
                         price_df = data['price_data']
                         if not price_df.empty:
                             batch_to_store[symbol] = price_df
+                            provider = str(data.get("provider") or "").strip().lower()
+                            if provider:
+                                provider_by_symbol[symbol] = provider
                             refreshed += 1
                             batch_successes.append(symbol)
                         else:
@@ -637,7 +641,11 @@ def weekly_full_refresh(self, market: str | None = None):
                         failure_details[symbol] = data.get('error', 'Unknown error')
                 # Batch store in Redis (pipeline) + DB (single transaction)
                 if batch_to_store:
-                    price_cache.store_batch_in_cache(batch_to_store, also_store_db=True)
+                    price_cache.store_batch_in_cache(
+                        batch_to_store,
+                        also_store_db=True,
+                        provider_by_symbol=provider_by_symbol,
+                    )
             except SoftTimeLimitExceeded:
                 raise
             except Exception as e:
@@ -1458,11 +1466,15 @@ def _force_refresh_stale_intraday_impl(task, symbols: Optional[List[str]] = None
 
                 # Separate successes from failures, then batch-store
                 batch_to_store = {}
+                provider_by_symbol = {}
                 for symbol, data in batch_results.items():
                     if not data.get('has_error') and data.get('price_data') is not None:
                         price_df = data['price_data']
                         if not price_df.empty:
                             batch_to_store[symbol] = price_df
+                            provider = str(data.get("provider") or "").strip().lower()
+                            if provider:
+                                provider_by_symbol[symbol] = provider
                             refreshed += 1
                             logger.debug(f"✓ {symbol}: {len(price_df)} rows refreshed")
                         else:
@@ -1477,7 +1489,11 @@ def _force_refresh_stale_intraday_impl(task, symbols: Optional[List[str]] = None
 
                 # Batch store in Redis (pipeline) + DB (single transaction)
                 if batch_to_store:
-                    price_cache.store_batch_in_cache(batch_to_store, also_store_db=True)
+                    price_cache.store_batch_in_cache(
+                        batch_to_store,
+                        also_store_db=True,
+                        provider_by_symbol=provider_by_symbol,
+                    )
 
             except Exception as e:
                 raise_if_transient_database_error(e)

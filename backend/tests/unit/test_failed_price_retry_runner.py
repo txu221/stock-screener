@@ -129,7 +129,14 @@ def test_runner_fetches_and_persists_bounded_batches():
     timeline = []
 
     class PriceCache:
-        def store_batch_in_cache(self, price_data, *, also_store_db):
+        def store_batch_in_cache(
+            self,
+            price_data,
+            *,
+            also_store_db,
+            provider_by_symbol=None,
+        ):
+            assert provider_by_symbol == {}
             timeline.append(("store", tuple(price_data), also_store_db))
 
     def fetch(_fetcher, symbols, **_kwargs):
@@ -203,8 +210,15 @@ def test_runner_reschedules_current_and_remaining_symbols_after_store_failure():
     class PriceCache:
         stores = 0
 
-        def store_batch_in_cache(self, _price_data, *, also_store_db):
+        def store_batch_in_cache(
+            self,
+            _price_data,
+            *,
+            also_store_db,
+            provider_by_symbol=None,
+        ):
             assert also_store_db is True
+            assert provider_by_symbol == {}
             self.stores += 1
             if self.stores == 2:
                 raise RuntimeError("redis unavailable")

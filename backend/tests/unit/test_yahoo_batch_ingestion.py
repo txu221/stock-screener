@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import pickle
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import sqlite3
 from unittest.mock import MagicMock
 import pandas as pd
@@ -21,7 +21,7 @@ from app.domain.providers.data_plan import (
 )
 from app.config import settings
 from app.database import Base
-from app.models.stock import StockPrice
+from app.models.stock import StockPrice, StockPriceRevision
 from app.models.stock_universe import (
     StockUniverse,
     UNIVERSE_STATUS_ACTIVE,
@@ -109,6 +109,7 @@ def test_fetch_batch_prices_uses_required_yfinance_flags(monkeypatch):
     results = fetcher.fetch_batch_prices(["AAPL"], period="1y")
 
     assert results["AAPL"]["has_error"] is False
+    assert results["AAPL"]["provider"] == "yahoo"
     assert captured["threads"] is False
     assert captured["progress"] is False
     assert captured["group_by"] == "ticker"
@@ -774,7 +775,11 @@ def test_price_cache_bulk_fallback_passes_market_to_batch_fetcher(monkeypatch):
     db.close()
 
     service = PriceCacheService(redis_client=None, session_factory=TestingSessionLocal)
-    monkeypatch.setattr(service, "store_batch_in_cache", lambda payload, also_store_db=True: len(payload))
+    monkeypatch.setattr(
+        service,
+        "store_batch_in_cache",
+        lambda payload, also_store_db=True, **_kwargs: len(payload),
+    )
     calls = []
     price_frame = _price_df(date(2026, 4, 29), 105.0)
 
@@ -889,13 +894,42 @@ def test_store_in_database_replaces_latest_day_row(monkeypatch):
     db.commit()
     db.close()
 
-    service._store_in_database("AAPL", _price_df(target_day, 110.0))
+    reconciled_at = datetime(2026, 3, 19, 12, tzinfo=timezone.utc)
+    service._store_in_database(
+        "AAPL",
+        _price_df(target_day, 110.0),
+        provider="yahoo",
+        reconciled_at=reconciled_at,
+    )
 
     db = TestingSessionLocal()
     rows = db.query(StockPrice).filter(StockPrice.symbol == "AAPL").all()
+    revisions = (
+        db.query(StockPriceRevision)
+        .filter(StockPriceRevision.symbol == "AAPL")
+        .order_by(StockPriceRevision.revision_number)
+        .all()
+    )
     assert len(rows) == 1
     assert rows[0].close == 110.0
     assert rows[0].adj_close == 109.5
+    assert rows[0].adjustment_factor == pytest.approx(109.5 / 110.0)
+    assert rows[0].provider == "yahoo"
+    assert rows[0].price_basis == "yahoo_adjusted_close_provider_volume"
+    assert rows[0].reconciled_at is not None
+    assert rows[0].revision_number == 1
+    assert [
+        (
+            revision.revision_number,
+            revision.adj_close,
+            revision.provider,
+            revision.price_basis,
+        )
+        for revision in revisions
+    ] == [
+        (0, 90.5, None, "legacy_unversioned"),
+        (1, 109.5, "yahoo", "yahoo_adjusted_close_provider_volume"),
+    ]
     db.close()
 
 
@@ -1001,7 +1035,11 @@ def test_get_many_reloads_after_close_if_redis_meta_marks_intraday_stale(monkeyp
     monkeypatch.setattr(module, "is_market_open", lambda now=None: False)
     monkeypatch.setattr(service, "_get_expected_data_date", lambda: date(2026, 3, 18))
     monkeypatch.setattr(service, "_get_many_from_database", lambda symbols, period: {"AAPL": (None, None)})
-    monkeypatch.setattr(service, "store_batch_in_cache", lambda batch_data, also_store_db=True: None)
+    monkeypatch.setattr(
+        service,
+        "store_batch_in_cache",
+        lambda batch_data, also_store_db=True, **_kwargs: None,
+    )
 
     fetched_symbols = []
 
@@ -1159,7 +1197,7 @@ def test_bulk_fallback_writes_fetched_prices_to_symbol_market_scope(monkeypatch)
     monkeypatch.setattr(
         service,
         "store_batch_in_cache",
-        lambda batch_data, also_store_db=True, market=None: stored.append((set(batch_data), market)),
+        lambda batch_data, also_store_db=True, market=None, **_kwargs: stored.append((set(batch_data), market)),
     )
 
     result = service._resolve_bulk_fallback(

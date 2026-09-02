@@ -488,10 +488,14 @@ class StaticDailyPriceRefreshService:
                 market=market,
             )
             batch_to_store: dict[str, Any] = {}
+            provider_by_symbol: dict[str, str] = {}
             for symbol, payload in batch_results.items():
                 price_data = payload.get("price_data")
                 if not payload.get("has_error") and price_data is not None and not price_data.empty:
                     batch_to_store[symbol] = price_data
+                    provider = str(payload.get("provider") or "").strip().lower()
+                    if provider:
+                        provider_by_symbol[symbol] = provider
                     refreshed_count += 1
                 else:
                     failed_count += 1
@@ -502,6 +506,7 @@ class StaticDailyPriceRefreshService:
                     batch_to_store,
                     also_store_db=True,
                     market=market,
+                    provider_by_symbol=provider_by_symbol,
                 )
             print(
                 f"[static-daily prices] Batch {batch_index}/{total_group_batches} complete: "
@@ -558,16 +563,21 @@ class StaticDailyPriceRefreshService:
                 market=market,
             )
             recovered_payload: dict[str, Any] = {}
+            provider_by_symbol: dict[str, str] = {}
             for symbol, payload in retry_results.items():
                 price_data = payload.get("price_data")
                 if not payload.get("has_error") and price_data is not None and not price_data.empty:
                     recovered_payload[symbol] = price_data
+                    provider = str(payload.get("provider") or "").strip().lower()
+                    if provider:
+                        provider_by_symbol[symbol] = provider
                     recovered += 1
             if recovered_payload:
                 self._price_cache.store_batch_in_cache(
                     recovered_payload,
                     also_store_db=True,
                     market=market,
+                    provider_by_symbol=provider_by_symbol,
                 )
         still_failed = attempted - recovered
         print(

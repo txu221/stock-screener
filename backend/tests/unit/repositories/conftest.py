@@ -17,6 +17,7 @@ from app.database import Base
 # Force model registration so create_all picks up every table.
 import app.models.scan_result  # noqa: F401
 import app.infra.db.models.feature_store  # noqa: F401
+import app.infra.db.models.market_intelligence  # noqa: F401
 
 # Re-export shared helper so existing ``from .conftest import count_queries`` works.
 from tests.helpers.query_counter import count_queries  # noqa: F401

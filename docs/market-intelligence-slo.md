@@ -1,0 +1,275 @@
+# Market Intelligence read SLO
+
+## Current status
+
+The dedicated PostgreSQL 16 job enforces a common **1000 ms p95** ceiling for
+all six read families. This initial threshold was derived from the completed
+20-sample baseline in GitHub Actions run
+[`33430844324`](https://github.com/txu221/stock-screener/actions/runs/33430844324),
+where the highest p95 was 717.408 ms and the highest single request was
+721.843 ms.
+
+Historical GitHub Actions run
+[`33449989745`](https://github.com/txu221/stock-screener/actions/runs/33449989745)
+then passed with enforcement enabled on the pre-closeout fixture. The same run also passed the complete
+PostgreSQL/Redis integration job in the accumulated multi-schema environment,
+including the relation-scoped trigger lookup.
+
+The closeout fixture gives every synthetic price row the complete v2
+provider, source timestamp, adjustment factor, action fields, normalization,
+price basis, revision, reconciliation timestamp, and recomputable content hash.
+Full-provenance implementation run
+[`33567003218`](https://github.com/txu221/stock-screener/actions/runs/33567003218)
+passed all six enforced families. Its highest p95 was Movers at 799.767 ms, so
+the unchanged ceiling leaves 200.233 ms (25.0%) of measured p95 headroom while
+still rejecting a full-second regression. This run supersedes the historical
+latency table for completion evidence.
+
+No index was added. Any index change requires a captured PostgreSQL plan showing
+a specific scan, sort, lookup, or buffer cost and measured before/after evidence.
+
+## Database and dataset contract
+
+The performance job owns a fresh PostgreSQL 16 service and a database named
+exactly `market_intelligence_slo`. Before seeding, the harness connects and
+asserts all of the following:
+
+- `current_database()` exactly equals `market_intelligence_slo`;
+- the connected server major version is 16;
+- the live `alembic_version` rows exactly equal the repository Alembic heads.
+
+The job runs `python -m alembic upgrade head`; the harness does not use ORM
+`create_all`. The exact-name checks intentionally reject similar names such as
+`market_intelligence_slo_copy` before destructive seed work.
+
+The migrated database receives a deterministic synthetic S&P-universe workload:
+
+- 500 active US equities and one published feature row per equity;
+- bounded rank-decay market caps from $3 trillion to $5 billion;
+- 90 price sessions for the equities and fixed ETF universe;
+- 60 published sector-intelligence sessions with all 12 fixed symbols;
+- both production publication pointers targeting the latest successful run.
+- full valid v2 corporate-action provenance on every synthetic price row, so
+  read-quality classification cannot short-circuit on the first legacy row.
+
+## Request and SQL measurement
+
+The benchmark mounts the production v1 router at `/api/v1`. It explicitly
+overrides both the production database dependency and `require_server_session`,
+and bypasses the optional Redis payload cache. Each API family is warmed once,
+then measured sequentially 20 times:
+
+- `overview`
+- `movers`
+- `etfs`
+- `sectors/latest`
+- `sectors/history`
+- `sectors/health`
+
+Warm-ups occur before SQL capture begins and are excluded. Every measured
+family/request must capture at least one relevant PostgreSQL `SELECT` or the test
+fails.
+
+The warm-up also populates the bounded, full-evidence-keyed SHA-256 verification
+memo used by production reads. This models a long-running worker after its first
+request. A changed row produces a different evidence key and is rehashed; the
+memo does not cache response payloads or suppress PostgreSQL reads.
+
+The baseline JSON contains:
+
+- per-family sample count, p50, p95, and worst API latency;
+- per-request API latency, query count, aggregate SQL time, and API-minus-SQL
+  time;
+- per-family statement fingerprints, frequencies, and aggregate SQL time;
+- the slowest measured SELECT and its request/family identity;
+- measured after-cursor recorder bookkeeping overhead, in total and per SELECT.
+
+The recorder's bookkeeping is included in API latency and excluded from cursor
+SQL time. Its reported overhead covers statement/parameter observation work
+performed after the cursor returns. SQLAlchemy event dispatch, the before-cursor
+timer/context assignment, and the after-cursor timer read are not separately
+isolated; small portions can land in either the observed SELECT interval or
+API-minus-SQL. The JSON lists these unisolated components. API-minus-SQL also
+includes routing, overridden dependency resolution, ORM row materialization,
+application logic, and response serialization.
+
+The slowest measured SELECT is replayed with its captured bind parameters using
+`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`.
+
+## Benchmark boundary and exclusions
+
+Requests use `httpx.ASGITransport` in-process. The evidence includes FastAPI
+production-router matching, dependency-override resolution, handler execution,
+ORM work, PostgreSQL calls, and response serialization. It excludes:
+
+- Uvicorn or another ASGI server, worker scheduling, and process handoff;
+- socket/network latency, reverse proxies, and TLS;
+- production lifespan and main-application middleware;
+- real server-session authentication logic because that dependency is explicitly
+  overridden for deterministic measurement;
+- Redis and live-provider latency.
+
+This boundary is suitable for database/read-path regression evidence, not an
+end-user network-latency claim.
+
+## Failure evidence
+
+The baseline and plan JSON files are initialized before version validation and
+written from an exception-transparent finalizer. Version, migration, seed,
+warm-up, endpoint, query-capture, EXPLAIN, or SLO failures retain stage status,
+the exception type/message, and whatever samples/query observations were
+available. Artifact-write errors never replace an already-active pytest failure.
+
+## CI command and artifact
+
+The dedicated `market-intelligence-slo` job runs:
+
+```bash
+cd backend
+python -m alembic upgrade head
+MARKET_INTELLIGENCE_SLO_SAMPLE_COUNT=20 \
+MARKET_INTELLIGENCE_ENFORCE_SLO=1 \
+MARKET_INTELLIGENCE_SLO_P95_MS=1000 \
+MARKET_INTELLIGENCE_SLO_ARTIFACT_DIR="$RUNNER_TEMP/market-intelligence-slo-evidence" \
+python -m pytest \
+  tests/integration/market_intelligence/test_postgres_performance_slo.py \
+  -k postgresql_16_uncached_read_baseline_and_opt_in_slo \
+  -q -s
+```
+
+`set -o pipefail` ensures `tee` cannot hide pytest or migration failures.
+Metadata and upload steps use `if: always()`. Download
+`market-intelligence-slo-<github_run_id>`, which contains available partial or
+complete evidence:
+
+- `market-intelligence-slo-baseline.json`;
+- `market-intelligence-slowest-query-plan.json`;
+- migration and pytest logs;
+- run metadata and this document.
+
+The ordinary integration job runs the service-independent helper/workflow
+contracts but does not collect timing evidence.
+
+## Promotion to an enforceable SLO
+
+The first reviewed PostgreSQL 16 run established the initial threshold. For a
+new baseline or threshold change:
+
+1. Confirm all six families contain 20 successful measured requests and relevant
+   SELECT evidence.
+2. Inspect per-request counts and statement frequencies for N+1 behavior.
+3. Inspect SQL versus API-minus-SQL time to distinguish database cost from ORM,
+   application, and serialization cost.
+4. Inspect the slowest plan for scans, sorts, lookup cost, and buffer pressure.
+5. Repeat the run if runner noise makes the evidence questionable.
+6. Choose and document a conservative p95 threshold from reviewed evidence.
+
+Enforcement requires both `MARKET_INTELLIGENCE_ENFORCE_SLO=1` and a positive,
+evidence-derived `MARKET_INTELLIGENCE_SLO_P95_MS`. Comparisons use the unrounded
+p95; three-decimal rounding is serialization/display only. The dedicated job
+now sets both values to enforce the measured 1000 ms ceiling.
+
+## PostgreSQL 16 baseline results
+
+Run `33430844324` measured commit `ef1fdec7` against PostgreSQL 16.15 and Alembic
+head `20260829_0035`. The fresh `market_intelligence_slo` database contained 500
+equities, 528 total price symbols, 47,520 price rows (90 sessions per symbol),
+and 60 published sector sessions with 12 symbols each. One warm-up per family
+was excluded; every family then completed 20 uncached requests.
+
+| Family | SELECTs/request | p50 ms | p95 ms | worst ms | aggregate SQL ms | aggregate API-minus-SQL ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| overview | 3 | 34.406 | 36.111 | 37.708 | 43.924 | 646.144 |
+| movers | 5 | 671.817 | 717.408 | 721.843 | 886.050 | 10,707.824 |
+| ETFs | 3 | 60.660 | 82.767 | 448.268 | 132.111 | 1,464.120 |
+| sectors/latest | 5 | 8.395 | 9.236 | 9.455 | 48.745 | 120.861 |
+| sectors/history | 182 | 176.416 | 206.309 | 553.114 | 1,160.998 | 2,727.982 |
+| sectors/health | 4 | 19.129 | 20.385 | 30.232 | 85.063 | 306.279 |
+
+Query counts were constant across the 20 requests in each family. The
+`sectors/history` count is a follow-up concern: three statement fingerprints
+each ran 60 times per request, producing 182 SELECTs/request. Its SQL share was
+29.85% of API time, so batching/eager-loading should be investigated separately;
+an index does not remove that N+1 shape.
+
+The slowest observed SELECT belonged to `movers` and took 43.695 ms in request
+10. `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` used the existing
+`uix_symbol_date` index, returned 21,500 rows versus 21,398 estimated, completed
+the index scan in 5.849 ms and the plan in 6.627 ms, hit 1,601 shared buffers,
+and performed no shared reads, writes, or temporary I/O. Across movers requests,
+SQL was only 7.64% of API time; API-minus-SQL was 10,707.824 ms of 11,593.874 ms.
+The evidence therefore supports **no new index**. The difference between the
+captured SELECT duration and EXPLAIN execution also includes returning the full
+rowset through the driver, which EXPLAIN does not do.
+
+Two isolated worst-case samples were application-side rather than SQL-side:
+ETFs took 448.268 ms with only 6.543 ms SQL, and `sectors/history` took
+553.114 ms with 58.033 ms SQL. Movers also showed large API-minus-SQL variation
+while SQL stayed near 40–51 ms. The artifact cannot distinguish shared-runner
+pauses from ORM/application/serialization work. This API-minus-SQL variation is
+why the first ceiling is conservative and why it should be reassessed after
+more enforced runs.
+
+Recorder bookkeeping measured 22.024551 ms total across 4,040 SELECTs, or
+0.005452 ms/SELECT. This is included in API time and excluded from SQL time;
+the event-dispatch and timer components listed earlier remain unisolated.
+
+## Enforced verification run
+
+Run `33449989745` measured commit `f98e4a03` on PostgreSQL 16.15 with the same
+database, Alembic head, deterministic dataset, one excluded warm-up, and 20
+samples per family. The artifact records `status=completed`,
+`slo.enforced=true`, and `slo.p95_threshold_ms=1000.0`; no family violated the
+unrounded threshold.
+
+| Family | p50 ms | p95 ms | worst ms |
+| --- | ---: | ---: | ---: |
+| overview | 39.183 | 39.816 | 40.115 |
+| movers | 668.927 | 681.450 | 686.844 |
+| ETFs | 67.638 | 70.996 | 75.763 |
+| sectors/latest | 8.162 | 8.580 | 8.840 |
+| sectors/history | 183.102 | 202.283 | 530.799 |
+| sectors/health | 21.065 | 21.712 | 21.789 |
+
+The slowest captured SELECT was again the Movers price load at 53.611 ms.
+Its replayed plan used `uix_symbol_date`, returned 21,500 rows against 21,552
+estimated, completed in 7.428 ms, hit 1,601 shared buffers, and performed no
+shared reads or temporary I/O. This second run confirms the no-new-index
+decision and leaves the sector-history N+1 shape as an application batching
+follow-up rather than an index problem.
+
+## Final full-provenance enforced run
+
+Run
+[`33567003218`](https://github.com/txu221/stock-screener/actions/runs/33567003218)
+measured final implementation commit `7306ed23` on PostgreSQL 16.15 and Alembic head
+`20260829_0035`. It used the same 47,520-row deterministic dataset, with valid
+v2 provenance and content hashes on every price row. The reader selected only
+the 18 fields required by metrics and provenance instead of materializing full
+`StockPrice` entities. Movers also bounded its RVOL20 input to 42 calendar days,
+which returned 15,500 rows (31 observed sessions per equity) while retaining a
+ten-session buffer beyond the required current plus 20 prior sessions.
+
+| Family | SELECTs/request | p50 ms | p95 ms | worst ms | aggregate SQL ms | aggregate API-minus-SQL ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| overview | 3 | 43.391 | 44.384 | 44.661 | 53.440 | 816.308 |
+| movers | 5 | 444.842 | 799.767 | 802.126 | 1,336.403 | 8,625.304 |
+| ETFs | 3 | 98.201 | 101.175 | 107.270 | 201.407 | 1,777.214 |
+| sectors/latest | 5 | 8.067 | 8.378 | 8.803 | 52.669 | 109.639 |
+| sectors/history | 182 | 182.192 | 183.733 | 185.859 | 1,352.539 | 2,290.186 |
+| sectors/health | 4 | 21.129 | 21.630 | 21.636 | 103.153 | 319.501 |
+
+The slowest captured SELECT was the Movers price projection at 72.334 ms. Its
+replayed plan used `ix_stock_prices_date`, returned 15,500 rows against 15,625
+estimated, completed in 21.500 ms, hit 1,114 shared buffers, and performed no
+shared reads. The final `(symbol, date)` ordering used a 3,928 kB external merge
+sort (491 temporary blocks read and 492 written). SQL remained only 14.0% of
+Movers API time; most cost remained Python row handling, provenance checks, metric
+assembly, and serialization. The measured projection/window changes reduced
+Movers p50 from 668.927 to 464.092 ms without a new index. The small bounded sort
+does not justify another write-amplifying index for a query selecting 500 of 528
+symbols; it remains visible in the artifact for future reassessment.
+
+Recorder after-cursor bookkeeping was 20.230465 ms across 4,040 SELECTs, or
+0.005008 ms/SELECT. The artifact records `status=completed`,
+`slo.enforced=true`, and an unrounded threshold comparison for every family.

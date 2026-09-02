@@ -473,7 +473,7 @@ def test_import_daily_price_bundle_streams_rows_without_full_payload_read(
     db.close()
 
 
-def test_import_daily_price_bundle_repairs_existing_historical_adjusted_closes(tmp_path):
+def test_import_daily_price_bundle_keeps_unproven_adjusted_closes_unreconciled(tmp_path):
     session_factory = _make_session()
     db = session_factory()
     db.add(_stock_row("AAPL", "US", "NASDAQ", 1000.0))
@@ -547,8 +547,9 @@ def test_import_daily_price_bundle_repairs_existing_historical_adjusted_closes(t
         StockPrice.date == date(2026, 4, 18),
     ).one()
     assert result["imported_rows"] == 2
-    assert historical.adj_close == 100.0
-    assert latest.adj_close == 110.0
+    assert historical.adj_close is None
+    assert latest.adj_close is None
+    assert historical.price_basis == "raw_ohlcv_unreconciled"
     assert db.query(StockPrice).filter(StockPrice.symbol == "AAPL").count() == 2
     db.close()
 
@@ -627,7 +628,8 @@ def test_import_daily_price_bundle_repairs_existing_historical_invalid_ohlc(tmp_
     assert historical.high == 101.0
     assert historical.low == 99.0
     assert historical.close == 100.5
-    assert historical.adj_close == 100.0
+    assert historical.adj_close is None
+    assert historical.price_basis == "raw_ohlcv_unreconciled"
     assert db.query(StockPrice).filter(StockPrice.symbol == "AAPL").count() == 2
     db.close()
 

@@ -88,7 +88,7 @@ def test_fetch_and_cache_benchmark_without_redis_fetches_directly_and_persists()
         calls["wait"] += 1
         raise AssertionError("wait path must not run when redis is unavailable")
 
-    def fake_store_db(*, benchmark_symbol, data):
+    def fake_store_db(*, benchmark_symbol, data, **_kwargs):
         calls["store_db"] += 1
         assert benchmark_symbol == "^HSI"
         assert not data.empty
@@ -147,14 +147,14 @@ def test_fetch_and_cache_benchmark_cleans_non_finite_rows_before_cache_db_and_re
 
     service._fetch_from_yfinance = lambda benchmark_symbol, period: raw  # type: ignore[assignment]
     service._store_in_redis = lambda **kwargs: captured.setdefault("redis", kwargs["data"])  # type: ignore[assignment]
-    service._store_in_database = lambda **kwargs: captured.setdefault("db", kwargs["data"])  # type: ignore[assignment]
+    service._store_in_database = lambda **kwargs: captured.setdefault("db", kwargs)  # type: ignore[assignment]
 
     result = service._fetch_and_cache_benchmark("SPY", "US", "2y")
 
     assert result is not None
     assert result["Close"].tolist() == [100.0]
     assert captured["redis"]["Close"].tolist() == [100.0]
-    assert captured["db"]["Close"].tolist() == [100.0]
+    assert captured["db"]["data"]["Close"].tolist() == [100.0]
 
 
 def test_fetch_and_cache_benchmark_uses_cn_index_provider_before_yfinance():
@@ -175,12 +175,13 @@ def test_fetch_and_cache_benchmark_uses_cn_index_provider_before_yfinance():
 
     service._fetch_from_cn_index_provider = fake_cn_provider  # type: ignore[assignment]
     service._fetch_from_yfinance = fail_yfinance  # type: ignore[assignment]
-    service._store_in_database = lambda **kwargs: captured.setdefault("db", kwargs["data"])  # type: ignore[assignment]
+    service._store_in_database = lambda **kwargs: captured.setdefault("db", kwargs)  # type: ignore[assignment]
 
     result = service._fetch_and_cache_benchmark("000001.SS", "CN", "2y")
 
     assert result is data
-    assert captured["db"] is data
+    assert captured["db"]["data"] is data
+    assert captured["db"]["provider"] == "cn_market_data"
     assert provider_calls == [("000001.SS", "2y")]
 
 
@@ -204,7 +205,7 @@ def test_fetch_and_cache_benchmark_falls_back_to_yfinance_when_cn_provider_is_st
 
     service._fetch_from_cn_index_provider = fake_cn_provider  # type: ignore[assignment]
     service._fetch_from_yfinance = fake_yfinance  # type: ignore[assignment]
-    service._store_in_database = lambda **kwargs: captured.setdefault("db", kwargs["data"])  # type: ignore[assignment]
+    service._store_in_database = lambda **kwargs: captured.setdefault("db", kwargs)  # type: ignore[assignment]
 
     result = service._fetch_and_cache_benchmark(
         "000300.SS",
@@ -214,7 +215,8 @@ def test_fetch_and_cache_benchmark_falls_back_to_yfinance_when_cn_provider_is_st
     )
 
     assert result is current_yfinance
-    assert captured["db"] is current_yfinance
+    assert captured["db"]["data"] is current_yfinance
+    assert captured["db"]["provider"] == "yahoo"
     assert provider_calls == [("000300.SS", "2y", date(2026, 7, 8))]
     assert yfinance_calls == [("000300.SS", "2y")]
 

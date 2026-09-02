@@ -1,5 +1,17 @@
 """Stock-related database models"""
-from sqlalchemy import Column, Integer, String, Float, BigInteger, Date, DateTime, Index, UniqueConstraint
+import sqlalchemy as sa
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    Date,
+    DateTime,
+    event,
+    Float,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.sql import func
 from ..database import Base
 from .types import JsonColumn
@@ -19,12 +31,79 @@ class StockPrice(Base):
     close = Column(Float)
     volume = Column(BigInteger)
     adj_close = Column(Float)
+    # v2 price-normalization provenance. These remain nullable so historical
+    # rows can be reconciled progressively by the normal refresh pipeline.
+    provider = Column(String(32))
+    source_timestamp = Column(DateTime(timezone=True))
+    normalization_version = Column(String(64))
+    price_basis = Column(String(64))
+    content_hash = Column(String(64))
+    revision_number = Column(Integer)
+    reconciled_at = Column(DateTime(timezone=True))
+    adjustment_factor = Column(Float)
+    dividend_cash = Column(Float)
+    split_ratio = Column(Float)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
         UniqueConstraint("symbol", "date", name="uix_symbol_date"),
         Index("idx_symbol_date", "symbol", "date"),
     )
+
+
+class StockPriceRevision(Base):
+    """Append-only provider evidence for a normalized stock-price revision."""
+
+    __tablename__ = "stock_price_revisions"
+
+    id = Column(Integer, primary_key=True)
+    stock_price_id = Column(
+        Integer,
+        nullable=True,
+        index=True,
+    )
+    symbol = Column(String(20), nullable=False)
+    date = Column(Date, nullable=False)
+    revision_number = Column(Integer, nullable=False)
+    open = Column(Float, nullable=True)
+    high = Column(Float, nullable=True)
+    low = Column(Float, nullable=True)
+    close = Column(Float, nullable=True)
+    volume = Column(BigInteger, nullable=True)
+    adj_close = Column(Float, nullable=True)
+    adjustment_factor = Column(Float, nullable=True)
+    dividend_cash = Column(Float, nullable=True)
+    split_ratio = Column(Float, nullable=True)
+    provider = Column(String(32), nullable=True)
+    source_timestamp = Column(DateTime(timezone=True), nullable=True)
+    normalization_version = Column(String(64), nullable=True)
+    price_basis = Column(String(64), nullable=True)
+    content_hash = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol",
+            "date",
+            "revision_number",
+            name="uq_stock_price_revision_symbol_date_revision",
+        ),
+        Index("ix_stock_price_revisions_symbol_date", "symbol", "date"),
+        Index(
+            "ix_stock_price_revisions_symbol_date_hash",
+            "symbol",
+            "date",
+            "content_hash",
+        ),
+    )
+
+
+def _raise_append_only_revision_error(*_args) -> None:
+    raise sa.exc.InvalidRequestError("stock_price_revisions is append-only")
+
+
+event.listen(StockPriceRevision, "before_update", _raise_append_only_revision_error)
+event.listen(StockPriceRevision, "before_delete", _raise_append_only_revision_error)
 
 
 class StockFundamental(Base):

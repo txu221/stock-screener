@@ -150,6 +150,8 @@ class DailyPriceBundleService:
             "Close": price.get("close"),
             "Adj Close": price.get("adj_close"),
             "Volume": price.get("volume"),
+            "Dividends": price.get("dividend_cash"),
+            "Stock Splits": price.get("split_ratio"),
         }
 
     def get_import_state(self, db: Session, market: str) -> dict[str, Any] | None:
@@ -230,6 +232,10 @@ class DailyPriceBundleService:
                     symbol=symbol,
                     row_date=row_date,
                     row=self._bundle_price_mapping(price),
+                    provider=price.get("provider"),
+                    source_timestamp=price.get("source_timestamp"),
+                    normalization_version=price.get("normalization_version"),
+                    reconciled_at=price.get("reconciled_at"),
                 )
                 if price_row is None:
                     raise ValueError(
@@ -316,7 +322,13 @@ class DailyPriceBundleService:
                     "Close": row.close,
                     "Adj Close": row.adj_close,
                     "Volume": row.volume,
+                    "Dividends": row.dividend_cash,
+                    "Stock Splits": row.split_ratio,
                 },
+                provider=row.provider,
+                source_timestamp=row.source_timestamp,
+                normalization_version=row.normalization_version,
+                reconciled_at=row.reconciled_at,
             )
             if normalized_row is None:
                 continue
@@ -329,6 +341,14 @@ class DailyPriceBundleService:
                     "close": normalized_row["close"],
                     "adj_close": normalized_row["adj_close"],
                     "volume": normalized_row["volume"],
+                    "adjustment_factor": normalized_row["adjustment_factor"],
+                    "dividend_cash": normalized_row["dividend_cash"],
+                    "split_ratio": normalized_row["split_ratio"],
+                    "provider": normalized_row["provider"],
+                    "source_timestamp": normalized_row["source_timestamp"],
+                    "normalization_version": normalized_row["normalization_version"],
+                    "price_basis": normalized_row["price_basis"],
+                    "reconciled_at": normalized_row["reconciled_at"],
                 }
             )
         latest_by_symbol = {
