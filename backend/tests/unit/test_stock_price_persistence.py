@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+import pytest
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -144,10 +146,14 @@ def test_changed_source_timestamp_appends_revision_and_updates_current_materiali
     assert db.query(StockPriceRevision).count() == 2
 
 
-def test_unproven_refresh_cannot_downgrade_reconciled_current_price():
+@pytest.mark.parametrize("delete_current", [False, True])
+def test_unproven_refresh_cannot_downgrade_reconciled_price_evidence(delete_current):
     db = _session()
     persist_stock_price_mappings(db, {"SPLT": [_mapping()]})
     db.commit()
+    if delete_current:
+        db.delete(db.query(StockPrice).one())
+        db.commit()
     unproven = stock_price_row_from_ohlcv(
         symbol="SPLT",
         row_date=DAY,
@@ -168,8 +174,16 @@ def test_unproven_refresh_cannot_downgrade_reconciled_current_price():
     result = persist_stock_price_mappings(db, {"SPLT": [unproven]})
     db.commit()
 
-    current = db.query(StockPrice).one()
     assert result == {"inserted": 0, "updated": 0}
+    assert db.query(StockPriceRevision).count() == 1
+    if delete_current:
+        # Unproven input cannot rematerialize a downgraded row. A later proven
+        # provider refresh can restore the retained latest evidence normally.
+        assert db.query(StockPrice).count() == 0
+        restored = persist_stock_price_mappings(db, {"SPLT": [_mapping()]})
+        db.commit()
+        assert restored == {"inserted": 1, "updated": 0}
+    current = db.query(StockPrice).one()
     assert current.close == 100.0
     assert current.adj_close == 50.0
     assert current.provider == "yahoo"

@@ -198,6 +198,8 @@ def _calculate_candidate(
     as_of,
     previous,
     source_freshness,
+    rejection_count,
+    provider_failures,
 ):
     bars_by_symbol = defaultdict(list)
     for bar in canonical_bars:
@@ -227,8 +229,8 @@ def _calculate_candidate(
         metrics_by_symbol=metrics,
         history_session_counts=counts,
         received_symbols=tuple(bars_by_symbol),
-        rejection_count=0,
-        provider_failures=(),
+        rejection_count=rejection_count,
+        provider_failures=provider_failures,
         provider="yahoo",
         source_freshness=source_freshness,
         calculation_timestamp=datetime.now(timezone.utc),
@@ -273,7 +275,12 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
         "symbol_failures": [_safe_failure(failure) for failure in result.symbol_failures],
     }
     if result.request_failure is not None:
-        return {**base, "total_duration_seconds": perf_counter() - started}
+        return {
+            **base,
+            "candidate_status": "FAILED",
+            "snapshot_count": 0,
+            "total_duration_seconds": perf_counter() - started,
+        }
 
     validation_started = perf_counter()
     validation = validate_provider_rows(
@@ -296,6 +303,8 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
         as_of=target,
         previous={},
         source_freshness=freshness,
+        rejection_count=len(validation.rejections),
+        provider_failures=result.symbol_failures,
     )
     calculation_duration = perf_counter() - calculation_started
 
@@ -303,15 +312,25 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
     manual_checks: dict[str, Any] = {}
     for symbol in MANUAL_SYMBOLS:
         raw = next(
-            row
-            for row in result.rows
-            if row.symbol == symbol and row.trading_date == target
+            (row for row in result.rows
+             if row.symbol == symbol and row.trading_date == target),
+            None,
         )
         canonical = next(
-            bar
-            for bar in validation.canonical_bars
-            if bar.symbol == symbol and bar.trading_date == target
+            (bar for bar in validation.canonical_bars
+             if bar.symbol == symbol and bar.trading_date == target),
+            None,
         )
+        if raw is None or canonical is None:
+            # Absence/rejection is diagnostic evidence, not a comparison that
+            # passed. Do not coerce provider-controlled invalid values here.
+            manual_checks[symbol] = {
+                "status": "UNAVAILABLE",
+                "reason": "MISSING_TARGET_BAR" if raw is None else "REJECTED_TARGET_BAR",
+                "canonical_fields_match": False,
+                "all_metrics_match": False,
+            }
+            continue
         independent = _manual_metrics(
             tuple(bars_by_symbol[symbol]), spy_bars, sessions
         )
@@ -347,6 +366,7 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
             for name, value in independent_canonical.items()
         )
         manual_checks[symbol] = {
+            "status": "CHECKED",
             "raw": {
                 "open": raw_open,
                 "high": raw_high,
@@ -387,9 +407,12 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
             as_of=replay_date,
             previous=previous,
             source_freshness=replay_freshness,
+            rejection_count=len(replay_validation.rejections),
+            provider_failures=result.symbol_failures,
         )
         max_input = max(
-            bar.trading_date for bar in replay_validation.canonical_bars
+            (bar.trading_date for bar in replay_validation.canonical_bars),
+            default=None,
         )
         rank_records = [
             rank
@@ -400,7 +423,7 @@ def run_live_validation(*, as_of: date | None = None) -> dict[str, Any]:
         replay.append(
             {
                 "as_of": replay_date.isoformat(),
-                "max_input_date": max_input.isoformat(),
+                "max_input_date": max_input.isoformat() if max_input is not None else None,
                 "status": replay_candidate.ingestion_status.value,
                 "snapshot_count": len(replay_candidate.snapshots),
                 "previous_rank_count": sum(
@@ -443,7 +466,13 @@ def main() -> int:
     as_of = date.fromisoformat(requested_as_of) if requested_as_of else None
     summary = run_live_validation(as_of=as_of)
     print(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False))
-    return 0 if summary.get("request_failure") is None else 2
+    healthy = (
+        summary.get("candidate_status") == "SUCCEEDED"
+        and all(check["all_metrics_match"] for check in summary["manual_checks"].values())
+        and all(item["status"] == "SUCCEEDED" for item in
+                summary["historical_replay_using_real_provider_data"])
+    )
+    return 0 if healthy else 2
 
 
 if __name__ == "__main__":

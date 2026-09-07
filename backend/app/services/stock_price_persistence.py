@@ -76,24 +76,25 @@ def persist_stock_price_mappings(
         incoming["content_hash"] = incoming.get("content_hash") or price_row_content_hash(incoming)
         current = current_by_pair.get(pair)
         prior_revisions = revisions_by_pair.setdefault(pair, [])
+        latest_revision = (
+            max(prior_revisions, key=lambda revision: revision.revision_number, default=None)
+            if current is None else None
+        )
+        retained_evidence = current if current is not None else latest_revision
         if (
-            current is not None
-            and current.price_basis == RECONCILED_PRICE_BASIS
+            retained_evidence is not None
+            and retained_evidence.price_basis == RECONCILED_PRICE_BASIS
             and incoming.get("price_basis") != RECONCILED_PRICE_BASIS
         ):
             # A provider-less/native refresh is not enough evidence to replace a
             # reconciled analytical row. Preserve the stable materialization
-            # until an equally proven revision arrives.
+            # until an equally proven revision arrives. Deleting the current
+            # row must not bypass the retained ledger's provenance protection.
             continue
         if current is not None and incoming["content_hash"] == current.content_hash:
             continue
 
         if current is None:
-            latest_revision = (
-                max(prior_revisions, key=lambda revision: revision.revision_number)
-                if prior_revisions
-                else None
-            )
             restoring_latest = (
                 latest_revision is not None
                 and incoming["content_hash"] == latest_revision.content_hash
