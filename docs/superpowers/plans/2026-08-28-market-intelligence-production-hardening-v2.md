@@ -31,10 +31,10 @@
 **Interfaces:**
 - Produces: nullable v2 current-row provenance fields and `StockPriceRevision` append-only evidence.
 
-- [ ] Write migration tests asserting legacy-row compatibility, v2 columns, indexes, revision uniqueness, and downgrade preservation.
-- [ ] Run the focused tests and confirm missing schema failures.
-- [ ] Add the SQLAlchemy models and additive Alembic migration with down revision `20260828_0033`.
-- [ ] Run migration tests green and commit `feat: add corporate action price provenance schema`.
+- [x] Write migration tests asserting legacy-row compatibility, v2 columns, indexes, revision uniqueness, and downgrade preservation.
+- [x] Run the focused tests and confirm missing schema failures.
+- [x] Add the SQLAlchemy models and additive Alembic migration with down revision `20260828_0033`.
+- [x] Run migration tests green and commit `feat: add corporate action price provenance schema`.
 
 ### Task 2: Deterministic price normalization and revision persistence
 
@@ -51,10 +51,10 @@
 **Interfaces:**
 - Produces: `stock_price_row_from_ohlcv(..., provider, source_timestamp, normalization_version)` mappings with factor/action/hash; `persist_stock_price_mappings` appends distinct revisions and idempotently skips identical inputs.
 
-- [ ] Add failing fixture tests for 2-for-1, 3-for-1, reverse split, dividend adjustment, missing Adj Close, and deterministic content hashes.
-- [ ] Add failing persistence tests for first reconciliation, identical replay, and changed provider history.
-- [ ] Implement v2 mapping and append-only revision logic without changing unrelated cache behavior.
-- [ ] Run focused and existing price-cache tests green; commit `feat: reconcile corporate action price revisions`.
+- [x] Add failing fixture tests for 2-for-1, 3-for-1, reverse split, dividend adjustment, missing Adj Close, and deterministic content hashes.
+- [x] Add failing persistence tests for first reconciliation, identical replay, and changed provider history.
+- [x] Implement v2 mapping and append-only revision logic without changing unrelated cache behavior.
+- [x] Run focused and existing price-cache tests green; commit `feat: reconcile corporate action price revisions`.
 
 ### Task 3: Upgrade the bounded Yahoo/canonical contract
 
@@ -71,10 +71,10 @@
 **Interfaces:**
 - Produces: `market_intelligence_adjusted_ohlcv_v2` canonical bars with `dividend_cash` and `split_ratio`; batch schema failures use `PROVIDER_SCHEMA_DRIFT`.
 
-- [ ] Write failing schema-order/type/timezone/action-column and split/dividend tests.
-- [ ] Implement strict batch schema validation and v2 action provenance.
-- [ ] Prove split/reverse-split/dividend metrics use one adjusted basis and old v1 persisted rows still deserialize.
-- [ ] Run the Market Intelligence domain suite green; commit `feat: harden yahoo corporate action contract`.
+- [x] Write failing schema-order/type/timezone/action-column and split/dividend tests.
+- [x] Implement strict batch schema validation and v2 action provenance.
+- [x] Prove split/reverse-split/dividend metrics use one adjusted basis and old v1 persisted rows still deserialize.
+- [x] Run the Market Intelligence domain suite green; commit `feat: harden yahoo corporate action contract`.
 
 ### Task 4: Persisted pipeline observability and error taxonomy
 
@@ -90,10 +90,10 @@
 **Interfaces:**
 - Produces: `MarketIntelligenceErrorCategory`, persisted `stage_timings`, `pipeline_version`, `publication_status`, and structured task/run logs.
 
-- [ ] Write failing tests that inspect log-record fields, timer keys, reuse/force-refresh/redelivery states, and categorized failures.
-- [ ] Add minimal monotonic timing instrumentation and stable error mapping.
-- [ ] Persist timing/error/publication fields before commit and emit database failures even when persistence is impossible.
-- [ ] Run focused tests green; commit `feat: add market intelligence observability`.
+- [x] Write failing tests that inspect log-record fields, timer keys, reuse/force-refresh/redelivery states, and categorized failures.
+- [x] Add minimal monotonic timing instrumentation and stable error mapping.
+- [x] Persist timing/error/publication fields before commit and emit database failures even when persistence is impossible.
+- [x] Run focused tests green; commit `feat: add market intelligence observability`.
 
 ### Task 5: Completed-session freshness, health, and readiness
 
@@ -111,10 +111,10 @@
 **Interfaces:**
 - Produces: `classify_completed_session_freshness(as_of, completed_sessions)` and hardened persisted Data Health response.
 
-- [ ] Write failing same-day, one-session, weekend, holiday, stale, unavailable, consecutive-failure, and readiness-degradation tests.
-- [ ] Implement FRESH/AGING/STALE/UNAVAILABLE using completed sessions only.
-- [ ] Add provider latency, attempt/success ages, failure category, consecutive failures, last successful trading date, threshold, and pipeline version.
-- [ ] Keep liveness dependency-free and Redis/Yahoo/snapshot readiness soft; run tests green and commit `feat: harden market intelligence health`.
+- [x] Write failing same-day, one-session, weekend, holiday, stale, unavailable, consecutive-failure, and readiness-degradation tests.
+- [x] Implement FRESH/AGING/STALE/UNAVAILABLE using completed sessions only.
+- [x] Add provider latency, attempt/success ages, failure category, consecutive failures, last successful trading date, threshold, and pipeline version.
+- [x] Keep liveness dependency-free and Redis/Yahoo/snapshot readiness soft; run tests green and commit `feat: harden market intelligence health`.
 
 ### Task 6: Pointer-versioned Redis read cache
 
@@ -127,9 +127,9 @@
 **Interfaces:**
 - Produces: `cached_market_intelligence_payload(key_parts, compute)` with versioned JSON keys, TTL, local miss coalescing, and PostgreSQL fallback.
 
-- [ ] Write failing A-success/B-partial/C-failed/D-success cache-transition tests, Redis-down tests, parameter-key tests, and concurrent-miss tests.
-- [ ] Implement keys from stable pointer run/date/version and normalized endpoint parameters; never cache health or unpublished attempts.
-- [ ] Run unit and real Redis tests green; commit `feat: cache stable market intelligence reads`.
+- [x] Write failing A-success/B-partial/C-failed/D-success cache-transition tests, Redis-down tests, parameter-key tests, and concurrent-miss tests.
+- [x] Implement keys from stable pointer run/date/version and normalized endpoint parameters; never cache health or unpublished attempts.
+- [x] Run unit and real Redis tests green; commit `feat: cache stable market intelligence reads`.
 
 ### Task 7: PostgreSQL performance baseline and SLO
 
@@ -142,10 +142,10 @@
 **Interfaces:**
 - Produces: repeat-sample p50/p95/worst JSON evidence for all six APIs and captured `EXPLAIN (ANALYZE, BUFFERS)` plans.
 
-- [ ] Measure without new indexes and record the real PostgreSQL baseline.
-- [ ] Inspect the slowest query plan for scans, sorts, N+1, and decoding cost.
-- [ ] Set a conservative enforceable SLO from evidence; add only plan-justified indexes.
-- [ ] Re-run and document before/after values; commit `perf: enforce market intelligence read SLO`.
+- [x] Measure without new indexes and record the real PostgreSQL baseline.
+- [x] Inspect the slowest query plan for scans, sorts, N+1, and decoding cost.
+- [x] Set a conservative enforceable SLO from evidence; add only plan-justified indexes.
+- [x] Re-run and document before/after values; commit `perf: enforce market intelligence read SLO`.
 
 ### Task 8: UI disclosure and provider canary
 
@@ -159,10 +159,10 @@
 **Interfaces:**
 - Produces: accurate `corporate_action_adjusted`/partial quality labels and a scheduled read-only Yahoo canary.
 
-- [ ] Write failing backend/frontend quality-state and disclosure tests.
-- [ ] Derive quality from actual row provenance and show the exact adjusted-history explanation.
-- [ ] Add a low-pressure weekday/manual canary that writes no production data.
-- [ ] Run frontend tests/lint/build and workflow contract tests; commit `feat: disclose adjusted price quality`.
+- [x] Write failing backend/frontend quality-state and disclosure tests.
+- [x] Derive quality from actual row provenance and show the exact adjusted-history explanation.
+- [x] Add a low-pressure weekday/manual canary that writes no production data.
+- [x] Run frontend tests/lint/build and workflow contract tests; commit `feat: disclose adjusted price quality`.
 
 ### Task 9: Security assessment, documentation, and final verification
 
@@ -175,7 +175,7 @@
 **Interfaces:**
 - Produces: npm critical/high reachability assessment and final evidence report.
 
-- [ ] Run deterministic backend/provider fixtures, frontend, lint, build, compile, and `pip check`.
-- [ ] Run PostgreSQL 16, Redis 7, Celery, migration, cache, performance, and optional Yahoo suites in GitHub Actions.
-- [ ] Run secret scan, dependency diff, `npm audit --json`, and `git diff --check` without `npm audit fix`.
-- [ ] Request an independent code review, fix every in-scope finding through TDD, update Draft PR #1, verify all checks green, and commit `docs: complete production hardening v2 report`.
+- [x] Run deterministic backend/provider fixtures, frontend, lint, build, compile, and `pip check`.
+- [x] Run PostgreSQL 16, Redis 7, Celery, migration, cache, performance, and optional Yahoo suites in GitHub Actions.
+- [x] Run secret scan, dependency diff, `npm audit --json`, and `git diff --check` without `npm audit fix`.
+- [x] Request an independent code review, fix every in-scope finding through TDD, update Draft PR #1, verify all checks green, and commit `docs: complete production hardening v2 report`.

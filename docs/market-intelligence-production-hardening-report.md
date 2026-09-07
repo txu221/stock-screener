@@ -6,7 +6,7 @@ reported in the final delivery response to avoid a self-referential commit SHA.
 
 ## 1. Final SHA
 
-The final implementation SHA is `7306ed23d908b5bdbcb282d3a0ac205ea05ebe1f`.
+The final implementation SHA is `a25b667d642d203bb3f2a6cadf2e2651bd6021de`.
 The later closeout commit changes documentation/evidence only; the exact final
 branch head is reported by `git status` and the final delivery response.
 
@@ -142,18 +142,18 @@ rows.
 
 ## 16. API p50/p95
 
-GitHub Actions run `33567003218` excluded one warm-up and measured 20 requests
+GitHub Actions run `34155961425` excluded one warm-up and measured 20 requests
 per family against PostgreSQL 16.15 with full valid v2 provenance on every
 synthetic price row:
 
 | Family | p50 ms | p95 ms | Worst ms |
 | --- | ---: | ---: | ---: |
-| Overview | 43.391 | 44.384 | 44.661 |
-| Movers | 444.842 | 799.767 | 802.126 |
-| ETFs | 98.201 | 101.175 | 107.270 |
-| Sectors latest | 8.067 | 8.378 | 8.803 |
-| Sectors history | 182.192 | 183.733 | 185.859 |
-| Sectors health | 21.129 | 21.630 | 21.636 |
+| Overview | 39.743 | 40.533 | 42.150 |
+| Movers | 266.605 | 617.434 | 621.510 |
+| ETFs | 70.325 | 71.621 | 74.056 |
+| Sectors latest | 8.332 | 8.616 | 9.132 |
+| Sectors history | 186.052 | 525.337 | 531.141 |
+| Sectors health | 21.298 | 21.822 | 22.196 |
 
 These are comparison-only in-process production-router/PostgreSQL measurements. They include
 routing, dependency overrides, ORM materialization, application logic, SQL, and
@@ -163,25 +163,31 @@ serialization, but exclude network/TLS/Uvicorn and real authentication.
 
 All six read families enforce a common unrounded p95 below 1000 ms in the
 dedicated PostgreSQL 16 job. The threshold was selected after the first
-20-sample baseline and still leaves 200.233 ms (25.0%) above the final
+20-sample baseline and leaves 382.566 ms of absolute headroom above the final
 full-provenance maximum p95 without hiding a full-second regression. Run
-`33567003218` completed with enforcement enabled and is the authoritative
-implementation evidence.
+`34155961425` completed with enforcement enabled and is the authoritative
+implementation evidence. A pre-optimization manual run (`33591441325`, attempt
+1) failed at Movers p95 1082.759 ms; its SLO-only retry passed at 721.524 ms.
+That variance is retained as evidence rather than hidden by the retry.
 
 ## 18. Query optimizations
 
 The slowest observed query was the Movers price load. The reader now projects
 only the 18 fields required by metrics/provenance and does not materialize
-`StockPrice` ORM entities. Its RVOL20 input is bounded to 42 calendar days,
+`StockPrice` ORM entities. Each result row is converted once to an immutable
+native tuple, avoiding repeated SQLAlchemy result-metadata lookups while
+preserving every value used by provenance validation. Its RVOL20 input is
+bounded to 42 calendar days,
 returning 15,500 rows/31 sessions per equity instead of 21,500 rows while still
 retaining ten sessions beyond the required current plus 20 prior sessions.
 `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` used `ix_stock_prices_date`, completed
-in 21.500 ms, hit 1,114 shared buffers, and used no shared reads. Its explicit
+in 21.355 ms, hit 1,114 shared buffers, and used no shared reads. Its explicit
 ordering performed a 3,928 kB external merge sort (491 temporary blocks read,
-492 written), but SQL was only 14.0% of Movers API time. Evidence did not justify
-another write-amplifying index for a query selecting 500 of 528 symbols, so none
-was added. Sector history's 182 SELECTs/request remains a documented N+1
-follow-up; it meets the initial SLO but should be batched in a separate change.
+492 written). The final run measured Movers p50 266.605 ms and p95 617.434 ms.
+Evidence did not justify another write-amplifying index for a query selecting
+500 of 528 symbols, so none was added. Sector history's 182 SELECTs/request
+remains a documented N+1 follow-up; it meets the initial SLO but should be
+batched in a separate change.
 
 ## 19. Cache strategy
 
@@ -222,14 +228,17 @@ the last reconciled materialization is preserved.
 
 ## 23. Live Yahoo canary
 
-`.github/workflows/market-intelligence-yahoo-canary.yml` runs once after the US
-close on weekdays and supports manual dispatch. It has read-only repository
+`.github/workflows/market-intelligence-yahoo-canary.yml` defines one run after
+the US close on weekdays and supports manual dispatch. GitHub schedules execute
+workflow files from the default branch, so the schedule becomes active only
+after this still-draft branch is merged. It has read-only repository
 permission, persists no application data, starts no database/Redis/Celery
 service, runs no migration/deployment, and executes only the live Yahoo contract
 test. The heavier Yahoo plus real Celery integration remains explicit manual
 opt-in so normal pushes do not duplicate provider pressure. Manual run
 `33591441325` passed the fixed 12-symbol Yahoo contract and the real
-broker-worker/idempotent-rerun test on implementation commit `7306ed23`.
+broker-worker/idempotent-rerun test on implementation commit `7306ed23` during
+the first attempt; only the separate SLO job required a retry.
 The validator uses exact completed-session anchors: a provider history gap
 produces unavailable metrics/PARTIAL evidence rather than a `KeyError`, a
 forward-fill, or a compressed-session calculation.
@@ -265,6 +274,9 @@ service-backed/live cases. It includes the hash memo, lightweight price-row
 projection, bounded metric-window quality, retry provider contracts,
 A-to-B-to-A price revisions, deleted-current restoration, and exact-session
 live-validation gaps.
+The final local closeout selection passed 316 focused Market Intelligence,
+price, cache, and read-service tests. Independent final review passed another
+60 focused tests and reported no Critical, Important, or Minor findings.
 The complete Linux backend suite is split across four PR jobs and is the final
 no-regression authority. The Windows closeout used an in-process `resource`
 module shim because that Unix-only stdlib module is absent on Windows; no
@@ -284,7 +296,7 @@ CI is the final complete frontend and Playwright-smoke authority.
 
 ## 27. Integration tests
 
-Run `33567003218` passed PostgreSQL migration/publication/concurrency/API tests,
+Run `34156577333` passed PostgreSQL migration/publication/concurrency/API tests,
 real Redis connectivity, the deterministic Market Intelligence suite, all 53
 currently selected service-independent integration tests, the enforced
 full-provenance PostgreSQL SLO, frontend tests, lint, and production build. The
@@ -296,8 +308,8 @@ manual opt-in run `33591441325`.
 The Market Intelligence workflow supplies PostgreSQL 16, Redis 7, real Alembic
 migrations, transaction/concurrency tests, deterministic tests, a dedicated
 measured SLO job, optional real Celery/Yahoo validation, frontend checks, and
-failure-safe artifacts. Final implementation run `33567003218` is green on
-commit `7306ed23`; manual run `33591441325` supplies the opt-in Yahoo/Celery
+failure-safe artifacts. Final closeout run `34156577333` is green on commit
+`ecb45d19`; manual run `33591441325` supplies the opt-in Yahoo/Celery
 evidence without adding provider pressure to normal pushes.
 
 ## 29. PR CI
@@ -306,19 +318,21 @@ General PR CI validates assistant compose, four complete backend-unit shards,
 backend quality gates, frontend lint/test, and Playwright smoke. A stale Yahoo
 test was updated earlier to supply the now-required explicit provider
 provenance, and the final Static Scan render-spy test now waits for component
-readiness rather than racing it. PR CI run `33567008342` is fully green on
-commit `7306ed23`.
+readiness rather than racing it. One calendar test had encoded 2026-09-03 as a
+permanent future date; it now derives a future fixture without changing
+production behavior. PR CI run `34156579449` is fully green on commit
+`ecb45d19`.
 
 ## 30. Production build
 
 The final Windows build compiled 2,515 modules successfully in 1 minute 32
-seconds. Linux run `33567003218` also passed the production build, and PR run
-`33567008342` passed frontend lint, tests, and Playwright smoke.
+seconds. Linux run `34156577333` also passed the production build, and PR run
+`34156579449` passed frontend lint, tests, and Playwright smoke.
 
 ## 31. Security
 
 No credential, token, device identifier, or machine-local state is included.
-The final local scan examined 86 changed/untracked files and found zero files
+The final local scan examined 87 changed files and found zero files
 matching high-confidence private-key, AWS access-key, GitHub token, Slack token,
 or JWT patterns. `git diff --check` reported no whitespace error. No production
 permission is granted to the Yahoo canary, and checkout credentials are not
@@ -326,10 +340,10 @@ persisted there.
 
 ## 32. Dependency assessment
 
-`npm audit --json` reports 22 package nodes: 1 critical, 17 high, 3 moderate,
-and 1 low. This is one additional `browserslist` advisory compared with the
-earlier evidence, despite an unchanged lockfile, so it is an advisory-feed
-change rather than a hardening dependency change. The critical Vitest issue is dev-only;
+`npm audit --json` reports 23 package nodes: 1 critical, 17 high, 4 moderate,
+and 1 low. The latest change is one additional moderate `@humanfs/node` package
+node despite an unchanged lockfile, so it is an advisory-feed change rather
+than a hardening dependency change. The critical Vitest issue is dev-only;
 `npm audit --omit=dev` reports zero critical, six high, two moderate. Direct
 runtime follow-ups are Axios and React Router; remaining production-graph
 findings include Node-only Axios transitive paths and Recharts/Lodash. Full
@@ -341,7 +355,7 @@ manifest or lockfile.
 ## 33. Files changed
 
 Relative to hardening base `6d75e8a4`, the implementation range through
-`7306ed23` changes 86 files with 11,140 insertions and 514 deletions. Scope is
+`ecb45d19` changes 87 files with 11,442 insertions and 531 deletions. Scope is
 limited to additive
 migrations/models, existing Market Intelligence provider,
 pipeline/read/cache/API/task seams, targeted React disclosure, CI workflows,
@@ -350,7 +364,7 @@ market universe, page, or external dependency.
 
 ## 34. Commits
 
-The 32-commit implementation series begins at `07fed279` and uses small design,
+The 36-commit implementation/test series begins at `07fed279` and uses small design,
 schema, normalization, provider, observability, health, cache, SLO, regression,
 UI-quality, review-fix, and closeout-documentation commits. The exact ordered
 list remains available from `git log --oneline 6d75e8a4..HEAD`.
@@ -365,10 +379,13 @@ list remains available from `git log --oneline 6d75e8a4..HEAD`.
   it meets the initial SLO.
 - The SLO excludes network, TLS, reverse proxy, Uvicorn scheduling, and real auth
   latency.
+- A pre-optimization run exceeded the Movers ceiling before its retry. The final
+  immutable-row run passed with materially lower p50/p95, but operational burn-in
+  is still required to characterize shared-runner and production variance.
 - The existing Windows fixture-path and contended full-frontend-suite failures
   remain platform baseline items; Linux CI is authoritative for final
   no-regression evidence.
-- The 22 npm advisories remain recorded technical debt; this phase intentionally
+- The 23 npm advisories remain recorded technical debt; this phase intentionally
   did not mix dependency upgrades with correctness changes.
 - Universe coverage was not expanded, and no AI, news, options, institutional
   flow, prediction, alert, recommendation, or backtest feature was added.

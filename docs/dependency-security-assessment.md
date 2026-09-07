@@ -1,14 +1,15 @@
 # Dependency security assessment
 
-Date: 2026-09-02
+Date: 2026-09-07
 Scope: Market Intelligence Production Hardening v2 on `feat/market-intelligence-engine`
 
 ## Executive assessment
 
-`npm audit --json` reports the current frontend advisory-database view of 22
-vulnerable package nodes: 1 critical, 17 high, 3 moderate, and 1 low. The count
-increased by one high-severity `browserslist` advisory while the lockfile was
-unchanged; this is an advisory-feed change, not a hardening dependency change.
+`npm audit --json` reports the current frontend advisory-database view of 23
+vulnerable package nodes: 1 critical, 17 high, 4 moderate, and 1 low. Since the
+2026-09-02 assessment, the count increased by one moderate `@humanfs/node`
+package node while the lockfile remained unchanged; this is an advisory-feed
+change, not a hardening dependency change.
 The hardening range
 from `6d75e8a4` through the assessed commit changes no Python or npm dependency
 manifest or lockfile. `python -m pip check` reports no broken requirements.
@@ -39,7 +40,7 @@ Observed totals:
 
 | Scope | Critical | High | Moderate | Low | Total |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Full installed frontend graph | 1 | 17 | 3 | 1 | 22 |
+| Full installed frontend graph | 1 | 17 | 4 | 1 | 23 |
 | `--omit=dev` production graph | 0 | 6 | 2 | 0 | 8 |
 
 The full graph contains 623 packages according to npm metadata: 239 production,
@@ -88,8 +89,8 @@ servers publicly, and upgrade them in a coordinated tooling PR.
 
 - `follow-redirects` is in the production dependency graph through Axios's Node
   path; the browser application does not directly use that adapter.
-- `ajv` and `yaml` are transitive tooling/config dependencies in the assessed
-  graph.
+- `@humanfs/node`, `ajv`, and `yaml` are transitive tooling/config dependencies
+  in the assessed graph.
 - `@babel/core` is the single low-severity package node and is build tooling.
 
 ## Recommended remediation sequence

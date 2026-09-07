@@ -18,12 +18,21 @@ including the relation-scoped trigger lookup.
 The closeout fixture gives every synthetic price row the complete v2
 provider, source timestamp, adjustment factor, action fields, normalization,
 price basis, revision, reconciliation timestamp, and recomputable content hash.
-Full-provenance implementation run
-[`33567003218`](https://github.com/txu221/stock-screener/actions/runs/33567003218)
-passed all six enforced families. Its highest p95 was Movers at 799.767 ms, so
-the unchanged ceiling leaves 200.233 ms (25.0%) of measured p95 headroom while
-still rejecting a full-second regression. This run supersedes the historical
-latency table for completion evidence.
+Full-provenance closeout run
+[`34155961425`](https://github.com/txu221/stock-screener/actions/runs/34155961425)
+passed all six enforced families at commit `a25b667d`. Its highest p95 was
+Movers at 617.434 ms, so the unchanged ceiling leaves 382.566 ms of absolute
+headroom while still rejecting a full-second regression. This run supersedes
+the historical latency table for completion evidence.
+
+This result does not erase variance observed before the final price-row
+optimization. Manual run `33591441325` attempt 1 measured Movers p95 at
+1082.759 ms and failed the ceiling; the SLO-only retry measured 721.524 ms and
+passed. The failed samples had normal SQL time and isolated application-side
+outliers. The final optimization converts each projected SQLAlchemy result row
+once into an immutable native tuple while preserving all 18 provenance fields.
+Longer operational burn-in remains necessary before treating one CI pass as an
+end-user latency guarantee.
 
 No index was added. Any index change requires a captured PostgreSQL plan showing
 a specific scan, sort, lookup, or buffer cost and measured before/after evidence.
@@ -266,10 +275,36 @@ shared reads. The final `(symbol, date)` ordering used a 3,928 kB external merge
 sort (491 temporary blocks read and 492 written). SQL remained only 14.0% of
 Movers API time; most cost remained Python row handling, provenance checks, metric
 assembly, and serialization. The measured projection/window changes reduced
-Movers p50 from 668.927 to 464.092 ms without a new index. The small bounded sort
+Movers p50 from 668.927 to 444.842 ms without a new index. The small bounded sort
 does not justify another write-amplifying index for a query selecting 500 of 528
 symbols; it remains visible in the artifact for future reassessment.
 
 Recorder after-cursor bookkeeping was 20.230465 ms across 4,040 SELECTs, or
 0.005008 ms/SELECT. The artifact records `status=completed`,
 `slo.enforced=true`, and an unrounded threshold comparison for every family.
+
+## Final immutable-row projection run
+
+Run
+[`34155961425`](https://github.com/txu221/stock-screener/actions/runs/34155961425)
+measured closeout commit `a25b667d` with the same PostgreSQL 16, Alembic head,
+47,520-row full-provenance fixture, warm-up exclusion, and 20 samples per API
+family. The only read-path change converts each 18-column SQLAlchemy result row
+once to an immutable native tuple before repeated metric/provenance access.
+
+| Family | SELECTs/request | p50 ms | p95 ms | worst ms | aggregate SQL ms | aggregate API-minus-SQL ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| overview | 3 | 39.743 | 40.533 | 42.150 | 54.776 | 739.111 |
+| movers | 5 | 266.605 | 617.434 | 621.510 | 1,363.547 | 4,667.200 |
+| ETFs | 3 | 70.325 | 71.621 | 74.056 | 203.567 | 1,201.980 |
+| sectors/latest | 5 | 8.332 | 8.616 | 9.132 | 52.976 | 113.457 |
+| sectors/history | 182 | 186.052 | 525.337 | 531.141 | 1,381.564 | 3,365.587 |
+| sectors/health | 4 | 21.298 | 21.822 | 22.196 | 103.309 | 320.774 |
+
+The slowest captured SELECT remained the Movers 15,500-row projection at
+73.425 ms. Its replay used the existing date index, returned 15,500 rows,
+completed in 21.355 ms, hit 1,114 shared buffers with no shared reads, and used
+the same 3,928 kB external merge sort (491 temporary blocks read, 492 written).
+No new index or SLO-threshold change was made. The artifact records
+`status=completed`, `slo.enforced=true`, and an unrounded comparison for every
+family.
