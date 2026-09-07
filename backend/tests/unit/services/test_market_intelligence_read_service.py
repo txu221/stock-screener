@@ -224,10 +224,42 @@ def test_price_reads_do_not_materialize_stock_price_entities(session):
 
     assert [row.symbol for row in grouped["AAPL"]] == ["AAPL", "AAPL"]
     assert [row.adj_close for row in grouped["AAPL"]] == [100.0, 101.0]
+    # Repeated analytical/provenance access must use native tuple fields, not
+    # SQLAlchemy Row's per-attribute result-metadata lookup.
+    assert all(isinstance(row, tuple) for row in grouped["AAPL"])
     assert not any(
         isinstance(instance, StockPrice)
         for instance in session.identity_map.values()
     )
+
+
+def test_price_tuple_projection_preserves_every_provenance_field(session):
+    original = _prices("AAPL", [100.0], reconciled=True)[0]
+    original.adj_close = 50.0
+    original.adjustment_factor = 0.5
+    original.dividend_cash = 1.25
+    original.split_ratio = 2.0
+    fields = (
+        "symbol", "date", "open", "high", "low", "close", "volume", "adj_close",
+        "adjustment_factor", "dividend_cash", "split_ratio", "provider",
+        "source_timestamp", "normalization_version", "price_basis", "content_hash",
+        "revision_number", "reconciled_at",
+    )
+    original.content_hash = price_row_content_hash(
+        {field: getattr(original, field) for field in fields}
+    )
+    session.add(original)
+    session.commit()
+    expected = {field: getattr(original, field) for field in fields}
+    session.expunge_all()
+
+    row = MarketIntelligenceReadService(session)._price_rows(
+        ("AAPL",), as_of=AS_OF, calendar_days=2
+    )["AAPL"][0]
+
+    assert row._asdict() == expected
+    with pytest.raises(AttributeError):
+        row.adj_close = 99.0
 
 
 def test_movers_quality_excludes_rows_outside_the_rvol_metric_window(session):

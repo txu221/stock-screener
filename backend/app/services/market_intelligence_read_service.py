@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from datetime import date, datetime, timedelta, timezone
 import math
 from typing import Iterable
@@ -74,6 +74,10 @@ _PRICE_READ_COLUMNS = (
     StockPrice.revision_number,
     StockPrice.reconciled_at,
 )
+_PriceReadRow = namedtuple(
+    "PriceReadRow",
+    (column.key for column in _PRICE_READ_COLUMNS),
+)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -134,7 +138,8 @@ class MarketIntelligenceReadService:
         )
         grouped: dict[str, list[object]] = defaultdict(list)
         for row in rows:
-            grouped[row.symbol].append(row)
+            projected = _PriceReadRow(*row)
+            grouped[projected.symbol].append(projected)
         return dict(grouped)
 
     def _expected_session(self) -> date:
