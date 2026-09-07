@@ -10,11 +10,12 @@ The final implementation SHA is `a25b667d642d203bb3f2a6cadf2e2651bd6021de`.
 The later closeout commit changes documentation/evidence only; the exact final
 branch head is reported by `git status` and the final delivery response.
 
-## 2. Draft PR state
+## 2. Pull request state
 
-Draft PR [txu221/stock-screener#1](https://github.com/txu221/stock-screener/pull/1)
-remains open on `feat/market-intelligence-engine`. It is not merged. No commit
-was pushed to `xang1234/stock-screener`, and no force push was used.
+PR [txu221/stock-screener#1](https://github.com/txu221/stock-screener/pull/1)
+remains open on `feat/market-intelligence-engine`. After the final green CI and
+integration runs it was marked ready for review on 2026-09-07. It is not merged.
+No commit was pushed to `xang1234/stock-screener`, and no force push was used.
 
 ## 3. Corporate-action model
 
@@ -231,7 +232,7 @@ the last reconciled materialization is preserved.
 `.github/workflows/market-intelligence-yahoo-canary.yml` defines one run after
 the US close on weekdays and supports manual dispatch. GitHub schedules execute
 workflow files from the default branch, so the schedule becomes active only
-after this still-draft branch is merged. It has read-only repository
+after this feature branch is merged. It has read-only repository
 permission, persists no application data, starts no database/Redis/Celery
 service, runs no migration/deployment, and executes only the live Yahoo contract
 test. The heavier Yahoo plus real Celery integration remains explicit manual
