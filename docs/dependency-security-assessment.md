@@ -5,14 +5,17 @@ Scope: Market Intelligence Production Hardening v2 on `feat/market-intelligence-
 
 ## Executive assessment
 
-`npm audit --json` reports the current frontend advisory-database view of 23
-vulnerable package nodes: 1 critical, 17 high, 4 moderate, and 1 low. Since the
-2026-09-02 assessment, the count increased by one moderate `@humanfs/node`
-package node while the lockfile remained unchanged; this is an advisory-feed
-change, not a hardening dependency change.
-The hardening range
-from `6d75e8a4` through the assessed commit changes no Python or npm dependency
-manifest or lockfile. `python -m pip check` reports no broken requirements.
+`npm audit --json` reports the current frontend advisory-database view of 22
+vulnerable package nodes: 0 critical, 17 high, 4 moderate, and 1 low. The former
+critical finding was direct dev dependency `vitest@4.0.18`, affected by
+`GHSA-5xrq-8626-4rwp`; the merge-readiness security gate upgraded only Vitest
+within major version 4 to `4.1.11`, outside the advisory's `<4.1.0` affected
+range. The production dependency graph is unchanged by this update.
+
+The earlier hardening range from `6d75e8a4` through `b4bd33f7` changed no Python
+or npm dependency manifest or lockfile. The subsequent merge-readiness change
+modifies only the direct dev dependency and its lockfile-resolved Vitest support
+packages. `python -m pip check` reports no broken requirements.
 
 No automatic remediation was run. In particular, this work did not run
 `npm audit fix`, add an override, or combine dependency upgrades with the
@@ -26,6 +29,7 @@ Commands:
 cd frontend
 npm audit --json
 npm audit --omit=dev --json
+npm ls vitest --json
 npm ls axios react-router-dom react-router @remix-run/router vite vitest \
   rollup postcss undici lodash brace-expansion flatted form-data js-yaml \
   minimatch nanoid picomatch --all --json
@@ -40,22 +44,26 @@ Observed totals:
 
 | Scope | Critical | High | Moderate | Low | Total |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Full installed frontend graph | 1 | 17 | 4 | 1 | 23 |
+| Full installed frontend graph | 0 | 17 | 4 | 1 | 22 |
 | `--omit=dev` production graph | 0 | 6 | 2 | 0 | 8 |
 
-The full graph contains 623 packages according to npm metadata: 239 production,
-385 development, and 50 optional entries (npm categories can overlap). The
+The full graph contains 624 package entries according to npm metadata: 239
+production, 386 development, 50 optional, and 9 peer entries (npm categories can
+overlap). The
 Python environment reports `No broken requirements found`.
 
-## Critical finding
+## Resolved critical finding
 
-| Package | Installed | Dependency class | Current reachability assessment | Recommendation |
-| --- | --- | --- | --- | --- |
-| `vitest` | 4.0.18 | Direct dev dependency | The reported critical issue requires a listening Vitest UI server. CI uses `vitest run`; the application production bundle does not include Vitest. Local watch mode is development-only, but exposing its server would create risk. | Upgrade to a fixed `>=4.1.0` release in a dedicated tooling change, rerun all frontend tests, and keep any test UI bound to a trusted interface. |
+| Package | Previous / current | Dependency class | Reachability and resolution |
+| --- | --- | --- | --- |
+| `vitest` | `4.0.18` / `4.1.11` | Direct dev dependency | The reported arbitrary-file read/execution issue requires a listening Vitest UI server. CI uses `vitest run`, and the application production bundle does not include Vitest. The installed version is now outside the advisory range; local test UI servers must still remain bound to a trusted interface. |
 
-This critical package is not present in the `--omit=dev` audit graph, so it is
-not a deployed browser-runtime dependency. It remains actionable developer and
-CI tooling debt.
+Vitest remains absent from the `--omit=dev` graph. Fresh `npm ci`, full audit,
+production-only audit, lint, focused static-route tests, production build, and
+Playwright smoke were run after the update. The full native-Windows Vitest run
+continues to expose the separately documented `D:\\D:\\...` fixture-path defect
+and static-route cold-start contention; the supported Ubuntu CI suite is the
+authoritative full-suite gate.
 
 ## High findings in the production dependency graph
 
@@ -99,9 +107,9 @@ servers publicly, and upgrade them in a coordinated tooling PR.
    Axios to the npm-recommended non-major fixed release and update the React
    Router family to a compatible fixed set; run navigation, auth/session, API,
    frontend unit, Playwright smoke, and production-build checks.
-2. Upgrade Vitest first among dev tools, then Vite/Rollup/PostCSS and their
-   transitive graph as one tested toolchain batch. Do not expose local test or
-   Vite servers beyond trusted interfaces.
+2. The direct Vitest critical is resolved. Upgrade Vite/Rollup/PostCSS and their
+   remaining transitive tooling graph later as one tested toolchain batch. Do
+   not expose local test or Vite servers beyond trusted interfaces.
 3. Refresh or constrain the Recharts/Lodash path only after verifying charts and
    bundle output; prefer an upstream fixed dependency over a blind override.
 4. Re-run both full and `--omit=dev` audits after each isolated batch and record
@@ -109,8 +117,9 @@ servers publicly, and upgrade them in a coordinated tooling PR.
 
 ## Hardening-v2 disposition
 
-The advisories predate this hardening range, no dependency was added or changed,
-and no new dependency attack surface was introduced. Production Hardening v2
-therefore records and prioritizes the risk without expanding into an unrelated
-dependency migration. The direct runtime packages remain recommended near-term
-follow-up work.
+The production advisories predate this hardening range, and the production
+dependency graph was not changed by the targeted Vitest remediation. No
+automatic remediation, override, or major-version toolchain migration was used.
+The direct runtime packages remain recommended near-term follow-up work, while
+the release gate now has zero Critical findings in both full and production-only
+audit scopes.
