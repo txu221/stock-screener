@@ -587,38 +587,38 @@ fix only its deployment root cause through red-green-refactor. If unrelated or
 environmental, reproduce on `main`, record it, and do not skip/xfail/disable it.
 Stop on any Critical advisory or secret finding.
 
-- [ ] **Step 1: Run deployment and release tests**
+- [x] **Step 1: Run deployment and release tests**
 
 ```powershell
 & '..\..\backend\venv\Scripts\python.exe' -m pytest backend/tests/unit/test_production_deployment_config.py backend/tests/unit/test_release_docs.py -q
 ```
 
-- [ ] **Step 2: Run Market Intelligence backend regression**
+- [x] **Step 2: Run Market Intelligence backend regression**
 
 Run the established deterministic Market Intelligence domain, repository,
 read-service, use-case, task, endpoint, migration, and integration-without-live-
 services selection. Require zero new failures.
 
-- [ ] **Step 3: Run frontend regression and build**
+- [x] **Step 3: Run frontend regression and build**
 
 Run `npm ci`, the 11 Market Intelligence test files, `npm run lint`, and
 `npm run build`. Require all focused tests/build to pass; preserve the known
 four unrelated lint warnings if unchanged.
 
-- [ ] **Step 4: Run dependency checks**
+- [x] **Step 4: Run dependency checks**
 
 Run `pip check`, `npm audit --json`, and `npm audit --omit=dev --json`. Require
 zero Critical findings and compare all other counts to the recorded baseline;
 do not run an automatic fix.
 
-- [ ] **Step 5: Run secret and image-reference scans**
+- [x] **Step 5: Run secret and image-reference scans**
 
 Scan changed files for PEM private keys, AWS access keys, GitHub tokens, Slack
 tokens, JWT-like secrets, and non-sentinel credentials. Assert release Compose
 contains no `latest` or tag concatenation and every production example image
 uses `@sha256:`.
 
-- [ ] **Step 6: Verify environment and Git hygiene**
+- [x] **Step 6: Verify environment and Git hygiene**
 
 Run `git check-ignore -v .env.docker`, require `git ls-files .env.docker` empty,
 run `git diff --check`, inspect `git diff --stat main...HEAD`, and confirm the
@@ -654,7 +654,7 @@ Do not mark preparation complete until the final SHA has green CI, zero new
 Market Intelligence regressions, zero Critical findings, no committed secret,
 and clean branch/main worktrees. A red CI job remains a blocker.
 
-- [ ] **Step 1: Commit final local evidence**
+- [x] **Step 1: Commit final local evidence**
 
 Update plan checkboxes with exact command results and write the report using
 only observed evidence. Commit:
