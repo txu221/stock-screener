@@ -18,6 +18,7 @@ def test_bootstrap_plan_uses_semantic_operations_instead_of_task_name_strings():
         BootstrapOperation.SMART_REFRESH_CACHE,
         BootstrapOperation.WAIT_FOR_BOOTSTRAP_PRICE_WARMUP,
         BootstrapOperation.REFRESH_ALL_FUNDAMENTALS,
+        BootstrapOperation.CALCULATE_SECTOR_INTELLIGENCE_SNAPSHOT,
         BootstrapOperation.CALCULATE_MARKET_RS_SNAPSHOT,
         BootstrapOperation.CALCULATE_DAILY_BREADTH_WITH_GAPFILL,
         BootstrapOperation.CALCULATE_MARKET_EXPOSURE,
@@ -209,6 +210,13 @@ def test_us_primary_bootstrap_loads_ibd_mappings_before_prices(monkeypatch):
         FakeTask("app.tasks.fundamentals_tasks.refresh_all_fundamentals"),
     )
     monkeypatch.setattr(
+        "app.tasks.market_intelligence_tasks.calculate_sector_intelligence_snapshot",
+        FakeTask(
+            "app.tasks.market_intelligence_tasks."
+            "calculate_sector_intelligence_snapshot"
+        ),
+    )
+    monkeypatch.setattr(
         "app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill",
         FakeTask("app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill"),
     )
@@ -243,6 +251,7 @@ def test_us_primary_bootstrap_loads_ibd_mappings_before_prices(monkeypatch):
         "app.tasks.cache_tasks.smart_refresh_cache",
         "app.tasks.runtime_bootstrap_tasks.wait_for_bootstrap_price_warmup",
         "app.tasks.fundamentals_tasks.refresh_all_fundamentals",
+        "app.tasks.market_intelligence_tasks.calculate_sector_intelligence_snapshot",
         "app.tasks.market_rs_tasks.calculate_market_rs_snapshot",
         "app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill",
         "app.tasks.breadth_tasks.calculate_market_exposure",

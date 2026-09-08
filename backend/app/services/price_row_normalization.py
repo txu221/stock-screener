@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any, Mapping
 
 import pandas as pd
 
+from app.domain.market_intelligence.price_provenance import price_row_content_hash
+from app.domain.market_intelligence.corporate_actions import (
+    CorporateActionEvidence,
+    CorporateActionReconciliationError,
+    validate_corporate_action_sequence,
+)
 from app.infra.serialization import finite_float_or_none
 
 OHLC_COLUMNS = ("Open", "High", "Low", "Close")
+CANONICAL_PRICE_NORMALIZATION_VERSION = "canonical_price_adjustment_v2"
+RECONCILED_PRICE_BASIS = "yahoo_adjusted_close_provider_volume"
+UNRECONCILED_PRICE_BASIS = "raw_ohlcv_unreconciled"
 
 
 def finite_ohlc_values(
@@ -81,11 +90,71 @@ def _volume_or_zero(value: Any) -> int:
     return int(number)
 
 
+def _timestamp_or_none(value: datetime | str | None) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _finite_or_none(value: Any) -> float | None:
+    return finite_float_or_none(value)
+
+
+def _canonical_provider_name(provider: str | None) -> str | None:
+    if provider is None:
+        return None
+    normalized = str(provider).strip().lower()
+    if not normalized:
+        return None
+    if normalized in {"yahoo", "yfinance"}:
+        return "yahoo"
+    return normalized
+
+
+def validate_corporate_action_frames(
+    batch_data: Mapping[str, pd.DataFrame],
+    *,
+    provider_by_symbol: Mapping[str, str] | None = None,
+) -> None:
+    """Reject incoherent Yahoo action evidence before Redis or DB publication.
+
+    Large adjustment-factor transitions are valid only when either adjacent
+    provider row carries a split or dividend. The conservative bounds detect
+    isolated factor corruption while allowing ordinary rounding drift.
+    """
+    providers = provider_by_symbol or {}
+    for symbol, data in batch_data.items():
+        if _canonical_provider_name(providers.get(symbol)) != "yahoo":
+            continue
+        evidence = tuple(
+            CorporateActionEvidence(
+                symbol=symbol,
+                trading_date=pd.Timestamp(index_value).date(),
+                close=row.get("Close"),
+                adjusted_close=row.get("Adj Close"),
+                dividend_cash=row.get("Dividends"),
+                split_ratio=row.get("Stock Splits"),
+            )
+            for index_value, row in data.sort_index().iterrows()
+        )
+        validate_corporate_action_sequence(evidence)
+
+
 def stock_price_row_from_ohlcv(
     *,
     symbol: str,
     row_date: date,
     row: Mapping[str, Any],
+    provider: str | None = None,
+    source_timestamp: datetime | str | None = None,
+    normalization_version: str | None = None,
+    reconciled_at: datetime | str | None = None,
 ) -> dict[str, Any] | None:
     """Build a StockPrice mapping, skipping rows without complete finite OHLC."""
     ohlc = finite_ohlc_values(
@@ -97,8 +166,29 @@ def stock_price_row_from_ohlcv(
     if ohlc is None:
         return None
     open_, high, low, close = ohlc
-    adj_close = finite_float_or_none(row.get("Adj Close"))
-    return {
+    provider_name = _canonical_provider_name(provider)
+    adj_close = (
+        finite_float_or_none(row.get("Adj Close"))
+        if provider_name == "yahoo"
+        else None
+    )
+    timestamp = _timestamp_or_none(source_timestamp)
+    observed_at = _timestamp_or_none(reconciled_at)
+    dividend_cash = _finite_or_none(row.get("Dividends"))
+    split_ratio = _finite_or_none(row.get("Stock Splits"))
+    adjustment_factor = (
+        adj_close / close
+        if adj_close is not None and adj_close > 0 and close > 0
+        else None
+    )
+    reconciled = (
+        adjustment_factor is not None
+        and provider_name is not None
+        and timestamp is not None
+        and normalization_version == CANONICAL_PRICE_NORMALIZATION_VERSION
+        and observed_at is not None
+    )
+    normalized = {
         "symbol": symbol,
         "date": row_date,
         "open": open_,
@@ -106,5 +196,15 @@ def stock_price_row_from_ohlcv(
         "low": low,
         "close": close,
         "volume": _volume_or_zero(row.get("Volume")),
-        "adj_close": adj_close if adj_close is not None else close,
+        "adj_close": adj_close,
+        "adjustment_factor": adjustment_factor,
+        "dividend_cash": dividend_cash,
+        "split_ratio": split_ratio,
+        "provider": provider_name,
+        "source_timestamp": timestamp,
+        "normalization_version": normalization_version,
+        "price_basis": RECONCILED_PRICE_BASIS if reconciled else UNRECONCILED_PRICE_BASIS,
+        "reconciled_at": observed_at if reconciled else None,
     }
+    normalized["content_hash"] = price_row_content_hash(normalized)
+    return normalized

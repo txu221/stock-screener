@@ -1,0 +1,43 @@
+{
+  "normalization_version": "canonical_price_adjustment_v2",
+  "provider": "yahoo",
+  "source_timestamp": "2026-08-28T16:00:00+00:00",
+  "cases": [
+    {
+      "name": "two_for_one_split",
+      "symbol": "SPLT",
+      "date": "2026-06-24",
+      "row": {"Open": 100.0, "High": 102.0, "Low": 98.0, "Close": 100.0, "Adj Close": 50.0, "Volume": 1000000, "Dividends": 0.0, "Stock Splits": 2.0},
+      "expected_factor": 0.5,
+      "expected_split_ratio": 2.0,
+      "expected_dividend_cash": 0.0
+    },
+    {
+      "name": "three_for_one_split",
+      "symbol": "TRIP",
+      "date": "2026-06-24",
+      "row": {"Open": 90.0, "High": 93.0, "Low": 87.0, "Close": 90.0, "Adj Close": 30.0, "Volume": 1000000, "Dividends": 0.0, "Stock Splits": 3.0},
+      "expected_factor": 0.3333333333333333,
+      "expected_split_ratio": 3.0,
+      "expected_dividend_cash": 0.0
+    },
+    {
+      "name": "one_for_ten_reverse_split",
+      "symbol": "REVS",
+      "date": "2026-06-24",
+      "row": {"Open": 5.0, "High": 5.2, "Low": 4.8, "Close": 5.0, "Adj Close": 50.0, "Volume": 1000000, "Dividends": 0.0, "Stock Splits": 0.1},
+      "expected_factor": 10.0,
+      "expected_split_ratio": 0.1,
+      "expected_dividend_cash": 0.0
+    },
+    {
+      "name": "cash_dividend_adjustment",
+      "symbol": "DIVD",
+      "date": "2026-06-24",
+      "row": {"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Adj Close": 99.5, "Volume": 1000000, "Dividends": 0.5, "Stock Splits": 0.0},
+      "expected_factor": 0.995,
+      "expected_split_ratio": 0.0,
+      "expected_dividend_cash": 0.5
+    }
+  ]
+}

@@ -42,6 +42,22 @@ describe('Layout', () => {
     useRuntimeActivityMock.mockReset();
   });
 
+  it('exposes Market Intelligence as a primary navigation destination', () => {
+    useRuntimeActivityMock.mockReturnValue({ data: null });
+
+    renderWithProviders(
+      <MemoryRouter initialEntries={['/market-intelligence/sectors']}>
+        <Layout>
+          <div>content</div>
+        </Layout>
+      </MemoryRouter>
+    );
+
+    const link = screen.getByRole('link', { name: 'Market Intelligence' });
+    expect(link).toHaveAttribute('href', '/market-intelligence');
+    expect(link).toHaveStyle({ fontWeight: '600' });
+  });
+
   it('defers the header runtime activity request until after initial paint', () => {
     vi.useFakeTimers();
     useRuntimeActivityMock.mockReturnValue({ data: null });

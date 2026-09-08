@@ -84,6 +84,7 @@ if TYPE_CHECKING:
     from app.tasks.workload_coordination import WorkloadCoordination
     from app.wiring.canonical_rs_runtime import CanonicalRsRuntime
     from app.wiring.market_rs_services import MarketRsServices
+    from app.wiring.market_intelligence_services import MarketIntelligenceServices
 
 
 SessionFactory: TypeAlias = Callable[[], Session]
@@ -118,6 +119,7 @@ class RuntimeServices:
         self._zai_key_manager: ZAIKeyManager | None = None
         self._rate_limiter: RedisRateLimiter | None = None
         self._market_calendar_service: MarketCalendarService | None = None
+        self._market_intelligence_services: MarketIntelligenceServices | None = None
         self._github_release_sync_service: GitHubReleaseSyncService | None = None
         self._security_master_resolver: SecurityMasterResolver | None = None
         self._eps_rating_service: EPSRatingService | None = None
@@ -371,6 +373,25 @@ class RuntimeServices:
                     self._market_calendar_service = MarketCalendarService()
         return self._market_calendar_service
 
+    def market_intelligence_services(self) -> MarketIntelligenceServices:
+        if self._market_intelligence_services is None:
+            with self._init_lock:
+                if self._market_intelligence_services is None:
+                    from app.wiring.market_intelligence_services import (
+                        build_market_intelligence_services,
+                    )
+
+                    self._market_intelligence_services = (
+                        build_market_intelligence_services(
+                            session_factory=self._session_factory,
+                            market_calendar=self.market_calendar_service(),
+                        )
+                    )
+        return self._market_intelligence_services
+
+    def market_intelligence_runner(self):
+        return self.market_intelligence_services().runner
+
     def point_in_time_universe_service(self) -> PointInTimeUniverseService:
         return self.canonical_rs_runtime().point_in_time_universe_service()
 
@@ -588,6 +609,7 @@ class RuntimeServices:
             self._zai_key_manager = None
             self._rate_limiter = None
             self._market_calendar_service = None
+            self._market_intelligence_services = None
             self._github_release_sync_service = None
             self._security_master_resolver = None
             self._eps_rating_service = None
@@ -768,6 +790,11 @@ def get_rate_limiter() -> RedisRateLimiter:
 def get_market_calendar_service() -> MarketCalendarService:
     """Return process-scoped market calendar service."""
     return _resolve_runtime_services().market_calendar_service()
+
+
+def get_market_intelligence_runner():
+    """Return the process-scoped daily sector-intelligence runner."""
+    return _resolve_runtime_services().market_intelligence_runner()
 
 
 def get_market_rs_snapshot_service() -> MarketRsSnapshotService:

@@ -80,6 +80,15 @@ def test_market_rs_task_is_registered_and_routed_to_market_jobs(task_name):
     assert celery_app.conf.task_routes[task_name] == {"queue": "market_jobs_us"}
 
 
+def test_market_intelligence_task_is_registered_and_routed_to_us_market_jobs():
+    task_name = (
+        "app.tasks.market_intelligence_tasks.calculate_sector_intelligence_snapshot"
+    )
+
+    assert "app.tasks.market_intelligence_tasks" in celery_app.conf.include
+    assert celery_app.conf.task_routes[task_name] == {"queue": "market_jobs_us"}
+
+
 # ---------------------------------------------------------------------------
 # Redis backend resilience
 # ---------------------------------------------------------------------------

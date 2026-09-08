@@ -26,8 +26,9 @@ class TestSqlUnitOfWork:
                 id(uow.universe._session),
                 id(uow.feature_runs._session),
                 id(uow.feature_store._session),
+                id(uow.market_intelligence._session),
             }
-            # All 5 repos must reference the exact same session object
+            # Every repository must reference the exact same session object.
             assert len(sessions) == 1
 
     def test_cross_repo_transaction(self, engine):

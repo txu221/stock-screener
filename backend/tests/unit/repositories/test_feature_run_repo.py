@@ -296,6 +296,47 @@ class TestPublishAtomically:
         )
         assert pointer is None
 
+    def test_monotonic_publish_marks_older_run_published_without_repointing(
+        self,
+        repo: SqlFeatureRunRepository,
+        session: Session,
+    ):
+        newest = repo.start_run(date(2026, 2, 18), RunType.DAILY_SNAPSHOT)
+        repo.mark_completed(newest.id, _make_stats())
+        repo.publish_atomically_if_not_older(newest.id, "latest_sectors")
+
+        older = repo.start_run(date(2026, 2, 17), RunType.DAILY_SNAPSHOT)
+        repo.mark_completed(older.id, _make_stats())
+        result = repo.publish_atomically_if_not_older(older.id, "latest_sectors")
+
+        pointer = session.get(FeatureRunPointer, "latest_sectors")
+        assert result.status == RunStatus.PUBLISHED
+        assert pointer is not None
+        assert pointer.run_id == newest.id
+
+    def test_monotonic_publish_uses_latest_revision_for_same_date(
+        self,
+        repo: SqlFeatureRunRepository,
+        session: Session,
+    ):
+        first = repo.start_run(date(2026, 2, 18), RunType.DAILY_SNAPSHOT)
+        repo.mark_completed(first.id, _make_stats())
+        repo.publish_atomically_if_not_older(first.id, "latest_sectors")
+
+        revision = repo.start_run(date(2026, 2, 18), RunType.DAILY_SNAPSHOT)
+        repo.mark_completed(revision.id, _make_stats())
+        published = repo.publish_atomically_if_not_older(
+            revision.id,
+            "latest_sectors",
+        )
+
+        pointer = session.get(FeatureRunPointer, "latest_sectors")
+        assert pointer is not None
+        assert pointer.run_id == revision.id
+        assert published.published_at.replace(tzinfo=None) >= (
+            repo.get_run(first.id).published_at.replace(tzinfo=None)
+        )
+
 
 class TestRepointPublished:
     def test_moves_pointer_without_mutating_published_run(

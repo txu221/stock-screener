@@ -14,7 +14,7 @@ Stock Scanner v1.5.0 delivers a shared revision-2 market-breadth engine, balance
 
 ### Relative strength and group analytics
 
-- Standardizes balanced market relative strength across live and static workflows and activates it correctly during fresh bootstrap.
+- Standardizes balanced market relative strength across live and static workflows and activates it correctly during first-run bootstrap.
 - Hydrates benchmark anchors and RRG history before validation, preventing empty or incomplete first-run relative-strength views.
 - Repairs static and live group-ranking history, backfill ordering, point-in-time universes, and RRG startup behavior.
 - Adds short-horizon group relative-strength columns and populates live group history and RRG data during bootstrap.

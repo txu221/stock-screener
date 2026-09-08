@@ -45,6 +45,7 @@ celery_app = Celery(
         'app.tasks.group_rank_tasks',  # IBD group ranking tasks
         'app.tasks.group_history_tasks',  # Group history bootstrap and repair
         'app.tasks.market_rs_tasks',  # Canonical Market RS snapshot tasks
+        'app.tasks.market_intelligence_tasks',  # US sector intelligence snapshot
         'app.tasks.industry_tasks',  # Tracked IBD industry reference loading
         'app.tasks.theme_discovery_tasks',  # Theme discovery pipeline tasks
         'app.tasks.universe_tasks',  # Stock universe management tasks
@@ -311,10 +312,12 @@ _MARKET_JOB_TASKS = (
     'app.tasks.group_history_tasks.ensure_group_history',
     'app.tasks.market_rs_tasks.calculate_market_rs_snapshot',
     'app.tasks.market_rs_tasks.bootstrap_balanced_market_rs',
+    'app.tasks.market_intelligence_tasks.calculate_sector_intelligence_snapshot',
     'app.interfaces.tasks.feature_store_tasks.build_daily_snapshot',
     'app.tasks.daily_market_pipeline_tasks.queue_daily_market_pipeline',
     'app.tasks.daily_market_pipeline_tasks.guard_price_refresh',
     'app.tasks.daily_market_pipeline_tasks.guard_market_rs_result',
+    'app.tasks.daily_market_pipeline_tasks.guard_market_intelligence_result',
     'app.tasks.daily_market_pipeline_tasks.guard_breadth_result',
     'app.tasks.daily_market_pipeline_tasks.guard_group_result',
     'app.tasks.daily_market_pipeline_tasks.guard_snapshot_result',

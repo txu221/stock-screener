@@ -169,6 +169,7 @@ function Layout({ children }) {
 
   const navItems = [
     { path: '/', label: 'Daily' },
+    { path: '/market-intelligence', label: 'Market Intelligence' },
     { path: '/scan', label: 'Scan' },
     { path: '/breadth', label: 'Breadth' },
     { path: '/groups', label: 'Groups' },
@@ -191,7 +192,9 @@ function Layout({ children }) {
           <TickerSearch />
           <Box sx={{ flexGrow: 1 }} />
           {navItems.map((item) => {
-            const isActive = location.pathname === item.path;
+            const isActive = item.path === '/'
+              ? location.pathname === item.path
+              : location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
             return (
               <Button
                 key={item.path}

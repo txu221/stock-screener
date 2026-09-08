@@ -1,15 +1,28 @@
 from __future__ import annotations
 
 from datetime import date
+from datetime import datetime, timezone
+import json
+from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from app.services.price_row_normalization import (
+    CorporateActionReconciliationError,
     drop_non_finite_close_rows,
     normalize_price_batch,
     normalize_price_frame,
     stock_price_row_from_ohlcv,
+    validate_corporate_action_frames,
 )
+
+
+FIXTURE_PATH = (
+    Path(__file__).parents[1] / "fixtures" / "market_intelligence" / "corporate_actions.json"
+)
+CORPORATE_ACTION_FIXTURE = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+RECONCILED_AT = datetime(2026, 8, 28, 16, 5, tzinfo=timezone.utc)
 
 
 def _ohlcv_frame(closes: list[float], days: list[date]) -> pd.DataFrame:
@@ -116,3 +129,203 @@ def test_normalize_price_batch_filters_symbols_with_insufficient_clean_rows():
 
     assert list(cleaned) == ["AAPL"]
     assert cleaned["AAPL"]["Close"].tolist() == [101.0, 102.0]
+
+
+def test_corporate_action_validation_rejects_negative_action_evidence():
+    payload = _ohlcv_frame(
+        [100.0, 101.0],
+        [date(2026, 6, 24), date(2026, 6, 25)],
+    )
+    payload["Adj Close"] = payload["Close"]
+    payload["Dividends"] = [0.0, -0.5]
+    payload["Stock Splits"] = [0.0, 0.0]
+
+    with pytest.raises(
+        CorporateActionReconciliationError,
+        match="negative Dividends",
+    ) as exc_info:
+        validate_corporate_action_frames(
+            {"SPY": payload},
+            provider_by_symbol={"SPY": "yahoo"},
+        )
+
+    assert exc_info.value.market_intelligence_stage == "corporate_action_reconciliation"
+    assert (
+        exc_info.value.market_intelligence_failure_category
+        == "CORPORATE_ACTION_RECONCILIATION_FAILURE"
+    )
+
+
+def test_corporate_action_validation_rejects_unexplained_factor_discontinuity():
+    payload = _ohlcv_frame(
+        [100.0, 100.0, 100.0],
+        [date(2026, 6, 23), date(2026, 6, 24), date(2026, 6, 25)],
+    )
+    payload["Adj Close"] = [100.0, 10.0, 10.0]
+    payload["Dividends"] = 0.0
+    payload["Stock Splits"] = 0.0
+
+    with pytest.raises(
+        CorporateActionReconciliationError,
+        match="unexplained adjustment-factor discontinuity",
+    ):
+        validate_corporate_action_frames(
+            {"SPY": payload},
+            provider_by_symbol={"SPY": "yfinance"},
+        )
+
+
+def test_corporate_action_validation_allows_discontinuity_with_action_evidence():
+    payload = _ohlcv_frame(
+        [100.0, 100.0, 100.0],
+        [date(2026, 6, 23), date(2026, 6, 24), date(2026, 6, 25)],
+    )
+    payload["Adj Close"] = [100.0, 10.0, 10.0]
+    payload["Dividends"] = 0.0
+    payload["Stock Splits"] = [0.0, 10.0, 0.0]
+
+    validate_corporate_action_frames(
+        {"SPY": payload},
+        provider_by_symbol={"SPY": "yahoo"},
+    )
+
+
+@pytest.mark.parametrize("case", CORPORATE_ACTION_FIXTURE["cases"], ids=lambda case: case["name"])
+def test_stock_price_row_from_ohlcv_preserves_corporate_action_evidence(case):
+    normalized = stock_price_row_from_ohlcv(
+        symbol=case["symbol"],
+        row_date=date.fromisoformat(case["date"]),
+        row=case["row"],
+        provider=CORPORATE_ACTION_FIXTURE["provider"],
+        source_timestamp=CORPORATE_ACTION_FIXTURE["source_timestamp"],
+        normalization_version=CORPORATE_ACTION_FIXTURE["normalization_version"],
+        reconciled_at=RECONCILED_AT,
+    )
+
+    assert normalized is not None
+    assert normalized["open"] == case["row"]["Open"]
+    assert normalized["close"] == case["row"]["Close"]
+    assert normalized["adj_close"] == case["row"]["Adj Close"]
+    assert normalized["volume"] == case["row"]["Volume"]
+    assert normalized["adjustment_factor"] == pytest.approx(case["expected_factor"])
+    assert normalized["split_ratio"] == case["expected_split_ratio"]
+    assert normalized["dividend_cash"] == case["expected_dividend_cash"]
+    assert normalized["normalization_version"] == "canonical_price_adjustment_v2"
+    assert normalized["price_basis"] == "yahoo_adjusted_close_provider_volume"
+    assert normalized["reconciled_at"] is not None
+
+
+def test_stock_price_row_from_ohlcv_marks_missing_adjusted_close_unreconciled():
+    normalized = stock_price_row_from_ohlcv(
+        symbol="NOADJ",
+        row_date=date(2026, 6, 24),
+        row={"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Volume": 1_000_000},
+        provider="yahoo",
+        source_timestamp="2026-08-28T16:00:00+00:00",
+        normalization_version="canonical_price_adjustment_v2",
+        reconciled_at=RECONCILED_AT,
+    )
+
+    assert normalized is not None
+    assert normalized["adj_close"] is None
+    assert normalized["adjustment_factor"] is None
+    assert normalized["price_basis"] == "raw_ohlcv_unreconciled"
+    assert normalized["reconciled_at"] is None
+
+
+def test_stock_price_row_from_ohlcv_requires_a_non_blank_provider_for_reconciliation():
+    normalized = stock_price_row_from_ohlcv(
+        symbol="NOPROVIDER",
+        row_date=date(2026, 6, 24),
+        row={"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Adj Close": 99.5, "Volume": 1_000_000},
+        provider=" ",
+        source_timestamp="2026-08-28T16:00:00+00:00",
+        normalization_version="canonical_price_adjustment_v2",
+        reconciled_at=RECONCILED_AT,
+    )
+
+    assert normalized is not None
+    assert normalized["price_basis"] == "raw_ohlcv_unreconciled"
+    assert normalized["reconciled_at"] is None
+
+
+def test_stock_price_row_from_ohlcv_hash_is_deterministic_for_identical_evidence():
+    arguments = {
+        "symbol": "HASH",
+        "row_date": date(2026, 6, 24),
+        "row": {"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Adj Close": 99.5, "Volume": 1_000_000, "Dividends": 0.5, "Stock Splits": 0.0},
+        "provider": "yahoo",
+        "source_timestamp": "2026-08-28T16:00:00+00:00",
+        "normalization_version": "canonical_price_adjustment_v2",
+        "reconciled_at": RECONCILED_AT,
+    }
+
+    first = stock_price_row_from_ohlcv(**arguments)
+    second = stock_price_row_from_ohlcv(**arguments)
+
+    assert first is not None
+    assert second is not None
+    assert first["content_hash"] == second["content_hash"]
+    assert len(first["content_hash"]) == 64
+    assert first == second
+
+
+def test_stock_price_row_from_ohlcv_hash_changes_when_only_source_timestamp_changes():
+    arguments = {
+        "symbol": "HASH",
+        "row_date": date(2026, 6, 24),
+        "row": {"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Adj Close": 99.5, "Volume": 1_000_000},
+        "provider": "yahoo",
+        "normalization_version": "canonical_price_adjustment_v2",
+        "reconciled_at": RECONCILED_AT,
+    }
+
+    first = stock_price_row_from_ohlcv(
+        **arguments,
+        source_timestamp="2026-06-24T00:00:00+00:00",
+    )
+    second = stock_price_row_from_ohlcv(
+        **arguments,
+        source_timestamp="2026-06-25T00:00:00+00:00",
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first["content_hash"] != second["content_hash"]
+
+
+@pytest.mark.parametrize("provider", ["cn_market_data", "krx"])
+def test_stock_price_row_from_ohlcv_keeps_native_adj_close_alias_unreconciled(provider):
+    normalized = stock_price_row_from_ohlcv(
+        symbol="000001.SS" if provider == "cn_market_data" else "005930.KS",
+        row_date=date(2026, 6, 24),
+        row={"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Adj Close": 100.0, "Volume": 1_000_000},
+        provider=provider,
+        source_timestamp="2026-06-24T00:00:00+00:00",
+        normalization_version="canonical_price_adjustment_v2",
+        reconciled_at=RECONCILED_AT,
+    )
+
+    assert normalized is not None
+    assert normalized["adj_close"] is None
+    assert normalized["adjustment_factor"] is None
+    assert normalized["price_basis"] == "raw_ohlcv_unreconciled"
+    assert normalized["reconciled_at"] is None
+
+
+def test_stock_price_row_from_ohlcv_reconciles_yahoo_fallback_with_real_adjusted_close():
+    normalized = stock_price_row_from_ohlcv(
+        symbol="000001.SS",
+        row_date=date(2026, 6, 24),
+        row={"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Adj Close": 99.0, "Volume": 1_000_000},
+        provider="yahoo",
+        source_timestamp="2026-06-24T00:00:00+00:00",
+        normalization_version="canonical_price_adjustment_v2",
+        reconciled_at=RECONCILED_AT,
+    )
+
+    assert normalized is not None
+    assert normalized["adj_close"] == 99.0
+    assert normalized["adjustment_factor"] == pytest.approx(0.99)
+    assert normalized["price_basis"] == "yahoo_adjusted_close_provider_volume"
+    assert normalized["reconciled_at"] == RECONCILED_AT

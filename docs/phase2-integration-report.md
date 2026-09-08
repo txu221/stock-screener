@@ -1,0 +1,533 @@
+# Market Intelligence Engine Phase 2 Integration Report
+
+**Date:** 2026-08-27
+
+**Branch:** `feat/market-intelligence-engine`
+
+**Phase 1 base:** `7627ac7d2ff47cdc5b15e4f7f2a0be84330a5c36`
+
+**Phase 2 status:** `PHASE 2 COMPLETE`
+
+Phase 2 added repeatable production-integration validation around the Phase 1
+sector-intelligence slice. The live Yahoo provider, every service-independent
+path, PostgreSQL transaction/concurrency behavior, Redis, a real Celery worker,
+and PostgreSQL-backed APIs were exercised successfully. No SQLite or mock result
+is presented as a substitute for these real-service claims. No Phase 1 financial
+semantics changed.
+
+## 1. Environment and infrastructure
+
+The local host is Windows and has no usable Docker engine, WSL distribution,
+`psql`, `redis-server`, or `redis-cli`. Docker Compose therefore could not start
+the repository's existing PostgreSQL 16 and Redis 7 services. No system package,
+service, WSL distribution, Docker component, PostgreSQL, Redis, or host setting
+was installed or changed.
+
+The existing production infrastructure was inspected and retained:
+
+- Compose uses `postgres:16-alpine` and `redis:7-alpine`;
+- the existing Celery application, `market_jobs_us` queue, SQLAlchemy Unit of
+  Work, Alembic migration, `FeatureRun`, and `FeatureRunPointer` remain the only
+  runtime path;
+- installed Python clients are psycopg2 2.9.12, SQLAlchemy 2.0.25, Alembic
+  1.14.1, redis-py 5.0.1, and Celery 5.3.4;
+- GitHub Actions run `33126196870` cleared the local environment block on the
+  `ubuntu-24.04` runner image. The actual servers reported PostgreSQL `16.15`
+  (`x86_64-pc-linux-musl`) and Redis `7.4.11`.
+
+The opt-in service fixtures require explicit URLs and refuse unsafe
+substitution. PostgreSQL checks accept only `PHASE2_POSTGRES_URL` whose database
+name contains `phase2` or `test`, plus `RUN_MARKET_INTELLIGENCE_POSTGRES=1` and
+the exact acknowledgement `PHASE2_ALLOW_DESTRUCTIVE_POSTGRES_TESTS=1`. They do
+not fall back to the application's `DATABASE_URL`, and the repository-wide
+PostgreSQL test fixture must remain disabled. A SQLite URL fails the environment
+contract. Live Yahoo requires `RUN_MARKET_INTELLIGENCE_LIVE=1`. Service URLs
+drop credentials, query strings, and fragments in diagnostics.
+
+## 2. PostgreSQL migration and compatibility
+
+The real-PostgreSQL suite was collected as eight explicit environment skips on
+this host. Its migration-module smoke check applies the `20260826_0031`
+`upgrade()`/`downgrade()` operations to a generated schema through Alembic
+`Operations` and inspects the resulting Phase 1 schema:
+
+```text
+20260823_0030 -> upgrade 20260826_0031
+              -> downgrade 20260823_0030
+              -> re-upgrade 20260826_0031
+```
+
+It inspects all four Market Intelligence tables, columns, types, primary and
+foreign keys, unique/check constraints, indexes, nullability, and defaults. It
+also seeds predecessor `FeatureRun`/pointer state and verifies that state remains
+readable after the module round trip. GitHub Actions additionally executed the
+repository's real Alembic path against PostgreSQL:
+`upgrade head -> downgrade 20260823_0030 -> upgrade head`. The four typed tables
+were present after both upgrades, absent after downgrade, and predecessor
+`feature_runs` data survived. The complete nine-test PostgreSQL group passed.
+
+Before Draft PR review, fork `main` was integrated into the feature branch. It
+contained the separately developed breadth/classification migration branch
+`20260825_0031 -> 20260825_0032`, which shares predecessor `20260823_0030` with
+the Market Intelligence migration. No-op revision `20260828_0033` explicitly
+merges heads `20260825_0032` and `20260826_0031`. A deterministic Alembic graph
+test requires that merge revision to be the only head; the real PostgreSQL
+upgrade/downgrade/re-upgrade workflow covers the combined graph.
+
+## 3. Transaction rollback and concurrent publication
+
+The opt-in PostgreSQL tests use independent sessions, non-empty audit/bar/
+rejection/snapshot evidence, and synchronization barriers. They cover:
+
+- failure after candidate persistence but before pointer update;
+- failure after pointer mutation but before commit;
+- concurrent same-day revisions;
+- a newer date racing an older backfill;
+- a newer run starting first but committing after the older run;
+- a same-day idempotency-key insertion race;
+- same-day revision ordering and old-date backfill behavior.
+
+The required observations are no orphan audit/bar/rejection/snapshot rows,
+consistent `FeatureRun` state, rollback of pointer mutation, history/pointer
+winner agreement through the repository history reader, and a latest pointer that never moves to an older trading
+date. These rollback, advisory-lock, row-lock, monotonicity, revision, backfill,
+and concurrency checks all passed in run `33126196870` using independent real
+PostgreSQL sessions.
+
+Sequential rollback/publication behavior continues to pass in the existing
+Phase 1 and Phase 2 SQLite test harness. That result validates deterministic
+application semantics only; it is not PostgreSQL transaction evidence.
+
+## 4. Redis and Celery
+
+The service-independent task registration assertion passed and confirms
+`calculate_sector_intelligence_snapshot` is registered on `market_jobs_us`.
+The opt-in suite also contains Redis ping/isolated-key cleanup and a real-worker
+one-shot/idempotency check against explicit PostgreSQL and Redis URLs. Every
+worker run receives a UUID queue, the readiness ping targets that exact worker
+node, broker/result Redis DBs must differ, and task result keys are forgotten.
+
+The local result remains one registration test passed and two explicit service
+skips. In Actions, the Redis scoped round trip passed against Redis `7.4.11`.
+A real isolated-queue Celery worker consumed the production task through Redis,
+created its production database session, called the existing Yahoo provider,
+wrote FeatureRun/audit/canonical/snapshot/pointer state to PostgreSQL, and
+returned the same run and idempotency key for the repeated completed-session
+delivery. The worker test passed in `10.36 s`.
+
+During exact Draft-PR target integration, one later live run observed a Yahoo
+historical correction between the first and second delivery. Both executions
+were valid `SUCCEEDED` revisions, but that is not broker-redelivery
+idempotency. The production task now defaults to `reuse_published=True`: it
+returns the newest published run for the same session and metric version before
+calendar/provider I/O. Operators can request an intentional audited correction
+with `force_refresh=True`; partial and failed sessions remain retryable. A
+red-first unit regression proves the provider is not called on the normal
+published-session retry, while existing content-hash and same-day revision
+tests preserve the correction path.
+
+The task currently declares no Celery `autoretry_for` policy. Consequently a
+real broker/worker retry sequence was not validated and remains a production
+risk to resolve through observation or a separately specified retry policy; it
+was not changed speculatively in Phase 2.
+
+## 5. Yahoo live validation
+
+The opt-in live check called the existing Yahoo `BulkDataFetcher` once for the
+exact fixed universe:
+
+```text
+SPY XLC XLY XLP XLE XLF XLV XLI XLB XLRE XLK XLU
+```
+
+Observed on 2026-08-27:
+
+| Observation | Result |
+|---|---:|
+| Target completed session | 2026-08-26 |
+| Requested / returned | 12 / 12 |
+| Missing / symbol failures | 0 / 0 |
+| Bars per symbol | 125 |
+| Canonical bars | 1,500 |
+| Earliest / latest date | 2026-02-27 / 2026-08-26 |
+| Rejected rows | 0 |
+| Yahoo fetch | 3.6034 s |
+| Validation and normalization | 0.0151 s |
+| Metric calculation | 0.0036 s |
+| Provider-to-candidate total | 8.1873 s |
+| Candidate result | SUCCEEDED, 12 snapshots |
+
+Freshness is derived per symbol: all 12 canonical symbol histories must end on
+the target session. A stale target for even one ETF produces a STALE summary and
+identifies that symbol; an explicit future/uncompleted target is rejected.
+No raw provider payload, cookie, credential, provider-controlled error message,
+or vendor response was committed.
+A Redis connection timeout was logged by an existing cache path because Redis
+was absent; the provider request itself completed successfully.
+
+## 6. Manual data reconciliation
+
+SPY, XLK, XLE, and XLU were followed from raw Yahoo OHLC/Adj Close/volume through
+an independently recomputed adjustment factor/adjusted OHLC/volume comparison
+and then independently recomputed metrics.
+All adjustment factors in the inspected session were 1.0. Representative
+2026-08-26 evidence follows; values are retained at provider/test precision.
+
+| Symbol | Raw O/H/L/C | Adj Close | Volume | Return 1D / 5D / 20D / 60D | RVOL20 | Pressure 1D | CMF20 proxy |
+|---|---|---:|---:|---|---:|---:|---:|
+| SPY | 764.72998 / 767.34998 / 763.92999 / 766.08002 | 766.08002 | 28,459,700 | 0.000222 / -0.003875 / 0.050202 / 0.012542 | 0.635938 | 0.257331 | 0.023989 |
+| XLK | 180.71001 / 183.35001 / 180.71001 / 182.84000 | 182.84000 | 4,662,700 | 0.006053 / -0.004356 / 0.097677 / -0.064886 | 0.608391 | 0.613629 | 0.056232 |
+| XLE | 61.43000 / 63.02000 / 61.31000 / 62.43000 | 62.43000 | 24,394,100 | 0.005962 / -0.018087 / 0.064450 / 0.097386 | 0.929472 | 0.309941 | 0.206789 |
+| XLU | 43.31000 / 43.71000 / 43.28000 / 43.51000 | 43.51000 | 12,240,200 | 0.004618 / -0.011586 / -0.031173 / 0.015959 | 0.593185 | 0.069765 | -0.082827 |
+
+The independently recomputed sector relative returns also matched the production
+snapshot. For example, XLK relative returns versus SPY were 0.005831, -0.000482,
+0.047475, and -0.077428 for 1/5/20/60 sessions. SPY relative-return fields are
+correctly unavailable because SPY is the benchmark, not zero. An initial
+diagnostic checker treated them as zero and reported a checker-only mismatch;
+after correcting the independent checker to the documented `None` contract, all
+four inspected symbols matched. Production code was not changed.
+
+## 7. Completed-session policy
+
+Seven frozen-clock tests passed through the existing US exchange calendar:
+
+- 2026-08-24 during market hours selects 2026-08-21;
+- after the 16:30 completion buffer selects 2026-08-24;
+- a weekend selects the prior Friday;
+- Labor Day selects the prior Friday;
+- the 2026-11-27 early close before its 13:30 buffer selects 2026-11-25;
+- after that buffer selects 2026-11-27;
+- an unfinished current-session provider row is excluded.
+
+No path uses `today - 1 day` as a market-session policy.
+
+## 8. Controlled run-state and pointer semantics
+
+Four production-use-case/UoW tests passed with frozen inputs:
+
+- SUCCEEDED: 12/12 valid, 12 snapshots, pointer moves;
+- PARTIAL: one missing/invalid symbol, latest attempt is PARTIAL, pointer and
+  `/latest` stay on the preceding SUCCEEDED snapshot;
+- FAILED: provider request failure, no fabricated twelve-row rejection set,
+  latest attempt is FAILED, pointer and `/latest` remain stable;
+- exact rerun: same logical result and no duplicate snapshot/evidence rows.
+
+Data Health was compared to committed audit state for coverage, rejection,
+missing-symbol, provider/request status, freshness, versions, latest attempt,
+and last complete publication. Latest-attempt truth remains independent of the
+latest stable pointer.
+
+These checks exercise production domain/use-case/repository/API code with the
+deterministic SQLite test UoW. They do not establish real PostgreSQL transaction
+or Celery worker behavior.
+
+## 9. API validation
+
+FastAPI/TestClient checks passed for:
+
+- `GET /api/v1/market-intelligence/sectors/latest`;
+- `GET /api/v1/market-intelligence/sectors/history`;
+- `GET /api/v1/market-intelligence/sectors/health`.
+
+The checks compare API values/run IDs with committed repository state. Latest
+contains 11 sector rows and SPY only as the benchmark, follows the published
+pointer, and reports `market_intelligence_v1`. History is chronological and
+chooses the latest published revision per session. Health reports the latest
+attempt even when it is PARTIAL or FAILED. The same latest/history/health
+comparison passed against committed real-PostgreSQL state in the Actions
+PostgreSQL group.
+
+## 10. Historical replay and look-ahead prevention
+
+One real Yahoo historical response was reused to replay five completed sessions
+in chronological order:
+
+```text
+2026-08-20, 2026-08-21, 2026-08-24, 2026-08-25, 2026-08-26
+```
+
+This is **historical replay using real provider data**, not five historical
+online task executions. Every slice asserted `max(input_date) == snapshot_date`,
+therefore also `max(input_date) <= snapshot_date`. Each candidate was SUCCEEDED
+with 12 snapshots and `market_intelligence_v1`. The first session had no prior
+ranks; each later session had all 66 previous-rank entries and exact
+previous/current rank identity checks. Chronological history, latest selection,
+rank continuity/change, version, and repeat-run idempotency passed in the
+production-use-case SQLite harness. Five-session replay persistence was not
+repeated on PostgreSQL and remains a non-gating coverage gap; PostgreSQL
+history/pointer semantics were independently proven by the concurrency and API
+tests.
+
+## 11. Performance observations
+
+These are diagnostic observations, not SLOs:
+
+- live Yahoo sample: 12 symbols and 1,500 bars; fetch 3.6034 s, validation and
+  normalization 0.0151 s, calculation 0.0036 s, total 8.1873 s;
+- deterministic harness sample: 12 symbols and 1,140 input bars; total use-case
+  run 0.1797 s, latest API 0.00483 s, history API 0.00409 s.
+
+The latter uses SQLite and is not a PostgreSQL performance benchmark. The real
+PostgreSQL test group completed in `4.64 s` and the real Celery worker test in
+`10.36 s`; these are CI observations, not production SLOs. Deployed API latency
+remains unmeasured and is a future operational risk, not a Phase 2 correctness
+block.
+
+## 12. Test and regression results
+
+| Suite | Result |
+|---|---|
+| Phase 1 exact Market Intelligence suite | 123 passed, 2 warnings |
+| Phase 2 default integration directory | 39 passed, 12 skipped, 2 warnings |
+| Live Yahoo opt-in test | 1 passed |
+| Actions PostgreSQL migration/publication/concurrency/API | 9 passed, 2 warnings |
+| Actions Redis connectivity | 1 passed, 2 deselected, 2 warnings |
+| Actions real Celery worker/idempotent rerun | 1 passed, 2 deselected, 2 warnings |
+| Actions Phase 1 deterministic suite | 123 passed, 2 warnings |
+| Actions Phase 2 service-independent suite | 39 passed, 12 deselected, 2 warnings |
+| Completed-session/freshness tests | 8 passed |
+| Runtime semantics/API/replay/performance group | 4 passed |
+| Adjacent source-neutral feature-run/UoW group | 113 passed |
+| Adjacent provider/calendar/Market-RS group | 103 passed |
+| Python compileall | passed |
+| `pip check` | No broken requirements found |
+| Frontend lint | 0 errors, 4 pre-existing warnings |
+| Frontend production build | passed, 2,497 modules transformed |
+
+The full source-neutral backend diagnostic completed with `16 failed, 6359
+passed, 21 skipped`. The unit subset retained exactly `13 failed, 6122 passed, 3
+skipped`, matching the Phase 1 known unit failure set. The three additional
+failures are existing theme-pipeline API integration 503 failures. The final
+Phase 2 Actions run has no failed test.
+
+The frontend full run produced `597 passed, 9 failed` plus the same Windows
+doubled-drive-path suite-load failure. The initial `App.static` timeout caused
+all nine tests in that file to cascade in the full concurrent run. Immediate
+isolated execution passed all 9/9 tests. Phase 1 recorded the same path failure
+and eight order/timeout-sensitive `App.static` failures (`598 passed, 8 failed`),
+and Phase 2 has no frontend source diff. This evidence supports zero new
+frontend regression while preserving the exact observed full-run result.
+
+No new Phase 2 failure was hidden with skip or xfail. The 12 local default skips
+are explicit service/live opt-in gates; Actions enabled those gates against real
+services and the corresponding PostgreSQL, Redis, Celery, and Yahoo checks
+passed.
+
+## 13. Security, dependencies, and scope
+
+- `git diff --check` passed.
+- `pip check` passed.
+- Dependency manifests and lockfiles have no diff from Phase 1; no dependency
+  was added or upgraded.
+- A changed-file secret-pattern scan found only redaction-test identifiers and
+  security documentation, not a credential or assigned secret.
+- `backend/.local/state/gh/device-id` is untracked and absent from the worktree.
+- The Phase 1 npm advisory baseline remains 21 advisories because the lockfile
+  is unchanged; no `npm audit fix` was run.
+- No provider payload, `.env`, database/broker URL, token, cookie, password,
+  device ID, or machine-local state was committed.
+- No Phase 1 production file, financial formula, universe, API contract,
+  frontend, or provider fallback changed. The fixed universe remains SPY plus
+  the eleven Sector SPDR ETFs.
+- No upstream push, merge, or PR was made. The Phase 2B commits were pushed only
+  to the user-owned fork `txu221/stock-screener`, branch
+  `feat/market-intelligence-engine`.
+
+`docs/market-intelligence-spec.md` was intentionally not changed because live
+validation found no defect in the Phase 1 price basis, return, relative-return,
+RVOL, flow-proxy, ranking, version, or publication semantics.
+
+## 14. Completed infrastructure gates and remaining risks
+
+Completed in GitHub Actions run `33126196870`:
+
+1. PostgreSQL `16.15` migration upgrade/downgrade/re-upgrade and predecessor
+   compatibility;
+2. rollback visibility from independent PostgreSQL sessions before and after
+   pointer mutation;
+3. concurrency Cases A-C, pointer monotonicity, same-day revision, old-date
+   backfill, history/pointer winner agreement, and unique idempotency race;
+4. Redis `7.4.11` connectivity and isolated key cleanup;
+5. real Celery worker one-shot plus same-session repeated-delivery idempotency;
+6. committed PostgreSQL values matched by latest/history/health APIs;
+7. live Yahoo 12-symbol validation on the Linux runner.
+
+Remaining risks:
+
+- worker/process outage recovery remains unobserved beyond clean worker startup,
+  task execution, repeat delivery, and teardown;
+- there is no explicit Celery automatic retry policy to exercise;
+- Yahoo is an external provider whose shape and availability can drift;
+- live replay persistence and deployed API latency were not measured as
+  production SLOs;
+- existing backend, frontend, lint, and npm advisory baselines remain and were
+  deliberately not repaired in this phase.
+
+## 15. Files and commits
+
+Phase 2 adds one plan, this report, one opt-in live validation script, explicit
+pytest markers, a focused `backend/tests/integration/market_intelligence`
+package, one PostgreSQL-backed API contract test, and one manual-dispatch
+GitHub Actions workflow. It does not add or modify production behavior.
+
+Phase 2 commits:
+
+```text
+c91e818b docs: plan market intelligence phase 2 validation
+d24b3ae3 test: add phase 2 integration environment gates
+4937dea1 test: cover postgres market intelligence publication
+cccbc43c test: cover market intelligence service runtime
+e388bbb5 test: validate completed sessions and live yahoo data
+470740e2 test: validate sector intelligence runtime semantics
+97aff611 test: harden phase 2 integration validation
+67fb5e5d docs: report market intelligence phase 2 validation
+763849be docs: close market intelligence phase 2 checkpoint
+```
+
+Phase 2B commits pushed to the user-owned fork only:
+
+```text
+b51ce3b8 test: add postgres-backed market intelligence api coverage
+a96785bc ci: add market intelligence integration workflow
+1055c108 ci: run market intelligence integration on feature branch
+a6eaebbc ci: verify redis through installed python client
+46d78bc0 test: inspect postgres snapshot constraint directly
+d694e8c3 test: accept postgres primary uniqueness reflection
+```
+
+## 16. Phase 2B GitHub Actions validation
+
+The current branch was pushed to the user-owned fork
+`https://github.com/txu221/stock-screener`, with upstream kept read-only. The
+workflow file is present on `feat/market-intelligence-engine` and is configured
+for manual dispatch with `ubuntu-latest`, disposable `postgres:16-alpine` and
+`redis:7-alpine` services, migration upgrade/downgrade/re-upgrade checks,
+real-PostgreSQL publication/concurrency/API tests, Redis connectivity, and a
+separate opt-in Yahoo/Celery job.
+
+An attempt to dispatch the core workflow was rejected by GitHub before a run
+was created:
+
+```text
+gh workflow run market-intelligence-integration.yml \\
+  --repo txu221/stock-screener \\
+  --ref feat/market-intelligence-engine \\
+  -f run_live_yahoo=false
+HTTP 404: workflow market-intelligence-integration.yml not found on the default branch
+```
+
+The fork reports `main` as its default branch; the workflow exists only on the
+feature branch because this phase forbids merging or opening a PR. GitHub's
+workflow-dispatch API requires the workflow to be registered from the default
+branch. The fork's workflow listing currently reports zero registered
+workflows, and the existing `ci.yml` likewise returns 404 from the Actions
+workflow API despite its source file being present. No Actions run ID, run URL,
+runner OS, actual PostgreSQL server version, actual Redis server version, or
+uploaded artifact therefore exists. The workflow's declared images/runner are
+configuration intent only, not execution evidence.
+
+This section records the historical Phase 2B block. It was cleared without a
+merge or PR by adding a feature-branch `push` trigger, as documented below.
+
+## 17. Phase 2C successful Actions execution
+
+The workflow retained `workflow_dispatch` and added a path-scoped push trigger
+for `feat/market-intelligence-engine`. Final green run:
+
+```text
+Run ID:       33126196870
+Event:        push
+Branch:       feat/market-intelligence-engine
+Head SHA:     d694e8c385fecf3db69db20c9d22459719ab221b
+Runner image: ubuntu-24.04 (release 20260823.283)
+PostgreSQL:   16.15, x86_64-pc-linux-musl
+Redis:        7.4.11
+Conclusion:   success
+URL:          https://github.com/txu221/stock-screener/actions/runs/33126196870
+```
+
+Both jobs passed. The core job proved service health, real Alembic traversal,
+schema/existing-row compatibility, rollback, concurrency, pointer monotonicity,
+same-day revision, backfill, PostgreSQL-backed APIs, Redis, Phase 1, and Phase 2
+deterministic behavior. The second job proved live Yahoo and a real
+Redis-brokered Celery worker one-shot/idempotent rerun.
+
+Two CI/test-harness defects were exposed and fixed before the green run:
+
+1. `redis-cli` was not installed on the runner. The redundant host CLI probe was
+   removed; container health plus redis-py `PING` and `INFO server` remain the
+   actual service checks.
+2. PostgreSQL reflects the snapshot's named uniqueness contract as primary-key
+   type `p` when it duplicates the `(run_id, symbol)` composite PK. The migration
+   test now queries `pg_constraint` directly and accepts the stronger PK or a
+   separate unique constraint while still asserting the exact constrained PK
+   columns.
+
+Artifacts `market-intelligence-integration-33126196870` and
+`market-intelligence-live-33126196870` contain the migration, PostgreSQL,
+Redis, Phase 1, Phase 2, Yahoo, and Celery evidence logs. No upstream push,
+merge, or PR was made.
+
+## 18. Final review and transition
+
+The independent final review found two Critical and ten Important concerns in
+the first harness revision. The Critical database-target and shared-Celery-queue
+hazards were fixed before the report commit: only a dedicated, explicitly
+acknowledged Phase 2/test database is accepted, and the spawned worker now uses
+a unique queue with a directed readiness probe. Review-driven fixes also added
+child-row rollback evidence, repository history-winner comparison, per-symbol
+Yahoo freshness, independent raw-to-canonical reconciliation, stricter output
+redaction, and exact destructive gates.
+
+The former real-service findings are now closed by the green Actions run. The
+remaining items are reliability/operations work rather than Phase 2 correctness
+blocks: explicit Celery retry policy, controlled outage recovery, full
+application-startup/auth-path API coverage, live replay persistence, and
+deployed latency. Phase 2 is complete and the authorized Market Intelligence
+MVP v1 work may proceed without changing Phase 1 financial semantics.
+
+## 19. MVP code-final infrastructure revalidation
+
+The Phase 2 environment was rerun after the MVP independent-review fixes so the
+final product contract is covered by real services rather than only the earlier
+Phase 2 checkpoint.
+
+```text
+Run ID:       33193795883
+Event:        push
+Branch:       feat/market-intelligence-engine
+Head SHA:     43cb90e1744cdbe384421f59f19279c8889b7f15
+Conclusion:   success
+URL:          https://github.com/txu221/stock-screener/actions/runs/33193795883
+```
+
+All three jobs passed. PostgreSQL/Redis revalidated migration,
+downgrade/re-upgrade, rollback, concurrency, pointer monotonicity, persisted
+sector and MVP API contracts, Redis, and deterministic suites. The isolated
+Yahoo/Celery job revalidated the live provider plus real worker one-shot and
+idempotent rerun. The frontend job passed lint, the complete Linux test suite,
+and the production build. This run closed the post-review infrastructure gate;
+it introduced no change to Phase 1 publication semantics.
+
+## 20. Fork-main integration hardening
+
+Before final Draft PR review, fork `main` was merged into the feature branch so
+the exact `txu221/stock-screener:main` target combination—not only the original
+Phase 0 merge base—was validated. That integration exposed two target-base
+issues and one live-delivery edge case:
+
+1. breadth/classification and Market Intelligence migrations shared predecessor
+   `20260823_0030`; no-op revision `20260828_0033` now merges their two heads;
+2. the target's release-doc assertion required the accurate phrase `first-run
+   bootstrap`;
+3. a completed Yahoo bar changed between two live task deliveries, so scheduled
+   delivery reuse is now resolved before provider I/O while explicit forced
+   corrections retain content-addressed same-day revisions.
+
+Local post-fix evidence is 149 deterministic Market Intelligence tests and 39
+service-independent integration tests passing. The merge revision is the sole
+Alembic head locally, and the dedicated PostgreSQL job proved its real
+upgrade/downgrade/re-upgrade traversal. Final Linux service, live-provider,
+frontend, and full target-branch CI evidence is attached to the Draft PR checks
+for the final feature-branch commit.

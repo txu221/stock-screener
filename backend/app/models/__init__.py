@@ -50,6 +50,12 @@ from app.infra.db.models.relative_strength import (
     MarketRsRun,
     StockRsSnapshot,
 )
+from app.infra.db.models.market_intelligence import (
+    MarketIntelligenceCanonicalBar,
+    MarketIntelligenceRejection,
+    MarketIntelligenceRunAudit,
+    MarketIntelligenceSectorSnapshot,
+)
 
 __all__ = [
     "StockPrice",
@@ -130,4 +136,9 @@ __all__ = [
     "MarketRsRun",
     "StockRsSnapshot",
     "MarketRsFormulaPointer",
+    # Market Intelligence Phase 1
+    "MarketIntelligenceRunAudit",
+    "MarketIntelligenceCanonicalBar",
+    "MarketIntelligenceRejection",
+    "MarketIntelligenceSectorSnapshot",
 ]

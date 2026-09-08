@@ -27,6 +27,7 @@ class PriceBatchCache(Protocol):
         price_data: Mapping[str, Any],
         *,
         also_store_db: bool,
+        provider_by_symbol: Mapping[str, str] | None = None,
     ) -> None: ...
 
 
@@ -67,6 +68,7 @@ class PriceRefreshBatchOutcome:
     failure_kinds: Mapping[str, str] = field(default_factory=dict)
     refreshed_by_market: Counter[str] = field(default_factory=Counter)
     failed_by_market: Counter[str] = field(default_factory=Counter)
+    provider_by_symbol: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def refreshed(self) -> int:
@@ -199,6 +201,7 @@ def _classify_batch_results(
     dict[str, str],
     Counter[str],
     Counter[str],
+    dict[str, str],
 ]:
     price_data_by_symbol: dict[str, Any] = {}
     successes: list[str] = []
@@ -207,6 +210,7 @@ def _classify_batch_results(
     failure_kinds: dict[str, str] = {}
     refreshed_by_market: Counter[str] = Counter()
     failed_by_market: Counter[str] = Counter()
+    provider_by_symbol: dict[str, str] = {}
 
     for symbol in symbols:
         data = _result_for_symbol(batch_results, symbol)
@@ -225,6 +229,9 @@ def _classify_batch_results(
             price_df = data["price_data"]
             if not price_df.empty:
                 price_data_by_symbol[symbol] = price_df
+                provider = str(data.get("provider") or "").strip().lower()
+                if provider:
+                    provider_by_symbol[symbol] = provider
                 successes.append(symbol)
                 refreshed_by_market[market_for_symbol(symbol)] += 1
                 continue
@@ -257,6 +264,7 @@ def _classify_batch_results(
         failure_kinds,
         refreshed_by_market,
         failed_by_market,
+        provider_by_symbol,
     )
 
 
@@ -277,6 +285,7 @@ def classify_price_refresh_batch(
         failure_kinds,
         refreshed_by_market,
         failed_by_market,
+        provider_by_symbol,
     ) = _classify_batch_results(
         symbols=symbols,
         batch_results=batch_results,
@@ -294,6 +303,7 @@ def classify_price_refresh_batch(
         failure_kinds=failure_kinds,
         refreshed_by_market=refreshed_by_market,
         failed_by_market=failed_by_market,
+        provider_by_symbol=provider_by_symbol,
     )
 
 
@@ -451,6 +461,7 @@ class PriceRefreshBatchExecutor:
                     price_cache.store_batch_in_cache(
                         dict(batch.price_data_by_symbol),
                         also_store_db=True,
+                        provider_by_symbol=dict(batch.provider_by_symbol),
                     )
                 self._track_symbol_failures(
                     price_cache,

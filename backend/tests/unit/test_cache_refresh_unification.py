@@ -1035,9 +1035,13 @@ def test_warm_price_cache_uses_batch_store(monkeypatch):
     price_cache = MagicMock()
     benchmark_cache = MagicMock()
     bulk_fetcher = MagicMock()
+    aapl = _success_result("AAPL", close=120.0)
+    msft = _success_result("MSFT", close=130.0)
+    aapl["provider"] = "yahoo"
+    msft["provider"] = "yfinance"
     bulk_fetcher.fetch_prices_in_batches.return_value = {
-        "AAPL": _success_result("AAPL", close=120.0),
-        "MSFT": _success_result("MSFT", close=130.0),
+        "AAPL": aapl,
+        "MSFT": msft,
         "BAD": {
             "symbol": "BAD",
             "price_data": None,
@@ -1078,7 +1082,10 @@ def test_warm_price_cache_uses_batch_store(monkeypatch):
     assert price_cache.store_in_cache.call_count == 0
     stored_batch = price_cache.store_batch_in_cache.call_args.args[0]
     assert set(stored_batch) == {"AAPL", "MSFT"}
-    assert price_cache.store_batch_in_cache.call_args.kwargs == {"also_store_db": True}
+    assert price_cache.store_batch_in_cache.call_args.kwargs == {
+        "also_store_db": True,
+        "provider_by_symbol": {"AAPL": "yahoo", "MSFT": "yfinance"},
+    }
 
 
 def test_task_registry_lists_daily_market_pipelines_only():
