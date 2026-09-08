@@ -1,7 +1,7 @@
 # Dependency security assessment
 
 Date: 2026-09-07
-Scope: Market Intelligence Production Hardening v2 on `feat/market-intelligence-engine`
+Scope: Market Intelligence Production Hardening v2 merged to `main` by PR #1
 
 ## Executive assessment
 
@@ -11,6 +11,13 @@ critical finding was direct dev dependency `vitest@4.0.18`, affected by
 `GHSA-5xrq-8626-4rwp`; the merge-readiness security gate upgraded only Vitest
 within major version 4 to `4.1.11`, outside the advisory's `<4.1.0` affected
 range. The production dependency graph is unchanged by this update.
+
+Post-merge verification on application SHA
+`484c67a2b062a0de96eda3875513e953203ffb43` reproduced the same zero-Critical
+totals after a fresh `npm ci`. Standard main CI run `34177541741` and Market
+Intelligence integration run `34177684717` are green; the former also built and
+published backend/frontend container images. The remote feature branch remains
+available and no force push or automatic audit remediation was used.
 
 The earlier hardening range from `6d75e8a4` through `b4bd33f7` changed no Python
 or npm dependency manifest or lockfile. The subsequent merge-readiness change
@@ -121,5 +128,7 @@ The production advisories predate this hardening range, and the production
 dependency graph was not changed by the targeted Vitest remediation. No
 automatic remediation, override, or major-version toolchain migration was used.
 The direct runtime packages remain recommended near-term follow-up work, while
-the release gate now has zero Critical findings in both full and production-only
-audit scopes.
+the merged main release gate has zero Critical findings in both full and
+production-only audit scopes. These remaining upgrades are technical debt, not
+blockers to the completed code merge; they should be handled as isolated,
+tested changes according to the reachability priorities above.

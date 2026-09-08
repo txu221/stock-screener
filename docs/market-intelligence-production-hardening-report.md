@@ -1,21 +1,131 @@
 # MARKET INTELLIGENCE PRODUCTION HARDENING v2 COMPLETE
 
-Status: implementation and closeout verification complete. The implementation
-evidence is recorded below; the later documentation-only head and its checks are
-reported in the final delivery response to avoid a self-referential commit SHA.
+Status matrix (2026-09-07 US Eastern):
+
+- **Code Complete:** YES.
+- **Merged to Main:** YES — PR #1 was merged normally; the feature branch was
+  retained.
+- **Production-like Validation Complete:** YES — all validation possible without
+  installing local system services or possessing deployment credentials is
+  complete.
+- **Real Production Deployment Pending:** YES — no VPS, domain, TLS endpoint, or
+  production credentials were supplied, so no public deployment is claimed.
+- **Long-term Production Monitoring Pending:** YES — the main-branch schedule is
+  enabled and its manual canary is green, but the first scheduled run and a
+  multi-day burn-in still require observation.
+
+The application SHA validated after merge is
+`484c67a2b062a0de96eda3875513e953203ffb43`. The documentation-only closeout
+commit made after that validation is reported in the delivery response to avoid
+a self-referential SHA in this file. Post-merge evidence is authoritative over
+the earlier implementation-history details retained below.
+
+## Post-merge release evidence
+
+- PR [txu221/stock-screener#1](https://github.com/txu221/stock-screener/pull/1)
+  is `MERGED`; merge commit `484c67a2b062a0de96eda3875513e953203ffb43`.
+- Standard main CI run
+  [`34177541741`](https://github.com/txu221/stock-screener/actions/runs/34177541741)
+  is green: all four backend shards (6,075 tests total), backend quality gates,
+  679 frontend tests in 102 files, Playwright smoke, assistant compose smoke,
+  and backend/frontend container image builds passed.
+- Post-merge Market Intelligence run
+  [`34177684717`](https://github.com/txu221/stock-screener/actions/runs/34177684717)
+  is green on the same SHA. It used PostgreSQL 16.15 and Redis 7.4.11, migrated
+  an empty database to Alembic head `20260829_0035`, downgraded and re-upgraded,
+  passed 11 PostgreSQL publication/concurrency/API tests, 53 deterministic
+  service-independent tests, real Redis connectivity, a real Celery worker plus
+  idempotent rerun, frontend tests/build, and the enforced read SLO.
+- Read-only Yahoo canary run
+  [`34177686308`](https://github.com/txu221/stock-screener/actions/runs/34177686308)
+  is green. An additional local read-only run returned all 12 fixed symbols,
+  1,536 canonical bars, zero rejections, a `SUCCEEDED` 12-row candidate through
+  the completed 2026-09-04 session, and five chronological `SUCCEEDED` replays.
+- Local controlled end-to-end evidence produced `SUCCEEDED`, `PARTIAL`, then
+  `FAILED`. Only run 1 published; runs 2 and 3 did not publish; latest/history
+  continued serving run 1. Data Health reported the failed request separately
+  with zero rejected rows and `SERVING_PREVIOUS`.
+- Local Uvicorn smoke reached startup with the production routers under the
+  explicitly marked SQLite test harness. `/livez` returned 200; `/readyz`
+  returned 200/degraded and disclosed unavailable Redis and snapshot state;
+  authenticated sector history/health returned 200 and latest returned an
+  explicit 404 because the empty harness had no published snapshot.
+- A true local production startup from an empty database remains impossible on
+  this host: production rejects SQLite, and the PostgreSQL baseline migration
+  deliberately uses PostgreSQL SQL. Docker, a WSL distribution, PostgreSQL,
+  and Redis are absent and were not installed. The fresh PostgreSQL/Redis/Celery
+  startup and migration evidence therefore comes from the service-backed
+  GitHub job above, not from a disguised local database.
+- Local frontend verification passed `npm ci`, 37 focused Market Intelligence
+  tests, production build (2,515 modules), and Playwright smoke. ESLint had zero
+  errors and four pre-existing warnings. Full supported Ubuntu CI passed all 679
+  frontend tests.
+- Security gates are zero Critical for both full and production-only npm graphs.
+  The remaining totals are 17 high/4 moderate/1 low in the full graph and 6
+  high/2 moderate in production. `pip check` is clean and the high-confidence
+  repository secret scan found zero matching files. No `npm audit fix` ran.
+
+The fresh post-merge PostgreSQL 16 SLO artifact enforced the unrounded 1,000 ms
+p95 ceiling with 20 measured requests per family after one excluded warm-up:
+
+| Family | p50 ms | p95 ms | Worst ms |
+| --- | ---: | ---: | ---: |
+| Overview | 31.211 | 32.155 | 32.404 |
+| Movers | 216.780 | 558.263 | 569.379 |
+| ETFs | 55.863 | 77.772 | 403.181 |
+| Sectors latest | 7.650 | 8.485 | 8.512 |
+| Sectors history | 161.200 | 501.075 | 505.871 |
+| Sectors health | 17.199 | 17.882 | 18.302 |
+
+A compact Data Health example from the controlled failed attempt is:
+
+```json
+{
+  "universe_expected": 12,
+  "latest_attempt": {
+    "status": "FAILED",
+    "provider_status": "UNAVAILABLE",
+    "failure_category": "PROVIDER_FAILURE",
+    "counters": {
+      "symbols_received": 0,
+      "valid_bars": 0,
+      "rejected_bars": 0,
+      "missing_symbols": 12
+    }
+  },
+  "latest_published": {
+    "status": "SUCCEEDED",
+    "metric_version": "market_intelligence_v1",
+    "counters": {
+      "symbols_received": 12,
+      "valid_bars": 1092,
+      "rejected_bars": 0,
+      "snapshot_rows": 12
+    }
+  },
+  "publication_status": "SERVING_PREVIOUS",
+  "publication_occurred": false
+}
+```
 
 ## 1. Final SHA
 
-The final implementation SHA is `a25b667d642d203bb3f2a6cadf2e2651bd6021de`.
-The later closeout commit changes documentation/evidence only; the exact final
-branch head is reported by `git status` and the final delivery response.
+The final post-merge application SHA is
+`484c67a2b062a0de96eda3875513e953203ffb43`. Earlier implementation SHA
+`a25b667d642d203bb3f2a6cadf2e2651bd6021de` remains historical evidence. The
+exact later documentation-only head is reported by `git status` and the final
+delivery response.
 
 ## 2. Pull request state
 
 PR [txu221/stock-screener#1](https://github.com/txu221/stock-screener/pull/1)
-remains open on `feat/market-intelligence-engine`. After the final green CI and
-integration runs it was marked ready for review on 2026-09-07. It is not merged.
-No commit was pushed to `xang1234/stock-screener`, and no force push was used.
+was merged into `main` at 2026-09-08 01:42:22 UTC with merge commit
+`484c67a2b062a0de96eda3875513e953203ffb43`. Immediately before merge it was
+`MERGEABLE/CLEAN`, both required workflow families were green on feature SHA
+`a4876e4e37598ecce66d42a1ce629095941c41b8`, local and remote feature heads
+matched, the worktree was clean, and both audit scopes had zero Critical
+findings. No force push or branch deletion was used; the remote feature branch
+remains at `a4876e4e37598ecce66d42a1ce629095941c41b8`.
 
 ## 3. Corporate-action model
 
@@ -229,17 +339,18 @@ the last reconciled materialization is preserved.
 
 ## 23. Live Yahoo canary
 
-`.github/workflows/market-intelligence-yahoo-canary.yml` defines one run after
-the US close on weekdays and supports manual dispatch. GitHub schedules execute
-workflow files from the default branch, so the schedule becomes active only
-after this feature branch is merged. It has read-only repository
+`.github/workflows/market-intelligence-yahoo-canary.yml` defines one run at
+23:30 UTC on weekdays and supports manual dispatch. The workflow is now on the
+default `main` branch, so its schedule is enabled. It has read-only repository
 permission, persists no application data, starts no database/Redis/Celery
 service, runs no migration/deployment, and executes only the live Yahoo contract
 test. The heavier Yahoo plus real Celery integration remains explicit manual
-opt-in so normal pushes do not duplicate provider pressure. Manual run
-`33591441325` passed the fixed 12-symbol Yahoo contract and the real
-broker-worker/idempotent-rerun test on implementation commit `7306ed23` during
-the first attempt; only the separate SLO job required a retry.
+opt-in so normal pushes do not duplicate provider pressure. Post-merge manual
+canary run `34177686308` passed the fixed 12-symbol Yahoo contract on main.
+Post-merge integration run `34177684717` independently passed the same live
+contract and the real broker-worker/idempotent-rerun test. The first naturally
+scheduled invocation cannot be observed until GitHub reaches the next schedule;
+that and multi-day monitoring remain pending rather than being claimed complete.
 The validator uses exact completed-session anchors: a provider history gap
 produces unavailable metrics/PARTIAL evidence rather than a `KeyError`, a
 forward-fill, or a compressed-session calculation.
@@ -281,7 +392,19 @@ price, cache, and read-service tests. Independent final review passed another
 The complete Linux backend suite is split across four PR jobs and is the final
 no-regression authority. The Windows closeout used an in-process `resource`
 module shim because that Unix-only stdlib module is absent on Windows; no
-production code, skip, or xfail was added.
+production code, skip, or xfail was added. Post-merge main CI run `34177541741`
+passed 6,075 backend unit tests across its four exhaustive shards (1,519 +
+1,519 + 1,519 + 1,518) and all quality gates. A post-merge native Windows full
+run collected 6,724 tests and finished with 6,686 passed, 16 failed, and 25
+skipped. Fourteen failures are existing non-Market-Intelligence local platform
+or configuration assumptions (Unix paths/scripts/fake-gh and server-auth test
+environment); two are the existing feature-run ordering and progress-timing
+determinism cases. All pass in the supported Ubuntu suite. No failing test is
+in the Market Intelligence domain, repository, pipeline, API, or health scope.
+A separate post-merge focus run passed 342 and skipped one service-gated SLO
+case; it covered canonical validation, metrics/ranking, snapshots, repository,
+cache/read services, migrations, task/use-case semantics, latest/history/health
+contracts, historical replay, and the controlled publication states.
 
 ## 26. Frontend tests
 
@@ -293,42 +416,48 @@ one-line `waitFor` now makes that synchronization explicit, and the file passed
 three consecutive local runs (12/12 tests). The native-Windows full run passed
 650 and still reported the unrelated legacy `D:\\D:\\...` fixture-path defect
 and contended `App.static` timeouts; the latter file passed 9/9 alone. Linux PR
-CI is the final complete frontend and Playwright-smoke authority.
+CI is the final complete frontend and Playwright-smoke authority. Post-merge
+main CI passed 679 tests in 102 files. The fresh local main run again passed all
+37 focused tests, built all 2,515 modules, and passed the Playwright operator
+smoke; lint remained at zero errors and the same four warnings.
 
 ## 27. Integration tests
 
-Run `34156577333` passed PostgreSQL migration/publication/concurrency/API tests,
-real Redis connectivity, the deterministic Market Intelligence suite, all 53
-currently selected service-independent integration tests, the enforced
-full-provenance PostgreSQL SLO, frontend tests, lint, and production build. The
-real Celery worker/idempotent rerun and live Yahoo contract both passed in
-manual opt-in run `33591441325`.
+Post-merge run `34177684717` passed PostgreSQL
+migration/publication/concurrency/API tests, real Redis connectivity, the
+deterministic Market Intelligence suite, all 53 selected service-independent
+integration tests, the enforced full-provenance PostgreSQL SLO, frontend tests,
+lint, and production build. Its explicit live input also passed the real Celery
+worker/idempotent rerun and live Yahoo contract on main.
 
 ## 28. GitHub Actions
 
 The Market Intelligence workflow supplies PostgreSQL 16, Redis 7, real Alembic
 migrations, transaction/concurrency tests, deterministic tests, a dedicated
 measured SLO job, optional real Celery/Yahoo validation, frontend checks, and
-failure-safe artifacts. Final closeout run `34156577333` is green on commit
-`ecb45d19`; manual run `33591441325` supplies the opt-in Yahoo/Celery
+failure-safe artifacts. Post-merge run `34177684717` is green on merge commit
+`484c67a2`; manual canary run `34177686308` supplies independent read-only Yahoo
 evidence without adding provider pressure to normal pushes.
 
 ## 29. PR CI
 
-General PR CI validates assistant compose, four complete backend-unit shards,
+General CI validates assistant compose, four complete backend-unit shards,
 backend quality gates, frontend lint/test, and Playwright smoke. A stale Yahoo
 test was updated earlier to supply the now-required explicit provider
 provenance, and the final Static Scan render-spy test now waits for component
 readiness rather than racing it. One calendar test had encoded 2026-09-03 as a
 permanent future date; it now derives a future fixture without changing
-production behavior. PR CI run `34156579449` is fully green on commit
-`ecb45d19`.
+production behavior. Pre-merge run `34166256201` was green on feature SHA
+`a4876e4e`; post-merge main run `34177541741` is green on merge commit
+`484c67a2` and also completed both container image builds.
 
 ## 30. Production build
 
-The final Windows build compiled 2,515 modules successfully in 1 minute 32
-seconds. Linux run `34156577333` also passed the production build, and PR run
-`34156579449` passed frontend lint, tests, and Playwright smoke.
+The post-merge Windows build compiled 2,515 modules successfully in 1 minute 15
+seconds and its production bundle passed Playwright smoke. Linux integration
+run `34177684717` also passed the production build, while standard main CI run
+`34177541741` built and published both application container images. This is
+artifact validation, not a claim that a public server was deployed.
 
 ## 31. Security
 
@@ -338,20 +467,23 @@ matching high-confidence private-key, AWS access-key, GitHub token, Slack token,
 or JWT patterns. `git diff --check` reported no whitespace error. No production
 permission is granted to the Yahoo canary, and checkout credentials are not
 persisted there.
+The local smoke regenerated untracked `backend/.local/state/gh/device-id`; it
+was identified as a 36-byte machine-local GitHub device identifier and removed
+before staging. It is not present in the final diff or commit.
 
 ## 32. Dependency assessment
 
-`npm audit --json` reports 23 package nodes: 1 critical, 17 high, 4 moderate,
-and 1 low. The latest change is one additional moderate `@humanfs/node` package
-node despite an unchanged lockfile, so it is an advisory-feed change rather
-than a hardening dependency change. The critical Vitest issue is dev-only;
-`npm audit --omit=dev` reports zero critical, six high, two moderate. Direct
+`npm audit --json` reports 22 package nodes: zero critical, 17 high, 4 moderate,
+and 1 low. The former dev-only Vitest Critical was resolved narrowly by updating
+Vitest 4.0.18 to 4.1.11, outside the affected range, without changing the
+production dependency graph. `npm audit --omit=dev` reports zero critical, six
+high, and two moderate. Direct
 runtime follow-ups are Axios and React Router; remaining production-graph
 findings include Node-only Axios transitive paths and Recharts/Lodash. Full
 reachability and isolated upgrade recommendations are in
 `docs/dependency-security-assessment.md`. No `npm audit fix` was run. `pip check`
-reports no broken requirements, and this hardening range changes no dependency
-manifest or lockfile.
+reports no broken requirements. Only the dev-tool Vitest manifest/lockfile entry
+changed during the merge security gate.
 
 ## 33. Files changed
 
@@ -386,8 +518,14 @@ list remains available from `git log --oneline 6d75e8a4..HEAD`.
 - The existing Windows fixture-path and contended full-frontend-suite failures
   remain platform baseline items; Linux CI is authoritative for final
   no-regression evidence.
-- The 23 npm advisories remain recorded technical debt; this phase intentionally
-  did not mix dependency upgrades with correctness changes.
+- The 22 non-Critical npm advisory nodes remain recorded technical debt. Runtime
+  and tooling findings are separated in the dependency security assessment; no
+  broad or automatic upgrade was mixed into correctness work.
+- Public production deployment is still pending a VPS, domain/TLS setup,
+  production secrets, and an operator-approved deployment window.
+- The main-branch canary schedule is configured and manually proven, but its
+  first natural scheduled execution and long-term monitoring have not yet been
+  observed.
 - Universe coverage was not expanded, and no AI, news, options, institutional
   flow, prediction, alert, recommendation, or backtest feature was added.
 
