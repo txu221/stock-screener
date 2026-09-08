@@ -268,3 +268,31 @@ def test_production_backup_health_requires_recent_nonempty_dump() -> None:
     assert "-mmin -1560" in backup_section
     assert "-size +0c" in backup_section
     assert "start_period: 10m" in backup_section
+
+
+def test_ci_validates_production_deployment_before_publishing_images() -> None:
+    content = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    production_job = content.split("  production-deployment-config:", 1)[1].split(
+        "\n  publish-images:", 1
+    )[0]
+    publish_job = content.split("  publish-images:", 1)[1].split(
+        "\n  release:", 1
+    )[0]
+
+    assert "Production Deployment Config" in production_job
+    assert "trap 'rm -f .env.docker' EXIT" in production_job
+    assert "BACKEND_IMAGE_REF=ghcr.io/txu221/stockscreenclaude-backend@sha256:" in production_job
+    assert "FRONTEND_IMAGE_REF=ghcr.io/txu221/stockscreenclaude-frontend@sha256:" in production_job
+    assert "RELEASE_GIT_SHA=" in production_job
+    assert (
+        "python backend/scripts/validate_production_deployment.py "
+        "--env-file .env.docker"
+    ) in production_job
+    assert "--skip-compose" not in production_job
+    assert "sh -n scripts/production/postgres-backup.sh" in production_job
+    assert "git ls-files .env.docker" in production_job
+    assert "production-deployment-config" in "\n".join(
+        publish_job.split("\n", 8)[0:8]
+    )

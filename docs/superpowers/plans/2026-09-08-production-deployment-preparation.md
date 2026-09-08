@@ -359,7 +359,7 @@ publication should depend on a successful production deployment contract.
 services, reaches Yahoo, or uses production credentials. Failure blocks image
 publication and uploads no secrets.
 
-- [ ] **Step 1: Add a failing workflow-contract test**
+- [x] **Step 1: Add a failing workflow-contract test**
 
 Assert `ci.yml` defines `production-deployment-config`, creates a trap-protected
 `.env.docker` with CI-only 32/64-character values and two syntactically valid
@@ -367,11 +367,11 @@ dummy digests, runs the validator without `--skip-compose`, runs
 `sh -n scripts/production/postgres-backup.sh`, removes `.env.docker`, and adds
 the job to `publish-images.needs`.
 
-- [ ] **Step 2: Run test and observe RED**
+- [x] **Step 2: Run test and observe RED**
 
 Run the CI-contract test. Expected: missing job assertions fail.
 
-- [ ] **Step 3: Add the isolated CI job**
+- [x] **Step 3: Add the isolated CI job**
 
 Use `ubuntu-latest`, `actions/checkout@v4`, a shell trap to delete
 `.env.docker`, and CI-only values. Run:
@@ -388,7 +388,7 @@ test -z "$(git ls-files .env.docker)"
 Make `publish-images` depend on the new job in addition to existing quality
 gates.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run the deployment-config tests and YAML whitespace checks. Commit:
 
