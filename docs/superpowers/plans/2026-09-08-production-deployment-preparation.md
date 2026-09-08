@@ -291,7 +291,7 @@ temporary file and never prunes known-good backups. Pruning occurs only after
 a verified replacement exists and always keeps the newest retention-count
 dumps.
 
-- [ ] **Step 1: Write failing static and behavior-contract tests**
+- [x] **Step 1: Write failing static and behavior-contract tests**
 
 Assert Compose mounts the script read-only, passes all backup settings, and has
 a freshness health check. Assert the script includes `set -eu`, restrictive
@@ -299,12 +299,12 @@ a freshness health check. Assert the script includes `set -eu`, restrictive
 `pg_restore --list`, SHA-256 generation, post-success pruning, and run-once
 support. Assert the retention default is seven.
 
-- [ ] **Step 2: Run tests and observe RED**
+- [x] **Step 2: Run tests and observe RED**
 
 Run the backup-focused pytest selection. Expected: missing script and Compose
 wiring assertions fail.
 
-- [ ] **Step 3: Implement the POSIX backup loop**
+- [x] **Step 3: Implement the POSIX backup loop**
 
 Validate numeric inputs before use. Create `/app/data/backups`, sleep the
 configured initial delay unless run-once, write to a unique hidden temporary
@@ -313,7 +313,7 @@ then prune oldest complete dump/sidecar pairs beyond the retention count. On
 SIGTERM/SIGINT, remove only the current temporary file. Loop at the configured
 interval or exit after one successful/failing run in run-once mode.
 
-- [ ] **Step 4: Wire Compose and health**
+- [x] **Step 4: Wire Compose and health**
 
 Mount the script into `db-backup`, replace the embedded shell, pass retention,
 interval, delay, and run-once values, and retain the existing `backup` profile,
@@ -321,7 +321,7 @@ PostgreSQL dependency, volume, logging, and restart policy. The production
 health check must require a non-empty dump newer than 26 hours after a
 10-minute startup grace period.
 
-- [ ] **Step 5: Verify syntax/tests and commit**
+- [x] **Step 5: Verify syntax/tests and commit**
 
 Run pytest locally. Record `sh -n` as Ubuntu CI validation because this Windows
 host does not provide the supported shell runtime. Commit:

@@ -230,3 +230,41 @@ def test_caddy_compose_healthcheck_uses_internal_health_endpoint() -> None:
     assert "timeout: 10s" in content
     assert "retries: 3" in content
     assert "start_period: 15s" in content
+
+
+def test_backup_service_uses_verified_bounded_backup_script() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    script_path = ROOT / "scripts" / "production" / "postgres-backup.sh"
+    script = script_path.read_text(encoding="utf-8")
+
+    assert (
+        "./scripts/production/postgres-backup.sh:"
+        "/usr/local/bin/stockscanner-postgres-backup:ro"
+    ) in compose
+    assert "POSTGRES_BACKUP_RETENTION_COUNT: ${POSTGRES_BACKUP_RETENTION_COUNT:-7}" in compose
+    assert "POSTGRES_BACKUP_INTERVAL_SECONDS: ${POSTGRES_BACKUP_INTERVAL_SECONDS:-86400}" in compose
+    assert "POSTGRES_BACKUP_INITIAL_DELAY_SECONDS: ${POSTGRES_BACKUP_INITIAL_DELAY_SECONDS:-300}" in compose
+    assert "POSTGRES_BACKUP_RUN_ONCE: ${POSTGRES_BACKUP_RUN_ONCE:-0}" in compose
+    assert "set -eu" in script
+    assert "umask 077" in script
+    assert "trap cleanup" in script
+    assert "pg_dump" in script and "--format=custom" in script
+    assert "pg_restore --list" in script
+    assert "sha256sum" in script
+    assert "POSTGRES_BACKUP_RUN_ONCE" in script
+    assert "run_backup || true" not in script
+    assert "if run_backup; then" in script
+    run_backup_body = script.split("run_backup() {", 1)[1].split("\n}", 1)[0]
+    assert run_backup_body.index("pg_restore --list") < run_backup_body.index(
+        "prune_backups"
+    )
+
+
+def test_production_backup_health_requires_recent_nonempty_dump() -> None:
+    content = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    backup_section = content.split("  db-backup:", 1)[1].split("\n  frontend:", 1)[0]
+
+    assert "stockscanner_*.dump" in backup_section
+    assert "-mmin -1560" in backup_section
+    assert "-size +0c" in backup_section
+    assert "start_period: 10m" in backup_section

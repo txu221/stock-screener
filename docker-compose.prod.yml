@@ -329,6 +329,12 @@ services:
           memory: 256M
         reservations:
           memory: 64M
+    healthcheck:
+      test: ["CMD-SHELL", "find /app/data/backups -maxdepth 1 -type f -name 'stockscanner_*.dump' -mmin -1560 -size +0c | grep -q ."]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 10m
     logging:
       driver: json-file
       options:
