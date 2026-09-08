@@ -57,7 +57,7 @@
 
 **Rollback / failure handling:** Delete the new template, validator, and tests. Validation must fail closed, print field names but never values, and leave the environment file untouched.
 
-- [ ] **Step 1: Write failing environment-contract tests**
+- [x] **Step 1: Write failing environment-contract tests**
 
 Add tests that build a valid in-memory mapping with:
 
@@ -86,7 +86,7 @@ below 2, and malformed Git SHA. Assert error text never contains secret values.
 Assert `compose_command()` contains the exact four files in approved order and
 ends in `config --quiet`.
 
-- [ ] **Step 2: Run the new tests and observe RED**
+- [x] **Step 2: Run the new tests and observe RED**
 
 Run:
 
@@ -97,7 +97,7 @@ Run:
 Expected: import failure because `validate_production_deployment.py` does not
 exist.
 
-- [ ] **Step 3: Implement the standard-library validator**
+- [x] **Step 3: Implement the standard-library validator**
 
 Use `argparse`, `pathlib`, `re`, and `subprocess`. Require the keys in `VALID`,
 match image refs with:
@@ -131,7 +131,7 @@ confirm the real environment is ignored and untracked. Invoke:
 Support `--skip-compose` only for deterministic validation on hosts without
 Docker; the official Runbook and Ubuntu CI must not use that flag.
 
-- [ ] **Step 4: Add the production template**
+- [x] **Step 4: Add the production template**
 
 Write commented, non-secret sentinels for required values and safe defaults:
 
@@ -166,7 +166,7 @@ ADMIN_API_KEY=
 Document that GHCR authentication belongs to Docker's credential store and is
 not an application environment variable.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 Run the test file plus validator against a generated safe temporary fixture
 with `--skip-compose`; run `git check-ignore -v .env.docker` and verify
