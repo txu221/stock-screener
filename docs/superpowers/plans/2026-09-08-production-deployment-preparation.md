@@ -208,7 +208,7 @@ assertions. A missing digest or Git SHA must stop Compose interpolation before
 pull/start. Optional tokens default to empty and do not change existing
 capabilities.
 
-- [ ] **Step 1: Add failing Compose contract tests**
+- [x] **Step 1: Add failing Compose contract tests**
 
 Assert release anchors contain:
 
@@ -224,7 +224,7 @@ worker, and Beat service still inherits the backend release anchor. Assert the
 base app environment forwards `GITHUB_DATA_TOKEN` and `ADMIN_API_KEY`. Assert
 Caddy checks `http://127.0.0.1:8080/health`.
 
-- [ ] **Step 2: Run the focused tests and observe RED**
+- [x] **Step 2: Run the focused tests and observe RED**
 
 Run:
 
@@ -234,7 +234,7 @@ Run:
 
 Expected: new digest/pass-through/health assertions fail.
 
-- [ ] **Step 3: Apply minimal Compose changes**
+- [x] **Step 3: Apply minimal Compose changes**
 
 Replace tag concatenation in the two release anchors with required full refs,
 add the revision label, preserve `pull_policy: always`, and retain every
@@ -248,7 +248,7 @@ ADMIN_API_KEY: ${ADMIN_API_KEY:-}
 to `x-app-env`. Add a Caddy health check using BusyBox `wget`, 30-second
 interval, 10-second timeout, three retries, and a 15-second start period.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run all deterministic tests in both touched test files except the three known
 Windows Bash-execution cases. Commit:

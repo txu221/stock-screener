@@ -192,3 +192,41 @@ def test_production_template_contains_only_rejected_secret_sentinels() -> None:
     assert "APP_IMAGE_TAG" not in content
     assert ":latest" not in content
     assert "CHANGE_ME_RANDOM_32_CHARS" in content
+
+
+def test_release_overlay_requires_digest_refs_and_full_revision() -> None:
+    content = (ROOT / "docker-compose.release.yml").read_text(encoding="utf-8")
+
+    assert (
+        "image: ${BACKEND_IMAGE_REF:?Set BACKEND_IMAGE_REF to a GHCR digest reference}"
+        in content
+    )
+    assert (
+        "image: ${FRONTEND_IMAGE_REF:?Set FRONTEND_IMAGE_REF to a GHCR digest reference}"
+        in content
+    )
+    assert content.count(
+        "org.opencontainers.image.revision: ${RELEASE_GIT_SHA:?Set RELEASE_GIT_SHA}"
+    ) == 2
+    assert "pull_policy: always" in content
+    assert "APP_IMAGE_TAG" not in content
+    assert "${BACKEND_IMAGE}:" not in content
+    assert "${FRONTEND_IMAGE}:" not in content
+    assert ":latest" not in content
+
+
+def test_base_compose_forwards_existing_optional_admin_and_github_data_tokens() -> None:
+    content = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "GITHUB_DATA_TOKEN: ${GITHUB_DATA_TOKEN:-}" in content
+    assert "ADMIN_API_KEY: ${ADMIN_API_KEY:-}" in content
+
+
+def test_caddy_compose_healthcheck_uses_internal_health_endpoint() -> None:
+    content = (ROOT / "docker-compose.https.yml").read_text(encoding="utf-8")
+
+    assert "http://127.0.0.1:8080/health" in content
+    assert "interval: 30s" in content
+    assert "timeout: 10s" in content
+    assert "retries: 3" in content
+    assert "start_period: 15s" in content
