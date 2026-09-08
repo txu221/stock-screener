@@ -46,26 +46,32 @@ See the **[Static Site Guide](docs/STATIC_SITE.md)** for exactly what works in s
 
 **Typical flow:** sign in → bootstrap markets → review the Daily dashboard → run a Scan → drill into a stock → monitor Operations → validate outcomes on Backtest. For the full page-by-page tour, see the **[Live App Guide](docs/LIVE_APP_GUIDE.md)**.
 
-## Quickstart (Docker)
+## Production deployment
 
-Deploys tagged GHCR images instead of building locally:
+The only supported production path deploys a reviewed backend/frontend pair by
+immutable GHCR digest on Ubuntu 24.04. Tags, including `latest`, are discovery
+aids and must not be used as the production release identity. The initial
+production scope is fixed to `ENABLED_MARKETS=US`.
 
 ```bash
-cp .env.docker.example .env.docker
+cp .env.production.example .env.docker
 # Edit .env.docker:
-#   BACKEND_IMAGE=ghcr.io/<owner>/stockscreenclaude-backend
-#   FRONTEND_IMAGE=ghcr.io/<owner>/stockscreenclaude-frontend
-#   APP_IMAGE_TAG=v1.3.0
-#   SERVER_AUTH_PASSWORD=choose-a-long-random-password
-#   GROQ_API_KEY=...
-ENABLED_MARKETS=US,HK,CN scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml pull
-ENABLED_MARKETS=US,HK,CN scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml up -d --no-build
-# Open http://localhost
+#   BACKEND_IMAGE_REF=ghcr.io/<owner>/stockscreenclaude-backend@sha256:<64-hex>
+#   FRONTEND_IMAGE_REF=ghcr.io/<owner>/stockscreenclaude-frontend@sha256:<64-hex>
+#   RELEASE_GIT_SHA=<40-hex>
+#   SERVER_AUTH_PASSWORD=<random-32+-characters>
+#   SERVER_AUTH_SESSION_SECRET=<independent-random-32+-characters>
+python3 backend/scripts/validate_production_deployment.py --env-file .env.docker
+scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml -f docker-compose.https.yml pull
+scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml -f docker-compose.https.yml up -d --no-build
 ```
 
-On first launch the app opens to a **first-run bootstrap** screen — no pre-seeded database needed. Pick one primary market for startup defaults and optionally enable more to hydrate in the background, then start. Enabling many markets at once noticeably slows the first run, so start with one and add the rest after the workspace is ready.
+Do not treat this excerpt as the deployment procedure. Follow the
+**[Production Deployment Runbook](docs/runbooks/production-deployment.md)** for
+host hardening, staged startup, migrations, first Yahoo snapshot, TLS, restart,
+backup, restore, rollback, and disaster recovery checks.
 
-- **Homelab / VPS / local-dev compose / GHCR options:** [Docker Deployment](docs/INSTALL_DOCKER.md)
+- **Docker development and deployment overview:** [Docker Deployment](docs/INSTALL_DOCKER.md)
 - **Building from source:** [Development Guide](docs/DEVELOPMENT.md)
 - **Bootstrap stages, stale/failure handling, re-runs:** [Operations Guide](docs/OPERATIONS.md)
 
@@ -110,6 +116,7 @@ Optional web-search keys (`TAVILY_API_KEY`, `SERPER_API_KEY`) enable the chatbot
 | [Operations Guide](docs/OPERATIONS.md) | Live-app operators and maintainers |
 | [Static Site Guide](docs/STATIC_SITE.md) | Static demo users and maintainers |
 | [Docker Deployment](docs/INSTALL_DOCKER.md) | Server, homelab, VPS users |
+| [Production Deployment Runbook](docs/runbooks/production-deployment.md) | Production operators using pinned GHCR digests |
 | [Development Guide](docs/DEVELOPMENT.md) | Contributors, developers |
 | [Architecture](docs/ARCHITECTURE.md) | Understanding the system design |
 | [Environment Variables](docs/ENVIRONMENT.md) | Configuration reference |

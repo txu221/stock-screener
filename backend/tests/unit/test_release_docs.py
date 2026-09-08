@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 
 
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def _documented_release_tags(content: str) -> set[str]:
-    return set(re.findall(r"APP_IMAGE_TAG=(v\d+\.\d+\.\d+)", content))
+PRODUCTION_COMPOSE_FILES = (
+    "-f docker-compose.yml -f docker-compose.prod.yml "
+    "-f docker-compose.release.yml -f docker-compose.https.yml"
+)
 
 
 def test_release_workflow_uses_curated_release_notes() -> None:
@@ -23,15 +24,11 @@ def test_release_workflow_uses_curated_release_notes() -> None:
 def test_readme_documents_current_release_compose_flow() -> None:
     content = (ROOT / "README.md").read_text()
 
-    assert _documented_release_tags(content) == {"v1.3.0"}
-    assert (
-        "scripts/docker-compose-enabled-markets.sh --env-file .env.docker "
-        "-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml pull"
-    ) in content
-    assert (
-        "scripts/docker-compose-enabled-markets.sh --env-file .env.docker "
-        "-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml up -d --no-build"
-    ) in content
+    assert "Production Deployment Runbook" in content
+    assert "BACKEND_IMAGE_REF=ghcr.io/" in content
+    assert "@sha256:" in content
+    assert "APP_IMAGE_TAG" not in content
+    assert PRODUCTION_COMPOSE_FILES in content
 
 
 def test_install_docker_uses_current_release_example() -> None:
@@ -39,11 +36,59 @@ def test_install_docker_uses_current_release_example() -> None:
 
     assert "Python 3.11+" in content
     assert "STOCKSCREEN_PYTHON" in content
-    assert _documented_release_tags(content) == {"v1.3.0"}
-    assert "Push a git tag like `v1.3.0`" in content
-    assert "**Deploy:** Set `APP_IMAGE_TAG=v1.3.0`" in content
+    assert "runbooks/production-deployment.md" in content
+    assert "BACKEND_IMAGE_REF" in content
+    assert "RELEASE_GIT_SHA" in content
+    assert "APP_IMAGE_TAG" not in content
+    assert "latest" in content
+    assert "must not" in content
     assert "--env-file .env.docker" in content
-    assert "docker compose exec backend curl -f http://localhost:8000/readyz" in content
+    assert PRODUCTION_COMPOSE_FILES in content
+
+
+def test_production_runbook_covers_the_approved_linear_path() -> None:
+    content = (ROOT / "docs" / "runbooks" / "production-deployment.md").read_text()
+
+    for required in (
+        "Ubuntu 24.04 LTS",
+        "ENABLED_MARKETS=US",
+        "COMPOSE_PROFILES=backup",
+        "validate_production_deployment.py",
+        PRODUCTION_COMPOSE_FILES,
+        "alembic upgrade head",
+        "calculate_sector_intelligence_snapshot",
+        "/api/v1/market-intelligence/sectors/latest",
+        "/api/v1/market-intelligence/sectors/history",
+        "/api/v1/market-intelligence/sectors/health",
+        "/market-intelligence",
+        "/livez",
+        "/readyz",
+        "/nginx-health",
+        "POSTGRES_BACKUP_RUN_ONCE=1",
+        "pg_restore --list",
+        "restore drill",
+        "release-manifest.env",
+        "Emergency source-build fallback",
+        "docker compose down -v",
+    ):
+        assert required in content
+    assert "APP_IMAGE_TAG" not in content
+    assert content.count("REQUIRES VPS VALIDATION") >= 8
+
+
+def test_production_environment_docs_use_digest_contract() -> None:
+    content = (ROOT / "docs" / "ENVIRONMENT.md").read_text()
+
+    for required in (
+        "BACKEND_IMAGE_REF",
+        "FRONTEND_IMAGE_REF",
+        "RELEASE_GIT_SHA",
+        "POSTGRES_BACKUP_RETENTION_COUNT",
+        "GITHUB_DATA_TOKEN",
+        "ADMIN_API_KEY",
+    ):
+        assert required in content
+    assert "APP_IMAGE_TAG" not in content
 
 
 def test_curated_release_notes_capture_v1_capabilities() -> None:

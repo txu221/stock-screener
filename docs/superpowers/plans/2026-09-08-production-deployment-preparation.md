@@ -431,7 +431,7 @@ environment validation, image pull, database health, migration, app health,
 first `SUCCEEDED` snapshot, TLS, restart, or backup verification. Failed first
 publish leaves the stable pointer unchanged and blocks launch acceptance.
 
-- [ ] **Step 1: Update failing release-document contracts**
+- [x] **Step 1: Update failing release-document contracts**
 
 Replace tag expectations with digest-reference and full-SHA expectations.
 Require the exact four-file command, validator invocation, `ENABLED_MARKETS=US`,
@@ -439,12 +439,12 @@ Require the exact four-file command, validator invocation, `ENABLED_MARKETS=US`,
 health APIs, restart check, backup run-once, restore drill, rollback manifest,
 and every `REQUIRES VPS VALIDATION` category.
 
-- [ ] **Step 2: Run document tests and observe RED**
+- [x] **Step 2: Run document tests and observe RED**
 
 Run `test_release_docs.py`. Expected: old `APP_IMAGE_TAG=v1.3.0` expectations
 fail until docs and tests align with the approved design.
 
-- [ ] **Step 3: Write the unique standard sequence**
+- [x] **Step 3: Write the unique standard sequence**
 
 Use these exact major stages, in order:
 
@@ -475,7 +475,7 @@ Define every Compose invocation once as a shell array or documented alias so
 operators cannot accidentally omit an overlay. Make explicit that `docker
 compose down -v` is destructive and forbidden in normal deploy/rollback.
 
-- [ ] **Step 4: Add exact migration, ingestion, API, and frontend commands**
+- [x] **Step 4: Add exact migration, ingestion, API, and frontend commands**
 
 Use one-shot backend `alembic upgrade head` and `alembic current --verbose`.
 Dispatch the named Celery task on `market_jobs_us`, retain its task ID, inspect
@@ -491,7 +491,7 @@ Verify the UI at `/market-intelligence`, `/livez`, `/readyz`, and
 `/nginx-health`. Distinguish degraded snapshot readiness from database-fatal
 503.
 
-- [ ] **Step 5: Add backup, rollback, and disaster recovery commands**
+- [x] **Step 5: Add backup, rollback, and disaster recovery commands**
 
 Document one-shot backup, SHA and `pg_restore --list` verification, seven-dump
 local retention, off-host copy, disposable-database restore drill, worker/Beat
@@ -499,14 +499,14 @@ pause, previous-digest manifest restore, migration compatibility decision,
 fresh-host restore, and DNS cutover. Never recommend an automatic Alembic
 downgrade.
 
-- [ ] **Step 6: Preserve emergency source-build fallback only**
+- [x] **Step 6: Preserve emergency source-build fallback only**
 
 Add a final appendix that requires checkout of the same reviewed Git SHA,
 locally builds both existing Dockerfiles, records resulting image IDs, and uses
 the same database/environment/verification procedure. Label it emergency-only,
 non-primary, and unsuitable as a routine release path.
 
-- [ ] **Step 7: Run GREEN and commit**
+- [x] **Step 7: Run GREEN and commit**
 
 Run `test_release_docs.py`, link checks via `rg`, and `git diff --check`. Commit:
 

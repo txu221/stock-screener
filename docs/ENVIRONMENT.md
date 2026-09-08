@@ -72,9 +72,21 @@ Enables assistant web research fallback.
 | `DOMAIN` | `stocks.yourdomain.com` | For HTTPS/Caddy scenario only |
 | `CORS_ORIGINS` | `https://stocks.yourdomain.com` | Must match your access URL |
 | `SERVER_AUTH_PASSWORD` | `choose-a-long-random-password` | Required shared password for server login |
-| `BACKEND_IMAGE` | `ghcr.io/you/stockscreenclaude-backend` | GHCR image (release overlay) |
-| `FRONTEND_IMAGE` | `ghcr.io/you/stockscreenclaude-frontend` | GHCR image (release overlay) |
-| `APP_IMAGE_TAG` | `v1.2.3` | Release tag to deploy |
+| `BACKEND_IMAGE_REF` | `ghcr.io/owner/stockscreenclaude-backend@sha256:<64-hex>` | Required immutable backend reference for production |
+| `FRONTEND_IMAGE_REF` | `ghcr.io/owner/stockscreenclaude-frontend@sha256:<64-hex>` | Required immutable frontend reference for production |
+| `RELEASE_GIT_SHA` | `<40-hex>` | Full source revision mapped to both image digests |
+| `ENABLED_MARKETS` | `US` | Fixed first-release market; the production validator rejects other values |
+| `COMPOSE_PROFILES` | `backup` | Enables the required backup service; the wrapper also adds `market-us` |
+| `POSTGRES_BACKUP_RETENTION_COUNT` | `7` | Number of verified local custom-format dumps retained |
+| `POSTGRES_BACKUP_INTERVAL_SECONDS` | `86400` | Scheduled backup interval in seconds |
+| `POSTGRES_BACKUP_INITIAL_DELAY_SECONDS` | `300` | Initial delay before the recurring backup loop |
+| `GITHUB_DATA_TOKEN` | (empty) | Optional application token for authenticated GitHub release-data reads; not the GHCR pull credential |
+| `ADMIN_API_KEY` | (empty) | Optional existing admin configuration API credential |
+
+For production, copy `.env.production.example` to the Git-ignored
+`.env.docker`, set mode 0600, and run the production validator before every
+Compose command. Never place a GHCR pull token in this file. See the
+[Production Deployment Runbook](runbooks/production-deployment.md).
 
 ## Twitter/X Ingestion
 
