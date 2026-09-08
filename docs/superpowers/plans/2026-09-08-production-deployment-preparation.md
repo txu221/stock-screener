@@ -542,7 +542,7 @@ status, not a prose implication that CI equals a public deployment.
 Unverified items remain unchecked and labeled; no item can transition based
 only on static configuration.
 
-- [ ] **Step 1: Add failing document-coverage assertions**
+- [x] **Step 1: Add failing document-coverage assertions**
 
 Require the checklist categories `Already Complete`, `Can Complete Locally`,
 `Requires VPS`, `Requires Domain / DNS`, `Requires Credentials`, and
@@ -550,7 +550,7 @@ Require the checklist categories `Already Complete`, `Can Complete Locally`,
 all external inputs from the design, no LLM/news key requirement, and explicit
 `Real Production Deployment Pending` status.
 
-- [ ] **Step 2: Write both documents**
+- [x] **Step 2: Write both documents**
 
 For each checklist row include status, evidence/command, owner, and acceptance
 condition. For each input include required/optional classification, example
@@ -559,7 +559,7 @@ and rotation/recovery note. Include VPS/IP/SSH/DNS/domain, GHCR read token when
 private, three application/database secrets, two digest refs, Git SHA, off-host
 backup destination/credential, monitoring destination, and deployment window.
 
-- [ ] **Step 3: Run GREEN and commit**
+- [x] **Step 3: Run GREEN and commit**
 
 ```bash
 git add docs/production-readiness-checklist.md docs/production-required-inputs.md backend/tests/unit/test_release_docs.py
