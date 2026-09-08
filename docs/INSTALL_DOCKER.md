@@ -47,68 +47,32 @@ ENABLED_MARKETS=US,HK,CN scripts/docker-compose-enabled-markets.sh --env-file .e
 
 The production overlay adds resource limits, health checks, and JSON logging with rotation.
 
-## Production with GHCR Images (Recommended)
+## Production on a VPS
 
-Use pre-built images from GitHub Container Registry instead of building from source on the server:
-
-```bash
-# 1. Configure environment
-cp .env.docker.example .env.docker
-# Edit .env.docker:
-#   BACKEND_IMAGE=ghcr.io/<owner>/stockscreenclaude-backend
-#   FRONTEND_IMAGE=ghcr.io/<owner>/stockscreenclaude-frontend
-#   APP_IMAGE_TAG=v1.3.0
-#   SERVER_AUTH_PASSWORD=choose-a-long-random-password
-#   CORS_ORIGINS=https://stocks.yourdomain.com
-
-# 2. Pull the tagged release images
-ENABLED_MARKETS=US,HK,CN scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml pull
-
-# 3. Deploy without rebuilding locally
-ENABLED_MARKETS=US,HK,CN scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml up -d --no-build
-```
-
-For HTTPS on a standalone VPS, add the Caddy overlay:
-```bash
-ENABLED_MARKETS=US,HK,CN scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml -f docker-compose.https.yml pull
-ENABLED_MARKETS=US,HK,CN scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml -f docker-compose.https.yml up -d --no-build
-```
-
-### Release and Rollback
-
-- Push to `main` to publish rolling `main`, `sha-*`, and `latest` image tags to GHCR
-- Push a git tag like `v1.3.0` to publish immutable release tags
-- **Deploy:** Set `APP_IMAGE_TAG=v1.3.0` in `.env.docker`, run `pull` + `up -d --no-build`
-- **Roll back:** Change `APP_IMAGE_TAG` to the previous tag and redeploy
-
-If the repository or package is private, authenticate first:
-```bash
-echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-username> --password-stdin
-```
-
-## VPS with Auto-HTTPS (Hostinger, DigitalOcean, etc.)
-
-Includes Caddy for automatic Let's Encrypt certificates:
+The sole formal production path is the
+[Production Deployment Runbook](runbooks/production-deployment.md). It uses the
+four overlays below, always in this order, and pins both application images to
+complete GHCR digest references that map to `RELEASE_GIT_SHA`:
 
 ```bash
-# 1. Configure environment
-cp .env.docker.example .env.docker
-# Edit .env.docker: Set DOMAIN=stocks.yourdomain.com
-# Edit .env.docker: Set SERVER_AUTH_PASSWORD=choose-a-long-random-password
-# Edit .env.docker: Set CORS_ORIGINS=https://stocks.yourdomain.com
-
-# 2. Ensure DNS A record points to your server IP
-
-# 3. Start with HTTPS
-ENABLED_MARKETS=US,HK,CN scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.https.yml up -d
+cp .env.production.example .env.docker
+python3 backend/scripts/validate_production_deployment.py --env-file .env.docker
+scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml -f docker-compose.https.yml pull
+scripts/docker-compose-enabled-markets.sh --env-file .env.docker -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml -f docker-compose.https.yml up -d --no-build
 ```
 
-Requirements:
-- DNS A record pointing to your server
-- Ports 80 and 443 open
-- `DOMAIN` environment variable set
+`BACKEND_IMAGE_REF` and `FRONTEND_IMAGE_REF` must be full
+`ghcr.io/...@sha256:<64-hex>` references. `RELEASE_GIT_SHA` must be the full
+40-character source commit. Rolling, branch, semantic-version, and `latest`
+tags may help an operator discover a digest, but they must not be production
+inputs. The first release is fixed to `ENABLED_MARKETS=US` and
+`COMPOSE_PROFILES=backup`.
 
-The HTTPS overlay sets `SERVER_AUTH_SECURE_COOKIE=true` on the backend automatically so auth cookies remain Secure behind Caddy TLS termination.
+If packages are private, the host authenticates with a read-only package token;
+that credential stays in Docker's host credential store and is never copied
+into `.env.docker` or an application container. Exact authentication, staged
+startup, migration, verification, backup, restore, rollback, and disaster
+recovery commands are intentionally centralized in the Runbook.
 
 ## Services Architecture
 
@@ -133,9 +97,10 @@ The HTTPS overlay sets `SERVER_AUTH_SECURE_COOKIE=true` on the backend automatic
 |------|---------|
 | `docker-compose.yml` | Base configuration for local development |
 | `docker-compose.prod.yml` | Production overlay: resource limits, health checks, logging |
-| `docker-compose.release.yml` | Release overlay: deploy tagged GHCR images instead of local builds |
+| `docker-compose.release.yml` | Release overlay: deploy required immutable GHCR digest references |
 | `docker-compose.https.yml` | HTTPS overlay: Caddy with automatic Let's Encrypt |
-| `.env.docker.example` | Template for Docker environment variables |
+| `.env.production.example` | Strict placeholder-only production environment contract |
+| `.env.docker.example` | Development/homelab Docker environment template |
 | `Caddyfile` | Caddy configuration for TLS termination |
 
 ## PostgreSQL Notes

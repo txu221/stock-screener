@@ -22,12 +22,14 @@ x-app-env: &app-env
   SERVER_AUTH_SESSION_SECRET: ${SERVER_AUTH_SESSION_SECRET:-}
   SERVER_AUTH_SECURE_COOKIE: ${SERVER_AUTH_SECURE_COOKIE:-false}
   SERVER_EXPOSE_API_DOCS: ${SERVER_EXPOSE_API_DOCS:-false}
+  ADMIN_API_KEY: ${ADMIN_API_KEY:-}
   FEATURE_GROUPED_SCAN_FILTERS: ${FEATURE_GROUPED_SCAN_FILTERS:-false}
   HERMES_API_BASE: ${HERMES_API_BASE:-http://hermes:8642/v1}
   HERMES_API_KEY: ${HERMES_API_KEY:-}
   HERMES_MODEL: ${HERMES_MODEL:-hermes-agent}
   HERMES_REQUEST_TIMEOUT_SECONDS: ${HERMES_REQUEST_TIMEOUT_SECONDS:-120}
   ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY:-}
+  GITHUB_DATA_TOKEN: ${GITHUB_DATA_TOKEN:-}
   OPENDART_API_KEY: ${OPENDART_API_KEY:-}
   ZAI_API_KEY: ${ZAI_API_KEY:-}
   ZAI_API_KEYS: ${ZAI_API_KEYS:-}
@@ -321,61 +323,18 @@ services:
   db-backup:
     image: postgres:16-alpine
     profiles: ["backup"]
-    entrypoint: /bin/sh
+    entrypoint: ["/bin/sh", "/usr/local/bin/stockscanner-postgres-backup"]
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:-stockscanner}
       POSTGRES_DB: ${POSTGRES_DB:-stockscanner}
       POSTGRES_USER: ${POSTGRES_USER:-stockscanner}
-    command:
-      - -c
-      - |
-        is_valid_backup() {
-          [ -s "$$1" ]
-        } && \
-        prune_backups() {
-          KEEP_PATH="$$1"
-          mkdir -p /app/data/backups
-          find /app/data/backups -maxdepth 1 -type f \
-            \( -name 'stockscanner_*.dump' -o -name '.stockscanner_backup_in_progress.dump' \) \
-            ! -path "$$KEEP_PATH" \
-            -exec rm -f {} +
-        } && \
-        EXISTING_KEEP="" && \
-        for CANDIDATE in $$(ls -1t /app/data/backups/stockscanner_*.dump 2>/dev/null); do \
-          if is_valid_backup "$$CANDIDATE"; then \
-            EXISTING_KEEP="$$CANDIDATE"; \
-            break; \
-          fi; \
-        done && \
-        if [ -n "$$EXISTING_KEEP" ]; then \
-          prune_backups "$$EXISTING_KEEP"; \
-          echo "Retained existing valid backup: $$EXISTING_KEEP"; \
-        fi && \
-        echo "Backup service started. Running every 24h." && \
-        sleep 300 && \
-        while true; do
-          mkdir -p /app/data/backups
-          TMP_DEST="/app/data/backups/.stockscanner_backup_in_progress.dump"
-          DEST="/app/data/backups/stockscanner_$$(date +%Y%m%d_%H%M%S).dump"
-          rm -f "$$TMP_DEST"
-          pg_dump \
-            --host=postgres \
-            --username="$${POSTGRES_USER}" \
-            --dbname="$${POSTGRES_DB}" \
-            --format=custom \
-            --file="$$TMP_DEST" 2>&1
-          if [ $$? -eq 0 ] && is_valid_backup "$$TMP_DEST"; then
-            mv "$$TMP_DEST" "$$DEST"
-            prune_backups "$$DEST"
-            echo "$$(date): Backup OK -> $$DEST ($$(du -h $$DEST | cut -f1)); retained newest valid backup only"
-          else
-            rm -f "$$TMP_DEST"
-            echo "$$(date): Backup FAILED or validation failed"
-          fi
-          sleep 86400
-        done
+      POSTGRES_BACKUP_RETENTION_COUNT: ${POSTGRES_BACKUP_RETENTION_COUNT:-7}
+      POSTGRES_BACKUP_INTERVAL_SECONDS: ${POSTGRES_BACKUP_INTERVAL_SECONDS:-86400}
+      POSTGRES_BACKUP_INITIAL_DELAY_SECONDS: ${POSTGRES_BACKUP_INITIAL_DELAY_SECONDS:-300}
+      POSTGRES_BACKUP_RUN_ONCE: ${POSTGRES_BACKUP_RUN_ONCE:-0}
     volumes:
       - ./data:/app/data
+      - ./scripts/production/postgres-backup.sh:/usr/local/bin/stockscanner-postgres-backup:ro
     depends_on:
       postgres:
         condition: service_healthy

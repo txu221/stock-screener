@@ -158,9 +158,56 @@ jobs:
       - name: Assistant profile compose smoke
         run: bash scripts/run_docker_assistant_compose_smoke.sh
 
+  production-deployment-config:
+    name: Production Deployment Config
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate digest-pinned production Compose path
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'rm -f .env.docker' EXIT
+          cat > .env.docker <<'EOF'
+          DOMAIN=stocks.ci-acme.com
+          CORS_ORIGINS=https://stocks.ci-acme.com
+          BACKEND_IMAGE_REF=ghcr.io/txu221/stockscreenclaude-backend@sha256:1111111111111111111111111111111111111111111111111111111111111111
+          FRONTEND_IMAGE_REF=ghcr.io/txu221/stockscreenclaude-frontend@sha256:2222222222222222222222222222222222222222222222222222222222222222
+          RELEASE_GIT_SHA=3333333333333333333333333333333333333333
+          POSTGRES_DB=stockscanner
+          POSTGRES_USER=stockscanner
+          POSTGRES_PASSWORD=pppppppppppppppppppppppppppppppp
+          SERVER_AUTH_PASSWORD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          SERVER_AUTH_SESSION_SECRET=ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss
+          SERVER_AUTH_SECURE_COOKIE=true
+          SERVER_EXPOSE_API_DOCS=false
+          ENABLED_MARKETS=US
+          COMPOSE_PROFILES=backup
+          CELERY_TIMEZONE=America/New_York
+          MARKET_DATA_SOURCE_MODE=github_first
+          STATIC_EXPORT_ENABLED=false
+          WEB_CONCURRENCY=2
+          DB_POOL_SIZE=5
+          DB_MAX_OVERFLOW=5
+          POSTGRES_BACKUP_RETENTION_COUNT=7
+          POSTGRES_BACKUP_INTERVAL_SECONDS=86400
+          POSTGRES_BACKUP_INITIAL_DELAY_SECONDS=300
+          EOF
+          python backend/scripts/validate_production_deployment.py --env-file .env.docker
+          sh -n scripts/production/postgres-backup.sh
+          docker compose --env-file .env.docker \
+            -f docker-compose.yml \
+            -f docker-compose.prod.yml \
+            -f docker-compose.release.yml \
+            -f docker-compose.https.yml \
+            config --quiet
+          test -z "$(git ls-files .env.docker)"
+
   publish-images:
     name: Publish Docker Images
-    needs: [backend, backend-unit, frontend, assistant-compose-smoke]
+    needs: [backend, backend-unit, frontend, assistant-compose-smoke, production-deployment-config]
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:
