@@ -52,9 +52,11 @@ prune_backups() {
 
 run_backup() {
   timestamp="$(date -u +%Y%m%d_%H%M%S)"
-  destination="$BACKUP_DIR/stockscanner_${timestamp}.dump"
-  TMP_DUMP="$BACKUP_DIR/.stockscanner_backup_${timestamp}_$$.dump"
-  TMP_SHA="$BACKUP_DIR/.stockscanner_backup_${timestamp}_$$.sha256"
+  instance_id="$(printf '%s' "${HOSTNAME:-container}" | tr -cd 'A-Za-z0-9_.-' | cut -c1-32)"
+  [ -n "$instance_id" ] || instance_id="container"
+  destination="$BACKUP_DIR/stockscanner_${timestamp}_${instance_id}.dump"
+  TMP_DUMP="$BACKUP_DIR/.stockscanner_backup_${timestamp}_${instance_id}_$$.dump"
+  TMP_SHA="$BACKUP_DIR/.stockscanner_backup_${timestamp}_${instance_id}_$$.sha256"
   rm -f "$TMP_DUMP" "$TMP_SHA"
 
   if ! pg_dump \

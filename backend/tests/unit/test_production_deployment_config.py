@@ -215,6 +215,17 @@ def test_release_overlay_requires_digest_refs_and_full_revision() -> None:
     assert ":latest" not in content
 
 
+def test_release_overlay_only_documents_the_four_file_production_path() -> None:
+    content = (ROOT / "docker-compose.release.yml").read_text(encoding="utf-8")
+    approved_suffix = (
+        "-f docker-compose.release.yml -f docker-compose.https.yml"
+    )
+
+    assert content.count(approved_suffix) == 2
+    assert "-f docker-compose.release.yml pull" not in content
+    assert "-f docker-compose.release.yml up -d" not in content
+
+
 def test_base_compose_forwards_existing_optional_admin_and_github_data_tokens() -> None:
     content = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
@@ -230,6 +241,29 @@ def test_caddy_compose_healthcheck_uses_internal_health_endpoint() -> None:
     assert "timeout: 10s" in content
     assert "retries: 3" in content
     assert "start_period: 15s" in content
+
+
+def test_production_edge_startup_waits_for_application_health() -> None:
+    production = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    https = (ROOT / "docker-compose.https.yml").read_text(encoding="utf-8")
+    frontend_section = production.split("  frontend:", 1)[1]
+    caddy_section = https.split("  caddy:", 1)[1].split("\n  frontend:", 1)[0]
+
+    assert "backend:\n        condition: service_healthy" in frontend_section
+    assert "frontend:\n        condition: service_healthy" in caddy_section
+
+
+def test_production_overlay_comments_reference_only_the_approved_stack() -> None:
+    approved_suffix = "-f docker-compose.release.yml -f docker-compose.https.yml"
+    for name in (
+        "docker-compose.prod.yml",
+        "docker-compose.release.yml",
+        "docker-compose.https.yml",
+    ):
+        content = (ROOT / name).read_text(encoding="utf-8")
+        assert approved_suffix in content
+    production = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    assert "At least one LLM API key" not in production
 
 
 def test_backup_service_uses_verified_bounded_backup_script() -> None:
@@ -252,6 +286,8 @@ def test_backup_service_uses_verified_bounded_backup_script() -> None:
     assert "pg_restore --list" in script
     assert "sha256sum" in script
     assert "POSTGRES_BACKUP_RUN_ONCE" in script
+    assert '${HOSTNAME:-container}' in script
+    assert 'stockscanner_${timestamp}_${instance_id}.dump' in script
     assert "run_backup || true" not in script
     assert "if run_backup; then" in script
     run_backup_body = script.split("run_backup() {", 1)[1].split("\n}", 1)[0]

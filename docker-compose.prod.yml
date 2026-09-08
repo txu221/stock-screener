@@ -5,11 +5,11 @@
 #
 # Usage:
 #   scripts/docker-compose-enabled-markets.sh --env-file .env.docker \
-#     -f docker-compose.yml -f docker-compose.prod.yml up -d
+#     -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml -f docker-compose.https.yml up -d --no-build
 #
 # Requires .env.docker file with at minimum:
 #   - CORS_ORIGINS (e.g., https://stocks.yourdomain.com)
-#   - At least one LLM API key for chatbot functionality
+#   - immutable backend/frontend digest references and a full Git SHA
 #
 # =============================================================================
 
@@ -342,6 +342,9 @@ services:
         max-file: "3"
 
   frontend:
+    depends_on:
+      backend:
+        condition: service_healthy
     deploy:
       resources:
         limits:

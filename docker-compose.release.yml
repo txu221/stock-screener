@@ -5,12 +5,6 @@
 #
 # Usage:
 #   scripts/docker-compose-enabled-markets.sh --env-file .env.docker \
-#     -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml pull
-#   scripts/docker-compose-enabled-markets.sh --env-file .env.docker \
-#     -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml up -d --no-build
-#
-# Optional HTTPS:
-#   scripts/docker-compose-enabled-markets.sh --env-file .env.docker \
 #     -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml -f docker-compose.https.yml pull
 #   scripts/docker-compose-enabled-markets.sh --env-file .env.docker \
 #     -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml -f docker-compose.https.yml up -d --no-build
