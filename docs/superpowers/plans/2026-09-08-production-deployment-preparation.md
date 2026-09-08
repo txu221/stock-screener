@@ -664,7 +664,7 @@ git add docs/superpowers/plans/2026-09-08-production-deployment-preparation.md d
 git commit -m "docs: report production deployment readiness"
 ```
 
-- [ ] **Step 2: Run Ubuntu CI for the final SHA**
+- [x] **Step 2: Run Ubuntu CI for the final SHA**
 
 Push the phase branch and create/update its pull request only as needed to run
 the standard `pull_request` workflow. Require backend quality gates, all four
@@ -672,13 +672,17 @@ backend shards, frontend tests/smoke, assistant Compose smoke, and the new
 production deployment config job to pass. Image publication is correctly
 skipped on a pull request.
 
-- [ ] **Step 3: Review final diff and state**
+Evidence: PR #2 run `34189690016` passed all required jobs on implementation
+and report SHA `4ac4f09b1fc957ee4483717f55794fcd5ee55580`; image publication and
+release creation were correctly skipped for the pull request.
+
+- [x] **Step 3: Review final diff and state**
 
 Confirm no application-domain/frontend-product file changed, no dependency file
 changed, `.env.docker` is absent/untracked, branch is clean, primary `main` is
 clean and still equals `origin/main`, and the feature branch remains separate.
 
-- [ ] **Step 4: Stop at the approved terminal state**
+- [x] **Step 4: Stop at the approved terminal state**
 
 Report:
 
